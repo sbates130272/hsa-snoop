@@ -1,0 +1,4 @@
+*.o
+hsa-snoop
+*.pftrace
+*.json

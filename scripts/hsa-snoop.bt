@@ -1,0 +1,35 @@
+#!/usr/bin/env bpftrace
+/*
+ * hsa-snoop.bt - zero-build queue discovery via bpftrace.
+ *
+ * Prints every HSA AQL queue as the amdgpu KFD driver creates it, including the
+ * ring buffer virtual address, ring/read/write pointers, size and GPU id. This
+ * is the same information the hsa-snoop C++ tool captures for its ring parser;
+ * use this script to confirm discovery works before building the full tool.
+ *
+ *   sudo bpftrace scripts/hsa-snoop.bt
+ *
+ * Field offsets are from struct kfd_ioctl_create_queue_args (uapi ABI):
+ *   +0 ring_base_address  +8 write_pointer  +16 read_pointer
+ *   +32 ring_size  +36 gpu_id  +40 queue_type (2 == COMPUTE_AQL)
+ * arg2 is the args pointer (3rd fn arg to kfd_ioctl_create_queue).
+ */
+
+kprobe:kfd_ioctl_create_queue
+{
+    $args = arg2;
+    $qtype = *(uint32 *)($args + 40);
+    printf("%-16s pid=%-7d ring_va=0x%lx size=%uB rptr=0x%lx wptr=0x%lx gpu=%u %s\n",
+           comm, pid,
+           *(uint64 *)($args + 0),
+           *(uint32 *)($args + 32),
+           *(uint64 *)($args + 16),
+           *(uint64 *)($args + 8),
+           *(uint32 *)($args + 36),
+           $qtype == 2 ? "[AQL]" : "[PM4/SDMA]");
+}
+
+kprobe:pqm_destroy_queue
+{
+    printf("%-16s pid=%-7d queue destroyed\n", comm, pid);
+}
