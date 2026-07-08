@@ -3,8 +3,8 @@
 `hsa-snoop` detects the HSA **AQL queues** an application uses to talk to an AMD
 GPU, tracks their ring-buffer addresses (virtual **and** physical), decodes the
 packets flowing across them (kernel dispatches, barriers, agent dispatches), and
-emits a **Perfetto** trace with per-dispatch timing, kernel names, launch
-dimensions and more.
+emits a **Perfetto** trace with queue-observed dispatch timing, kernel names,
+launch dimensions and more.
 
 It works **without modifying or rebuilding the amdgpu driver**. See
 [How it works](#how-it-works) and [Do we need to touch the
@@ -62,10 +62,11 @@ hsa-snoop has three stages, all in user space:
    `write_dispatch_id` vs `read_dispatch_id`:
    * when the write id advances, the newly enqueued 64-byte AQL packet is decoded
      using the layouts in `src/aql.h` (mirrors `<hsa/hsa.h>`);
-   * when the read id passes a packet, it is marked complete.
+   * when the read id passes a packet, it is marked queue-consumed.
 
-   Submit → complete host timestamps (`CLOCK_MONOTONIC_RAW`) give an approximate
-   on-GPU window for each dispatch.
+   Enqueue → queue-consumed host timestamps (`CLOCK_MONOTONIC_RAW`) give an
+   approximate queue residency window for each dispatch. This is not the same as
+   observing the packet completion signal or true GPU execution duration.
 
    **Kernel names** are resolved from `kernel_object` (the runtime address of the
    kernel descriptor, i.e. the ELF `*.kd` symbol). We locate the AMDGPU
@@ -250,15 +251,15 @@ systemd/hsa-snoop.logrotate  logrotate policy (512 MiB rotation, 8 kept)
 ## Limitations & notes
 
 * **Sampling snoop, not a tap.** Activity is captured by polling the ring. A
-  kernel that is enqueued *and* completes entirely within one poll interval can
-  be missed (the slot may read back as `INVALID` once consumed). Lower
+  packet that is enqueued *and* queue-consumed entirely within one poll interval
+  can be missed (the slot may read back as `INVALID` once consumed). Lower
   `--poll-us` to catch faster kernels; deeply-queued workloads are captured
   near-completely (195/200 in the bundled test). Missed packets are counted
   internally as "dropped".
-* **Timing is host-observed.** submit→complete uses host timestamps for
-  enqueue/dequeue transitions, so a slice includes queue-wait time and is an
-  approximation of the true on-GPU execution window (no profiling
-  signals/counters are read). Good for structure and relative timing.
+* **Timing is host-observed.** enqueue→queue-consumed uses host timestamps for
+  queue pointer transitions, so a slice includes queue-wait time and may differ
+  from true kernel execution or completion-signal timing. No profiling signals
+  or counters are read; this is best used for structure and relative timing.
 * **Attach mode only sees queues created after attach**, since the kprobe fires
   on `create_queue`. Use launch mode to guarantee capture from process start.
 * **WSL2 PID mapping is heuristic.** bpftrace reports host-kernel PIDs, which

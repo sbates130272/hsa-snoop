@@ -153,8 +153,8 @@ void RingParser::PollQueue(QueueState* qs, double now) {
         }
     }
 
-    // Complete anything the GPU has consumed (read_dispatch_id advanced past
-    // it).
+    // Mark packets as queue-consumed once read_dispatch_id advances past them.
+    // This is not the same as observing the packet completion signal.
     while (!qs->inflight.empty()) {
         auto it = qs->inflight.begin();
         if (it->first >= rptr)

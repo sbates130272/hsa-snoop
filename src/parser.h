@@ -1,5 +1,5 @@
 // parser.h - Per-queue AQL ring poller. Watches write/read dispatch ids in the
-// target process and decodes packets as they are enqueued and completed.
+// target process and decodes packets as they are enqueued and queue-consumed.
 #pragma once
 #include <atomic>
 #include <functional>

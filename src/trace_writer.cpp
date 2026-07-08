@@ -9,8 +9,7 @@
 namespace hsasnoop {
 namespace {
 
-// Minimum rendered slice width so kernels that complete within one poll are
-// still visible.
+// Minimum rendered slice width so packets consumed within one poll are visible.
 constexpr double kMinDurSec = 100e-9;
 
 std::string JsonEscape(const std::string& s) {
