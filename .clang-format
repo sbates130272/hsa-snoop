@@ -1,0 +1,30 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: c++17
+IndentWidth: 4
+ColumnLimit: 80
+PointerAlignment: Left
+AlwaysBreakTemplateDeclarations: Yes
+SortIncludes: true
+ReflowComments: true
+
+BraceWrapping:
+  AfterClass: false
+  AfterControlStatement: false
+  AfterEnum: false
+  AfterFunction: false
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeCatch: false
+  BeforeElse: false
+  IndentBraces: false
+
+BreakBeforeBraces: Custom
+
+AttributeMacros:
+  - __host__
+  - __device__
+  - __global__
+  - __forceinline__

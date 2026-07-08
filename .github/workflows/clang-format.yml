@@ -1,0 +1,32 @@
+name: clang-format
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+      - 'feat/**'
+    paths:
+      - '**.cpp'
+      - '**.h'
+      - '**.hip'
+      - '.clang-format'
+      - '.github/workflows/clang-format.yml'
+
+jobs:
+  clang-format:
+    name: clang-format lint for hsa-snoop
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Run clang-format lint
+      uses: DoozyX/clang-format-lint-action@v0.18.2
+      with:
+        source: '.'
+        exclude: './build'
+        extensions: 'cpp,h,hip'
+        clangFormatVersion: 18
+        style: file
+        inplace: false

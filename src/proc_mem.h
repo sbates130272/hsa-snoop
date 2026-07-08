@@ -11,7 +11,7 @@ namespace hsasnoop {
 bool ReadProcMem(int pid, uint64_t va, void* out, size_t len);
 
 inline bool ReadU64(int pid, uint64_t va, uint64_t* out) {
-  return ReadProcMem(pid, va, out, sizeof(*out));
+    return ReadProcMem(pid, va, out, sizeof(*out));
 }
 
 // Resolve the physical address backing user VA `va` in `pid` via pagemap.
@@ -22,4 +22,4 @@ uint64_t VirtToPhys(int pid, uint64_t va);
 // True if the process is still alive.
 bool ProcAlive(int pid);
 
-}  // namespace hsasnoop
+} // namespace hsasnoop
