@@ -116,7 +116,8 @@ std::string FindLibrocdxg() {
 Discovery::Discovery(std::string tracefs_root, int pid_filter,
                      DiscoveryMode mode, std::string librocdxg_path)
     : tracefs_(std::move(tracefs_root)), pid_filter_(pid_filter), mode_(mode),
-      librocdxg_path_(std::move(librocdxg_path)), probe_name_("hsasnoop_cq") {}
+      librocdxg_path_(std::move(librocdxg_path)),
+      probe_name_("hsasnoop_cq_" + std::to_string(getpid())) {}
 
 Discovery::~Discovery() { Stop(); }
 
