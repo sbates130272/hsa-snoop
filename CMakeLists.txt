@@ -24,6 +24,16 @@ add_executable(hsa-snoop ${HSA_SNOOP_SOURCES})
 target_compile_features(hsa-snoop PRIVATE cxx_std_17)
 target_link_libraries(hsa-snoop PRIVATE Threads::Threads)
 
+install(TARGETS hsa-snoop RUNTIME DESTINATION bin)
+install(FILES systemd/hsa-snoop.service
+        DESTINATION lib/systemd/system)
+install(FILES systemd/hsa-snoop.conf
+        DESTINATION etc
+        RENAME hsa-snoop.conf)
+install(FILES systemd/hsa-snoop.logrotate
+        DESTINATION etc/logrotate.d
+        RENAME hsa-snoop)
+
 list(APPEND CMAKE_PREFIX_PATH /opt/rocm)
 find_package(hip QUIET)
 if(hip_FOUND)

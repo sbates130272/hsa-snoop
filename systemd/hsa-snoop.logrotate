@@ -1,0 +1,38 @@
+# logrotate configuration for hsa-snoop
+# Install to: /etc/logrotate.d/hsa-snoop
+#
+# logrotate is invoked daily by the system logrotate timer/cron job.
+# Adjust size, rotate count, and maxage to taste.
+
+/var/log/hsa-snoop/*.pftrace
+/var/log/hsa-snoop/*.json
+{
+    # Rotate when a file reaches 512 MiB, regardless of age.
+    size 512M
+
+    # Keep the last 8 rotated files (~4 GiB total at the default size limit).
+    rotate 8
+
+    # Never complain if the glob matches nothing.
+    missingok
+
+    # Do not rotate empty files.
+    notifempty
+
+    # Compress rotated files with gzip to save space.
+    compress
+
+    # Defer compression by one cycle so the previous file is fully closed.
+    delaycompress
+
+    # Append an ISO-8601 date suffix to rotated files instead of a plain
+    # number, making it easy to correlate a trace with a workload run time.
+    dateext
+    dateformat -%Y%m%d-%s
+
+    # hsa-snoop holds trace files open until shutdown; rotation is safe
+    # because each queue gets its own file and new queues always create a
+    # new file. No postrotate signal is needed.
+    nocreate
+    nosharedscripts
+}

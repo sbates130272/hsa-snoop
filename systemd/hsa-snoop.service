@@ -1,0 +1,25 @@
+[Unit]
+Description=hsa-snoop — system-wide HSA/HIP AQL queue monitor
+Documentation=https://github.com/sbates130272/hsa-snoop
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /var/log/hsa-snoop
+ExecStart=/usr/local/bin/hsa-snoop --all
+Restart=on-failure
+RestartSec=5s
+
+# hsa-snoop needs root for tracefs, pagemap, and process_vm_readv.
+User=root
+
+# Log stderr (queue discovery events) through journald.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hsa-snoop
+
+# Give the service time to flush traces on shutdown before SIGKILL.
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=multi-user.target
