@@ -14,23 +14,23 @@
 namespace hsasnoop {
 
 class KernelSymbolResolver {
- public:
-  explicit KernelSymbolResolver(int pid) : pid_(pid) {}
+  public:
+    explicit KernelSymbolResolver(int pid) : pid_(pid) {}
 
-  // Returns a demangled kernel name for kernel_object, or "kernel_0x..." if it
-  // cannot be resolved. Results are cached; a miss triggers a rescan of the
-  // process's loaded code objects.
-  std::string Resolve(uint64_t kernel_object);
+    // Returns a demangled kernel name for kernel_object, or "kernel_0x..." if
+    // it cannot be resolved. Results are cached; a miss triggers a rescan of
+    // the process's loaded code objects.
+    std::string Resolve(uint64_t kernel_object);
 
- private:
-  void ScanCodeObjects();
+  private:
+    void ScanCodeObjects();
 
-  int pid_;
-  std::mutex mu_;
-  std::unordered_map<uint64_t, std::string> cache_;  // kernel_object -> name
-  int scanned_generation_ = 0;
+    int pid_;
+    std::mutex mu_;
+    std::unordered_map<uint64_t, std::string> cache_; // kernel_object -> name
+    int scanned_generation_ = 0;
 };
 
 std::string Demangle(const std::string& mangled);
 
-}  // namespace hsasnoop
+} // namespace hsasnoop
