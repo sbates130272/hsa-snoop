@@ -4,3 +4,4 @@ hsa-snoop
 *.json
 examples/vecwork
 examples/square
+build/
