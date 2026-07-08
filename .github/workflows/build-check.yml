@@ -50,6 +50,47 @@ jobs:
       run: |
         test -x /tmp/hsa-snoop-install/bin/hsa-snoop
         test -f /tmp/hsa-snoop-install/lib/systemd/system/hsa-snoop.service
+        test -f /tmp/hsa-snoop-install/lib/systemd/system/hsa-snoop-prometheus.service
         test -f /tmp/hsa-snoop-install/etc/hsa-snoop.conf
         test -f /tmp/hsa-snoop-install/etc/logrotate.d/hsa-snoop
         /tmp/hsa-snoop-install/bin/hsa-snoop --help
+
+  build-check-prometheus:
+    name: build-check for hsa-snoop (Prometheus exporter)
+    runs-on: ubuntu-latest
+    container:
+      image: rocm/dev-ubuntu-24.04:7.2
+      options: --user root
+    env:
+      LD_LIBRARY_PATH: /opt/rocm/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y cmake git
+
+    - name: Configure with CMake (Prometheus enabled)
+      run: |
+        cmake -B build \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DGPU_TARGETS=gfx942 \
+          -DHSA_SNOOP_PROMETHEUS=ON
+
+    - name: Build
+      run: cmake --build build --parallel $(nproc)
+
+    - name: Install
+      run: cmake --install build --prefix /tmp/hsa-snoop-install
+
+    - name: Verify install
+      run: |
+        test -x /tmp/hsa-snoop-install/bin/hsa-snoop
+        test -f /tmp/hsa-snoop-install/lib/systemd/system/hsa-snoop.service
+        test -f /tmp/hsa-snoop-install/lib/systemd/system/hsa-snoop-prometheus.service
+        test -f /tmp/hsa-snoop-install/etc/hsa-snoop.conf
+        test -f /tmp/hsa-snoop-install/etc/logrotate.d/hsa-snoop
+        /tmp/hsa-snoop-install/bin/hsa-snoop --help
+        /tmp/hsa-snoop-install/bin/hsa-snoop --prometheus --all 2>&1 | grep -q "Prometheus metrics at"

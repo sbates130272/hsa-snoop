@@ -20,6 +20,9 @@
 #include "parser.h"
 #include "proc_mem.h"
 #include "trace_writer.h"
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+#include "prometheus_exporter.h"
+#endif
 
 using namespace hsasnoop;
 
@@ -55,7 +58,14 @@ void Usage(const char* p) {
         "KFD\n"
         "                     auto-selected when running in WSL2\n"
         "  --librocdxg <path> Path to librocdxg.so.* (bpftrace mode; "
-        "auto-detected)\n",
+        "auto-detected)\n"
+        "  --prometheus       Expose metrics via Prometheus HTTP endpoint\n"
+        "                     instead of writing trace files\n"
+        "                     (requires -DHSA_SNOOP_PROMETHEUS=ON at build "
+        "time)\n"
+        "  --prometheus-port <n>\n"
+        "                     Port for Prometheus /metrics endpoint "
+        "(default 9488)\n",
         p, p, p);
 }
 } // namespace
@@ -63,6 +73,10 @@ void Usage(const char* p) {
 int main(int argc, char** argv) {
     int pid_filter = 0, poll_us = 20, duration = 0;
     bool all_mode = false;
+    bool prometheus_mode = false;
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+    uint16_t prometheus_port = 9488;
+#endif
     std::string out, out_dir, tracefs = "/sys/kernel/tracing";
     std::string mode_str, librocdxg_path;
     Format fmt = Format::kPerfetto;
@@ -88,6 +102,12 @@ int main(int argc, char** argv) {
             mode_str = argv[++i];
         else if (a == "--librocdxg" && i + 1 < argc)
             librocdxg_path = argv[++i];
+        else if (a == "--prometheus")
+            prometheus_mode = true;
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+        else if (a == "--prometheus-port" && i + 1 < argc)
+            prometheus_port = static_cast<uint16_t>(atoi(argv[++i]));
+#endif
         else if (a == "--format" && i + 1 < argc)
             fmt = std::string(argv[++i]) == "json" ? Format::kJson
                                                    : Format::kPerfetto;
@@ -132,6 +152,14 @@ int main(int argc, char** argv) {
                 librocdxg_path.c_str());
     }
 
+#ifndef HSA_SNOOP_PROMETHEUS_ENABLED
+    if (prometheus_mode) {
+        fprintf(stderr, "hsa-snoop: --prometheus requires building with "
+                        "-DHSA_SNOOP_PROMETHEUS=ON\n");
+        return 2;
+    }
+#endif
+
     if (geteuid() != 0) {
         fprintf(stderr, "hsa-snoop: must run as root (needs tracefs, pagemap, "
                         "process_vm_readv). Try sudo.\n");
@@ -151,17 +179,30 @@ int main(int argc, char** argv) {
 
     // In --all mode each queue's trace is written to <out-dir>/<comm>-<uid>.ext
     // so that concurrent workloads don't clobber each other.
-    if (all_mode) {
+    if (all_mode && !prometheus_mode) {
         if (out_dir.empty())
             out_dir = "/var/log/hsa-snoop";
         fprintf(stderr, "hsa-snoop: --all mode, traces → %s/\n",
                 out_dir.c_str());
-    } else if (out.empty()) {
+    } else if (!prometheus_mode && out.empty()) {
         out = fmt == Format::kJson ? "hsa-snoop.json" : "hsa-snoop.pftrace";
     }
 
     signal(SIGINT, OnSignal);
     signal(SIGTERM, OnSignal);
+
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+    std::unique_ptr<PrometheusExporter> prom_exporter;
+    if (prometheus_mode) {
+        const std::string disc_label =
+            disc_mode == DiscoveryMode::kBpftrace ? "dxg" : "kprobe";
+        prom_exporter = std::make_unique<PrometheusExporter>(
+            prometheus_port, 10.0, disc_label);
+        fprintf(stderr,
+                "hsa-snoop: Prometheus metrics at http://0.0.0.0:%u/metrics\n",
+                prometheus_port);
+    }
+#endif
 
     // In --all mode we keep one TraceWriter per discovered queue so that each
     // process gets its own output file. In single-process modes one shared
@@ -188,11 +229,17 @@ int main(int argc, char** argv) {
         return *per_queue_writers[q.uid];
     };
 
-    if (!all_mode)
+    if (!all_mode && !prometheus_mode)
         single_writer = std::make_unique<TraceWriter>(fmt);
 
     RingParser parser(
         [&](const PacketRecord& r) {
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+            if (prom_exporter) {
+                prom_exporter->Add(r);
+                return;
+            }
+#endif
             if (all_mode) {
                 std::lock_guard<std::mutex> lk(writers_mu);
                 auto it = per_queue_writers.find(r.queue_uid);
@@ -211,6 +258,20 @@ int main(int argc, char** argv) {
         if (!q.is_aql())
             return; // only host<->GPU AQL queues
         q.ring_phys = VirtToPhys(q.pid, q.ring_base);
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+        if (prom_exporter) {
+            prom_exporter->RegisterQueue(q);
+            parser.AddQueue(q);
+            ++queue_count;
+            fprintf(stderr,
+                    "[queue] pid=%d comm=%s uid=%u ring_va=0x%lx "
+                    "ring_phys=0x%lx size=%uB slots=%u gpu=%u\n",
+                    q.pid, q.comm.c_str(), (unsigned)q.uid, q.ring_base,
+                    q.ring_phys, q.ring_size, (unsigned)q.num_slots(),
+                    q.gpu_id);
+            return;
+        }
+#endif
         TraceWriter& w = get_writer(q);
         if (!all_mode)
             w.RegisterQueue(
@@ -314,6 +375,16 @@ int main(int argc, char** argv) {
 
     discovery.Stop();
     parser.Stop();
+
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+    if (prometheus_mode) {
+        fprintf(stderr,
+                "hsa-snoop: %d AQL queue(s) observed. "
+                "Prometheus mode — no trace files written.\n",
+                queue_count);
+        return 0;
+    }
+#endif
 
     if (all_mode) {
         std::lock_guard<std::mutex> lk(writers_mu);
