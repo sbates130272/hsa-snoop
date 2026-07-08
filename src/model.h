@@ -28,7 +28,9 @@ struct QueueInfo {
         return ring_size ? ring_size / aql::kPacketSize : 0;
     }
     bool is_aql() const {
-        return qtype == 2; /* KFD_IOC_QUEUE_TYPE_COMPUTE_AQL */
+        // KFD_IOC_QUEUE_TYPE_COMPUTE_AQL == 2 (native amdgpu/KFD)
+        // HSA_QUEUE_COMPUTE_AQL          == 21 (librocdxg / WSL2 WDDM path)
+        return qtype == 2 || qtype == 21;
     }
 };
 
