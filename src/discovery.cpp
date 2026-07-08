@@ -93,10 +93,9 @@ std::string FindLibrocdxg() {
     }
     // Fall back: search /opt -name 'librocdxg.so.*' for a real file.
     // -print -quit stops after the first match, avoiding a full traversal.
-    FILE* fp = popen(
-        "find /opt -maxdepth 4 -name 'librocdxg.so.*' -not -type l"
-        " -print -quit 2>/dev/null",
-        "r");
+    FILE* fp = popen("find /opt -maxdepth 4 -name 'librocdxg.so.*' -not -type l"
+                     " -print -quit 2>/dev/null",
+                     "r");
     if (fp) {
         char buf[512] = {};
         if (fgets(buf, sizeof(buf) - 1, fp)) {
@@ -563,8 +562,8 @@ void Discovery::RunBpftrace() {
             if (pid_filter_) {
                 // Verify the event plausibly belongs to our target by comparing
                 // the bpftrace-reported comm against /proc/<pid_filter_>/comm.
-                // This guards against misattributing queues from other processes
-                // that happen to fire while we're watching.
+                // This guards against misattributing queues from other
+                // processes that happen to fire while we're watching.
                 char tpath[64];
                 snprintf(tpath, sizeof(tpath), "/proc/%d/comm", pid_filter_);
                 std::ifstream tf(tpath);
