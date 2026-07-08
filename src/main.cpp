@@ -213,7 +213,8 @@ int main(int argc, char** argv) {
         q.ring_phys = VirtToPhys(q.pid, q.ring_base);
         TraceWriter& w = get_writer(q);
         if (!all_mode)
-            w.RegisterQueue(q); // in all_mode RegisterQueue called in get_writer
+            w.RegisterQueue(
+                q); // in all_mode RegisterQueue called in get_writer
         parser.AddQueue(q);
         ++queue_count;
         fprintf(stderr,
@@ -333,8 +334,7 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "hsa-snoop: wrote %s\n", path.c_str());
             }
         }
-        fprintf(stderr,
-                "hsa-snoop: %d AQL queue(s), %zu packet(s) captured.\n",
+        fprintf(stderr, "hsa-snoop: %d AQL queue(s), %zu packet(s) captured.\n",
                 queue_count, total_packets);
         return failures ? 1 : 0;
     }
