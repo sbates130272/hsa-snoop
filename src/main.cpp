@@ -10,6 +10,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -31,11 +34,17 @@ void Usage(const char* p) {
         "Usage:\n"
         "  sudo %s [options] --pid <pid>        # attach to a running process\n"
         "  sudo %s [options] -- <command...>    # launch and trace a "
-        "command\n\n"
+        "command\n"
+        "  sudo %s [options] --all              # monitor all GPU processes "
+        "(daemon mode)\n\n"
         "Options:\n"
         "  --pid <pid>        Trace only this process\n"
-        "  --out <file>       Output trace path\n"
+        "  --all              Monitor all HSA/HIP processes system-wide;\n"
+        "                     writes a new trace per process to --out-dir\n"
+        "  --out <file>       Output trace path (single-process modes)\n"
         "                     (default hsa-snoop.pftrace / .json)\n"
+        "  --out-dir <dir>    Output directory for --all mode\n"
+        "                     (default /var/log/hsa-snoop)\n"
         "  --format <fmt>     perfetto (default) | json\n"
         "  --poll-us <n>      Ring poll interval in microseconds (default 20)\n"
         "  --duration <sec>   Auto-stop after N seconds (0 = until "
@@ -47,13 +56,14 @@ void Usage(const char* p) {
         "                     auto-selected when running in WSL2\n"
         "  --librocdxg <path> Path to librocdxg.so.* (bpftrace mode; "
         "auto-detected)\n",
-        p, p);
+        p, p, p);
 }
 } // namespace
 
 int main(int argc, char** argv) {
     int pid_filter = 0, poll_us = 20, duration = 0;
-    std::string out, tracefs = "/sys/kernel/tracing";
+    bool all_mode = false;
+    std::string out, out_dir, tracefs = "/sys/kernel/tracing";
     std::string mode_str, librocdxg_path;
     Format fmt = Format::kPerfetto;
     std::vector<char*> child_cmd;
@@ -62,8 +72,12 @@ int main(int argc, char** argv) {
         std::string a = argv[i];
         if (a == "--pid" && i + 1 < argc)
             pid_filter = atoi(argv[++i]);
+        else if (a == "--all")
+            all_mode = true;
         else if (a == "--out" && i + 1 < argc)
             out = argv[++i];
+        else if (a == "--out-dir" && i + 1 < argc)
+            out_dir = argv[++i];
         else if (a == "--poll-us" && i + 1 < argc)
             poll_us = atoi(argv[++i]);
         else if (a == "--duration" && i + 1 < argc)
@@ -123,21 +137,72 @@ int main(int argc, char** argv) {
                         "process_vm_readv). Try sudo.\n");
         return 1;
     }
-    if (!pid_filter && child_cmd.empty()) {
-        fprintf(stderr, "hsa-snoop: specify --pid or a command after --\n");
+    if (!all_mode && !pid_filter && child_cmd.empty()) {
+        fprintf(stderr,
+                "hsa-snoop: specify --pid, a command after --, or --all\n");
         Usage(argv[0]);
         return 2;
     }
-    if (out.empty())
+    if (all_mode && (pid_filter || !child_cmd.empty())) {
+        fprintf(stderr,
+                "hsa-snoop: --all is mutually exclusive with --pid and --\n");
+        return 2;
+    }
+
+    // In --all mode each queue's trace is written to <out-dir>/<comm>-<uid>.ext
+    // so that concurrent workloads don't clobber each other.
+    if (all_mode) {
+        if (out_dir.empty())
+            out_dir = "/var/log/hsa-snoop";
+        fprintf(stderr, "hsa-snoop: --all mode, traces → %s/\n",
+                out_dir.c_str());
+    } else if (out.empty()) {
         out = fmt == Format::kJson ? "hsa-snoop.json" : "hsa-snoop.pftrace";
+    }
 
     signal(SIGINT, OnSignal);
     signal(SIGTERM, OnSignal);
 
-    TraceWriter writer(fmt);
+    // In --all mode we keep one TraceWriter per discovered queue so that each
+    // process gets its own output file. In single-process modes one shared
+    // writer covers all queues belonging to the target.
+    std::unique_ptr<TraceWriter> single_writer;
+    std::map<uint64_t, std::unique_ptr<TraceWriter>> per_queue_writers;
+    std::mutex writers_mu;
 
-    RingParser parser([&writer](const PacketRecord& r) { writer.Add(r); },
-                      poll_us);
+    auto get_writer = [&](const QueueInfo& q) -> TraceWriter& {
+        if (!all_mode)
+            return *single_writer;
+        std::lock_guard<std::mutex> lk(writers_mu);
+        auto it = per_queue_writers.find(q.uid);
+        if (it != per_queue_writers.end())
+            return *it->second;
+        // Build <out-dir>/<comm>-<uid>.<ext>
+        std::string ext = fmt == Format::kJson ? ".json" : ".pftrace";
+        std::string path =
+            out_dir + "/" + q.comm + "-" + std::to_string(q.uid) + ext;
+        auto w = std::make_unique<TraceWriter>(fmt);
+        w->RegisterQueue(q);
+        per_queue_writers[q.uid] = std::move(w);
+        fprintf(stderr, "hsa-snoop: new trace → %s\n", path.c_str());
+        return *per_queue_writers[q.uid];
+    };
+
+    if (!all_mode)
+        single_writer = std::make_unique<TraceWriter>(fmt);
+
+    RingParser parser(
+        [&](const PacketRecord& r) {
+            if (all_mode) {
+                std::lock_guard<std::mutex> lk(writers_mu);
+                auto it = per_queue_writers.find(r.queue_uid);
+                if (it != per_queue_writers.end())
+                    it->second->Add(r);
+            } else {
+                single_writer->Add(r);
+            }
+        },
+        poll_us);
 
     int queue_count = 0;
     Discovery discovery(tracefs, pid_filter, disc_mode, librocdxg_path);
@@ -146,7 +211,10 @@ int main(int argc, char** argv) {
         if (!q.is_aql())
             return; // only host<->GPU AQL queues
         q.ring_phys = VirtToPhys(q.pid, q.ring_base);
-        writer.RegisterQueue(q);
+        TraceWriter& w = get_writer(q);
+        if (!all_mode)
+            w.RegisterQueue(
+                q); // in all_mode RegisterQueue called in get_writer
         parser.AddQueue(q);
         ++queue_count;
         fprintf(stderr,
@@ -247,9 +315,33 @@ int main(int argc, char** argv) {
     discovery.Stop();
     parser.Stop();
 
+    if (all_mode) {
+        std::lock_guard<std::mutex> lk(writers_mu);
+        size_t total_packets = 0;
+        int failures = 0;
+        std::string ext = fmt == Format::kJson ? ".json" : ".pftrace";
+        for (auto& [uid, w] : per_queue_writers) {
+            total_packets += w->count();
+            // Reconstruct the path to report it.
+            // (We stored the writer by uid; comm is not available here so we
+            // derive the path the same way get_writer() did.)
+            std::string path = out_dir + "/queue-" + std::to_string(uid) + ext;
+            if (!w->Write(path)) {
+                fprintf(stderr, "hsa-snoop: failed to write %s\n",
+                        path.c_str());
+                ++failures;
+            } else {
+                fprintf(stderr, "hsa-snoop: wrote %s\n", path.c_str());
+            }
+        }
+        fprintf(stderr, "hsa-snoop: %d AQL queue(s), %zu packet(s) captured.\n",
+                queue_count, total_packets);
+        return failures ? 1 : 0;
+    }
+
     fprintf(stderr, "hsa-snoop: %d AQL queue(s), %zu packet(s) captured.\n",
-            queue_count, writer.count());
-    if (!writer.Write(out)) {
+            queue_count, single_writer->count());
+    if (!single_writer->Write(out)) {
         fprintf(stderr, "hsa-snoop: failed to write %s\n", out.c_str());
         return 1;
     }

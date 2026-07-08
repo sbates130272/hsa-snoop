@@ -13,6 +13,7 @@ on:
       - 'CMakeLists.txt'
       - 'examples/**'
       - 'src/**'
+      - 'systemd/**'
       - '.github/workflows/build-check.yml'
 
 jobs:
@@ -41,3 +42,14 @@ jobs:
 
     - name: Build
       run: cmake --build build --parallel $(nproc)
+
+    - name: Install
+      run: cmake --install build --prefix /tmp/hsa-snoop-install
+
+    - name: Verify install
+      run: |
+        test -x /tmp/hsa-snoop-install/bin/hsa-snoop
+        test -f /tmp/hsa-snoop-install/lib/systemd/system/hsa-snoop.service
+        test -f /tmp/hsa-snoop-install/etc/hsa-snoop.conf
+        test -f /tmp/hsa-snoop-install/etc/logrotate.d/hsa-snoop
+        /tmp/hsa-snoop-install/bin/hsa-snoop --help
