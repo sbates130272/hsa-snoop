@@ -2,3 +2,6 @@
 hsa-snoop
 *.pftrace
 *.json
+examples/vecwork
+examples/square
+build/

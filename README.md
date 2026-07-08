@@ -98,11 +98,16 @@ is **not** needed on this platform (gfx90a, amdgpu 6.16 DKMS).
 ## Build
 
 ```
-make
+cmake -B build
+cmake --build build --parallel $(nproc)
 ```
 
-Requires a C++17 compiler. No third-party libraries. `protoc` is optional
-(only used to sanity-check the emitted trace).
+Requires a C++17 compiler and CMake 3.21+. No third-party libraries. `protoc`
+is optional (only used to sanity-check the emitted trace).
+
+If ROCm is installed, the HIP examples under `examples/` are built
+automatically. GPU targets are auto-detected via `rocm_agent_enumerator`; pass
+`-DGPU_TARGETS=gfxNNNN` to override.
 
 ## Usage
 
