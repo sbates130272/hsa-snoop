@@ -196,8 +196,8 @@ int main(int argc, char** argv) {
     if (prometheus_mode) {
         const std::string disc_label =
             disc_mode == DiscoveryMode::kBpftrace ? "dxg" : "kprobe";
-        prom_exporter = std::make_unique<PrometheusExporter>(
-            prometheus_port, 10.0, disc_label);
+        prom_exporter = std::make_unique<PrometheusExporter>(prometheus_port,
+                                                             10.0, disc_label);
         fprintf(stderr,
                 "hsa-snoop: Prometheus metrics at http://0.0.0.0:%u/metrics\n",
                 prometheus_port);
