@@ -57,11 +57,14 @@ std::string DetectRocmVersion() {
             std::string line;
             while (std::getline(f, line)) {
                 int v = 0;
-                if (sscanf(line.c_str(), "#define ROCM_VERSION_MAJOR %d", &v) == 1)
+                if (sscanf(line.c_str(), "#define ROCM_VERSION_MAJOR %d", &v) ==
+                    1)
                     major = v;
-                else if (sscanf(line.c_str(), "#define ROCM_VERSION_MINOR %d", &v) == 1)
+                else if (sscanf(line.c_str(), "#define ROCM_VERSION_MINOR %d",
+                                &v) == 1)
                     minor = v;
-                else if (sscanf(line.c_str(), "#define ROCM_VERSION_PATCH %d", &v) == 1)
+                else if (sscanf(line.c_str(), "#define ROCM_VERSION_PATCH %d",
+                                &v) == 1)
                     patch = v;
             }
             if (major >= 0 && minor >= 0 && patch >= 0) {
@@ -84,7 +87,7 @@ std::string DetectRocmVersion() {
 // so it must be called before privileges are dropped (i.e. at construction).
 static std::string DetectGpuTypeFromRocminfo() {
     static std::string cached;
-    static bool        done = false;
+    static bool done = false;
     if (done)
         return cached.empty() ? "unknown" : cached;
     done = true;
@@ -95,7 +98,7 @@ static std::string DetectGpuTypeFromRocminfo() {
     if (sudo_uid_str) {
         char xdg[64];
         snprintf(xdg, sizeof(xdg), "/run/user/%s", sudo_uid_str);
-        setenv("XDG_RUNTIME_DIR",       xdg, 1);
+        setenv("XDG_RUNTIME_DIR", xdg, 1);
         setenv("HSA_ENABLE_DXG_DETECTION", "1", 1);
     }
 
@@ -106,11 +109,13 @@ static std::string DetectGpuTypeFromRocminfo() {
     char buf[256];
     while (fgets(buf, sizeof(buf), pipe)) {
         const char* p = buf;
-        while (*p == ' ' || *p == '\t') ++p;
+        while (*p == ' ' || *p == '\t')
+            ++p;
         if (strncmp(p, "Name:", 5) != 0)
             continue;
         p += 5;
-        while (*p == ' ' || *p == '\t') ++p;
+        while (*p == ' ' || *p == '\t')
+            ++p;
         if (strncmp(p, "gfx", 3) == 0) {
             cached = p;
             while (!cached.empty() &&
@@ -162,15 +167,15 @@ std::string DetectGpuType(uint32_t gpu_id) {
 // PrometheusExporter constructor
 // ---------------------------------------------------------------------------
 
-static std::map<std::string, std::string> MakeConstLabels(
-    const std::string& discovery_mode) {
+static std::map<std::string, std::string>
+MakeConstLabels(const std::string& discovery_mode) {
     char host[256] = {};
     gethostname(host, sizeof(host) - 1);
     return {
-        {"host",             host},
-        {"platform",         DetectPlatform()},
-        {"rocm_version",     DetectRocmVersion()},
-        {"discovery_mode",   discovery_mode},
+        {"host", host},
+        {"platform", DetectPlatform()},
+        {"rocm_version", DetectRocmVersion()},
+        {"discovery_mode", discovery_mode},
     };
 }
 
@@ -190,24 +195,22 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
               .Help("Total HSA kernel dispatch packets observed")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
-      errors_family_(
-          prometheus::BuildCounter()
-              .Name("hsa_errors_total")
-              .Help("Packet arrivals for unknown queues (missed RegisterQueue races)")
-              .Labels(MakeConstLabels(discovery_mode))
-              .Register(*registry_)),
-      barrier_family_(
-          prometheus::BuildCounter()
-              .Name("hsa_barrier_packets_total")
-              .Help("HSA barrier AQL packets observed")
-              .Labels(MakeConstLabels(discovery_mode))
-              .Register(*registry_)),
-      active_queues_family_(
-          prometheus::BuildGauge()
-              .Name("hsa_active_queues")
-              .Help("Number of currently tracked AQL queues")
-              .Labels(MakeConstLabels(discovery_mode))
-              .Register(*registry_)),
+      errors_family_(prometheus::BuildCounter()
+                         .Name("hsa_errors_total")
+                         .Help("Packet arrivals for unknown queues (missed "
+                               "RegisterQueue races)")
+                         .Labels(MakeConstLabels(discovery_mode))
+                         .Register(*registry_)),
+      barrier_family_(prometheus::BuildCounter()
+                          .Name("hsa_barrier_packets_total")
+                          .Help("HSA barrier AQL packets observed")
+                          .Labels(MakeConstLabels(discovery_mode))
+                          .Register(*registry_)),
+      active_queues_family_(prometheus::BuildGauge()
+                                .Name("hsa_active_queues")
+                                .Help("Number of currently tracked AQL queues")
+                                .Labels(MakeConstLabels(discovery_mode))
+                                .Register(*registry_)),
       launch_rate_family_(
           prometheus::BuildGauge()
               .Name("hsa_kernel_launches_per_second")
@@ -217,21 +220,23 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
       last_launch_ts_family_(
           prometheus::BuildGauge()
               .Name("hsa_last_kernel_launch_timestamp_seconds")
-              .Help("Unix timestamp (wall clock) of the most recent kernel launch on this GPU")
+              .Help("Unix timestamp (wall clock) of the most recent kernel "
+                    "launch on this GPU")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
       last_kernel_info_family_(
           prometheus::BuildGauge()
               .Name("hsa_last_kernel_launch_info")
-              .Help("Most recently launched kernel name per GPU (value always 1)")
+              .Help(
+                  "Most recently launched kernel name per GPU (value always 1)")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
-      duration_family_(
-          prometheus::BuildHistogram()
-              .Name("hsa_kernel_duration_seconds")
-              .Help("GPU kernel execution duration from enqueue to completion observation")
-              .Labels(MakeConstLabels(discovery_mode))
-              .Register(*registry_)),
+      duration_family_(prometheus::BuildHistogram()
+                           .Name("hsa_kernel_duration_seconds")
+                           .Help("GPU kernel execution duration from enqueue "
+                                 "to completion observation")
+                           .Labels(MakeConstLabels(discovery_mode))
+                           .Register(*registry_)),
       rate_window_sec_(rate_window_sec) {
     // Start the HTTP exposition endpoint.
     std::string addr = "0.0.0.0:" + std::to_string(port);
@@ -272,7 +277,8 @@ void PrometheusExporter::RegisterQueue(const QueueInfo& q) {
 
     auto& g = active_queue_gauges_[gpu_str];
     if (!g)
-        g = &active_queues_family_.Add({{"gpu_id", gpu_str}, {"gpu_type", gpu_type}});
+        g = &active_queues_family_.Add(
+            {{"gpu_id", gpu_str}, {"gpu_type", gpu_type}});
     g->Increment();
 }
 
@@ -286,21 +292,22 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
     if (it == queue_meta_.end()) {
         // Packet arrived before the queue was registered — count as an error.
         // We don't have a gpu_id, so use "unknown".
-        errors_family_.Add({{"gpu_id", "unknown"}, {"pid", "unknown"}}).Increment();
+        errors_family_.Add({{"gpu_id", "unknown"}, {"pid", "unknown"}})
+            .Increment();
         return;
     }
     const QueueMeta& meta = it->second;
-    std::string gpu_str  = std::to_string(meta.gpu_id);
-    std::string pid_str  = std::to_string(meta.pid);
+    std::string gpu_str = std::to_string(meta.gpu_id);
+    std::string pid_str = std::to_string(meta.pid);
 
     if (rec.type == aql::PacketType::KernelDispatch) {
         // hsa_kernel_launches_total
         kernel_launches_family_
             .Add({{"kernel_name", rec.kernel_name},
-                  {"gpu_id",      gpu_str},
-                  {"gpu_type",    meta.gpu_type},
-                  {"pid",         pid_str},
-                  {"comm",        meta.comm}})
+                  {"gpu_id", gpu_str},
+                  {"gpu_type", meta.gpu_type},
+                  {"pid", pid_str},
+                  {"comm", meta.comm}})
             .Increment();
 
         // hsa_kernel_duration_seconds
@@ -310,22 +317,22 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
             double dur = rec.complete_ts - rec.submit_ts;
             duration_family_
                 .Add({{"kernel_name", rec.kernel_name},
-                      {"gpu_id",      gpu_str},
-                      {"gpu_type",    meta.gpu_type}},
+                      {"gpu_id", gpu_str},
+                      {"gpu_type", meta.gpu_type}},
                      kBuckets)
                 .Observe(dur);
         }
 
         // hsa_last_kernel_launch_timestamp_seconds
         {
-            struct timespec now_rt{};
+            struct timespec now_rt {};
             clock_gettime(CLOCK_REALTIME, &now_rt);
-            double now_sec = static_cast<double>(now_rt.tv_sec) +
-                             now_rt.tv_nsec * 1e-9;
+            double now_sec =
+                static_cast<double>(now_rt.tv_sec) + now_rt.tv_nsec * 1e-9;
             auto*& ts_g = last_launch_ts_gauges_[gpu_str];
             if (!ts_g)
-                ts_g = &last_launch_ts_family_.Add({{"gpu_id", gpu_str},
-                                                    {"gpu_type", meta.gpu_type}});
+                ts_g = &last_launch_ts_family_.Add(
+                    {{"gpu_id", gpu_str}, {"gpu_type", meta.gpu_type}});
             ts_g->Set(now_sec);
         }
 
@@ -336,8 +343,8 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
                 if (lks.gauge)
                     last_kernel_info_family_.Remove(lks.gauge);
                 lks.gauge = &last_kernel_info_family_.Add(
-                    {{"gpu_id",      gpu_str},
-                     {"gpu_type",    meta.gpu_type},
+                    {{"gpu_id", gpu_str},
+                     {"gpu_type", meta.gpu_type},
                      {"kernel_name", rec.kernel_name}});
                 lks.gauge->Set(1.0);
                 lks.kernel_name = rec.kernel_name;
@@ -354,10 +361,10 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
 
     if (rec.barrier) {
         barrier_family_
-            .Add({{"gpu_id",   gpu_str},
+            .Add({{"gpu_id", gpu_str},
                   {"gpu_type", meta.gpu_type},
-                  {"pid",      pid_str},
-                  {"comm",     meta.comm}})
+                  {"pid", pid_str},
+                  {"comm", meta.comm}})
             .Increment();
     }
 }
@@ -375,15 +382,14 @@ void PrometheusExporter::RateThread() {
 }
 
 void PrometheusExporter::UpdateRateGauges() {
-    auto now    = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
     auto cutoff = now - std::chrono::duration<double>(rate_window_sec_);
 
     // Prune old events and count remaining per gpu_id.
     std::unordered_map<uint32_t, int> counts;
     {
         std::lock_guard<std::mutex> rlk(rate_mu_);
-        while (!launch_events_.empty() &&
-               launch_events_.front().ts < cutoff) {
+        while (!launch_events_.empty() && launch_events_.front().ts < cutoff) {
             launch_events_.pop_front();
         }
         for (const auto& ev : launch_events_)
@@ -400,8 +406,8 @@ void PrometheusExporter::UpdateRateGauges() {
         auto*& g = rate_gauges_[gpu_str];
         if (!g) {
             std::string gpu_type = DetectGpuType(gpu_id);
-            g = &launch_rate_family_.Add({{"gpu_id",   gpu_str},
-                                          {"gpu_type", gpu_type}});
+            g = &launch_rate_family_.Add(
+                {{"gpu_id", gpu_str}, {"gpu_type", gpu_type}});
         }
         g->Set(static_cast<double>(count) / rate_window_sec_);
     }

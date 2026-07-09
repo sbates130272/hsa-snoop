@@ -6,12 +6,14 @@ BTF
 bpftrace
 CAP_SYS_ADMIN
 Chrome
+CivetWeb
 clang
 cmake
 CMake
 codespell
 conf
 cp
+cpp
 Ctrl
 debugfs
 debuginfo
@@ -19,6 +21,7 @@ demangled
 dev
 dir
 DKMS
+DHSA
 DXG
 ELF
 ELFs
@@ -28,14 +31,18 @@ ftrace
 fu
 gfx
 GiB
+GID
 GPU
+gpu
 GTT
+Grafana
 hipcc
 hipMalloc
 hipDeviceSynchronize
 HIP
 HSA
 hsa
+http
 https
 inlined
 ioctl
@@ -45,6 +52,7 @@ json
 kprobe
 KFD
 librocdxg
+localhost
 logrotate
 Makefile
 MiB
@@ -64,6 +72,7 @@ PIDs
 PM4
 poller
 procfs
+prometheus
 protobuf
 protoc
 ROCm
@@ -81,6 +90,7 @@ tmp
 tracefs
 tracepoint
 uapi
+UID
 ui
 uprobe
 usr
