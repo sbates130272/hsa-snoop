@@ -1,0 +1,32 @@
+[Unit]
+Description=hsa-snoop — Prometheus metrics exporter for HSA/HIP AQL queues
+Documentation=https://github.com/sbates130272/hsa-snoop
+After=local-fs.target
+# The two services are independent and can run simultaneously. If both are
+# enabled, hsa-snoop writes trace files while hsa-snoop-prometheus serves
+# live metrics — they use separate discovery probes.
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hsa-snoop --all --prometheus
+Restart=on-failure
+RestartSec=5s
+
+# hsa-snoop needs root for tracefs, pagemap, and process_vm_readv.
+# SUDO_UID/SUDO_GID are set here so DetectGpuType() can call rocminfo
+# as the system console user to reach the GPU in WSL2/DXG mode.
+# Adjust the UID/GID to match the primary GPU-capable user on this machine.
+User=root
+Environment=SUDO_UID=1000
+Environment=SUDO_GID=1000
+
+# Log stderr (discovery events, metric updates) through journald.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hsa-snoop-prometheus
+
+# Give the service time to finish in-flight scrapes on shutdown.
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=multi-user.target

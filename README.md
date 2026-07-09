@@ -110,6 +110,20 @@ If ROCm is installed, the HIP examples under `examples/` are built
 automatically. GPU targets are auto-detected via `rocm_agent_enumerator`; pass
 `-DGPU_TARGETS=gfxNNNN` to override.
 
+### Prometheus exporter build
+
+To enable the Prometheus metrics exporter, pass `-DHSA_SNOOP_PROMETHEUS=ON`.
+This fetches [prometheus-cpp](https://github.com/jupp0r/prometheus-cpp)
+(v1.2.4) via CMake `FetchContent` and links it into the binary:
+
+```
+cmake -B build -DHSA_SNOOP_PROMETHEUS=ON
+cmake --build build --parallel $(nproc)
+```
+
+No other dependencies are required; the prometheus-cpp HTTP server
+(CivetWeb) is bundled.
+
 ## Usage
 
 ```
@@ -133,6 +147,10 @@ Options:
                      bpftrace: for WSL2/librocdxg systems without KFD;
                      auto-selected when running inside WSL2
   --librocdxg <path> Path to librocdxg.so.* (bpftrace mode; auto-detected)
+  --prometheus       Expose metrics via Prometheus HTTP endpoint instead of
+                     writing trace files (requires -DHSA_SNOOP_PROMETHEUS=ON)
+  --prometheus-port <n>
+                     Port for the Prometheus /metrics endpoint (default 9488)
 ```
 
 Must run as root (tracefs, pagemap and cross-process reads all require it).
@@ -180,6 +198,44 @@ to `hsaKmtCreateQueueExt` in `librocdxg.so`. The library path is
 auto-detected via `/opt/rocm/lib/librocdxg.so`; pass `--librocdxg <path>` to
 override. `bpftrace` must be installed and the process must run as root.
 
+### Prometheus exporter mode
+
+When built with `-DHSA_SNOOP_PROMETHEUS=ON`, hsa-snoop can expose live GPU
+metrics via a Prometheus-compatible HTTP endpoint instead of writing trace
+files. This integrates with Grafana and any Prometheus-compatible monitoring
+stack.
+
+```
+sudo ./hsa-snoop --all --prometheus                  # serve on default port 9488
+sudo ./hsa-snoop --all --prometheus-port 9100        # custom port
+sudo ./hsa-snoop --pid <pid> --prometheus            # single process
+```
+
+Scrape the metrics endpoint:
+
+```
+curl http://localhost:9488/metrics
+```
+
+Metrics exposed (all carry constant labels `host`, `platform`, `rocm_version`,
+`discovery_mode`):
+
+| Metric | Type | Labels | Description |
+| --- | --- | --- | --- |
+| `hsa_snoop_up` | Gauge | — | 1 when the exporter is running |
+| `hsa_kernel_launches_total` | Counter | `kernel_name`, `gpu_id`, `gpu_type`, `pid`, `comm` | Kernel dispatch count; filter by `kernel_name` for per-kernel totals |
+| `hsa_kernel_duration_seconds` | Histogram | `kernel_name`, `gpu_id`, `gpu_type` | Kernel duration from enqueue to completion (host-observed) |
+| `hsa_kernel_launches_per_second` | Gauge | `gpu_id`, `gpu_type` | Rolling 10 s launch rate |
+| `hsa_last_kernel_launch_timestamp_seconds` | Gauge | `gpu_id`, `gpu_type` | Wall-clock time of the most recent launch |
+| `hsa_last_kernel_launch_info` | Gauge | `gpu_id`, `gpu_type`, `kernel_name` | Most recently launched kernel name (value always 1) |
+| `hsa_active_queues` | Gauge | `gpu_id`, `gpu_type` | Currently tracked AQL queues |
+| `hsa_barrier_packets_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm` | Barrier AQL packets seen |
+| `hsa_errors_total` | Counter | `gpu_id`, `pid` | Packets arriving before queue registration |
+
+Prometheus mode and trace-file mode are **independent** — both can run
+simultaneously using separate hsa-snoop instances (or via the two systemd
+units below). They do not share state or interfere with each other.
+
 ### Quick discovery-only check (no build)
 
 ```
@@ -188,17 +244,23 @@ sudo bpftrace scripts/hsa-snoop.bt
 
 ## Running as a systemd daemon
 
-Template unit files are provided under `systemd/`. To install and enable the
-daemon:
+Two independent unit files are provided under `systemd/`:
+
+| Unit | Mode | Output |
+| --- | --- | --- |
+| `hsa-snoop.service` | `--all` (trace files) | `/var/log/hsa-snoop/*.pftrace` |
+| `hsa-snoop-prometheus.service` | `--all --prometheus` | HTTP `/metrics` on port 9488 |
+
+Both can run simultaneously — they use separate discovery probes and do not
+share state.
+
+### Trace-file daemon
 
 ```bash
-# Install the binary (from your build directory)
+# Install binary and unit files
 sudo cmake --install build --prefix /usr/local
 
-# Install the unit file
-sudo cp systemd/hsa-snoop.service /etc/systemd/system/
-
-# (Optional) install the drop-in override to use /etc/hsa-snoop.conf
+# (Optional) drop-in to pick up /etc/hsa-snoop.conf for runtime tuning
 sudo mkdir -p /etc/systemd/system/hsa-snoop.service.d
 sudo cp systemd/hsa-snoop-override.conf \
         /etc/systemd/system/hsa-snoop.service.d/override.conf
@@ -229,22 +291,58 @@ ceiling of ~4 GiB. Triggered daily by the system logrotate timer. Configuration
 is installed to `/etc/logrotate.d/hsa-snoop`; edit it to adjust size, count,
 or compression.
 
+### Prometheus daemon
+
+Requires a build with `-DHSA_SNOOP_PROMETHEUS=ON`.
+
+```bash
+# Install binary and unit files (if not already done above)
+sudo cmake --install build --prefix /usr/local
+
+# Edit the unit to set SUDO_UID/SUDO_GID to the primary GPU-capable user
+# (needed for gpu_type detection via rocminfo on WSL2/DXG systems).
+# The defaults in the unit file are UID/GID 1000.
+sudo systemctl daemon-reload
+sudo systemctl enable --now hsa-snoop-prometheus
+
+# Check status / live logs
+sudo systemctl status hsa-snoop-prometheus
+sudo journalctl -fu hsa-snoop-prometheus
+
+# Verify the metrics endpoint
+curl http://localhost:9488/metrics
+```
+
+To change the port, override `ExecStart` in a drop-in:
+
+```bash
+sudo mkdir -p /etc/systemd/system/hsa-snoop-prometheus.service.d
+cat <<EOF | sudo tee /etc/systemd/system/hsa-snoop-prometheus.service.d/port.conf
+[Service]
+ExecStart=
+ExecStart=/usr/local/bin/hsa-snoop --all --prometheus --prometheus-port 9100
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart hsa-snoop-prometheus
+```
+
 ## Layout
 
 ```
-src/aql.{h,cpp}              AQL packet formats (mirrors <hsa/hsa.h>)
-src/model.h                  QueueInfo / PacketRecord data model
-src/discovery.{h,cpp}        queue discovery: kprobe (native) or bpftrace (WSL2)
-src/proc_mem.{h,cpp}         process_vm_readv + pagemap (VA->phys)
-src/ksym.{h,cpp}             kernel_object -> demangled name via code-object ELFs
-src/parser.{h,cpp}           per-queue ring poller / AQL decoder / timing
-src/trace_writer.{h,cpp}     Perfetto protobuf + Chrome JSON writers
-src/main.cpp                 CLI / orchestration
-scripts/hsa-snoop.bt         zero-build discovery via bpftrace
-systemd/hsa-snoop.service    systemd unit (daemon / --all mode)
-systemd/hsa-snoop.conf       runtime configuration (ExecStart arguments)
-systemd/hsa-snoop-override.conf  drop-in wiring hsa-snoop.conf into the unit
-systemd/hsa-snoop.logrotate  logrotate policy (512 MiB rotation, 8 kept)
+src/aql.{h,cpp}                    AQL packet formats (mirrors <hsa/hsa.h>)
+src/model.h                        QueueInfo / PacketRecord data model
+src/discovery.{h,cpp}              queue discovery: kprobe (native) or bpftrace (WSL2)
+src/proc_mem.{h,cpp}               process_vm_readv + pagemap (VA->phys)
+src/ksym.{h,cpp}                   kernel_object -> demangled name via code-object ELFs
+src/parser.{h,cpp}                 per-queue ring poller / AQL decoder / timing
+src/trace_writer.{h,cpp}           Perfetto protobuf + Chrome JSON writers
+src/prometheus_exporter.{h,cpp}    Prometheus metrics exporter (optional)
+src/main.cpp                       CLI / orchestration
+scripts/hsa-snoop.bt               zero-build discovery via bpftrace
+systemd/hsa-snoop.service          systemd unit (trace-file daemon / --all mode)
+systemd/hsa-snoop-prometheus.service  systemd unit (Prometheus exporter daemon)
+systemd/hsa-snoop.conf             runtime configuration (ExecStart arguments)
+systemd/hsa-snoop-override.conf    drop-in wiring hsa-snoop.conf into the unit
+systemd/hsa-snoop.logrotate        logrotate policy (512 MiB rotation, 8 kept)
 ```
 
 ## Limitations & notes
