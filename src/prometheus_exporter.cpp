@@ -237,6 +237,13 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                                  "to completion observation")
                            .Labels(MakeConstLabels(discovery_mode))
                            .Register(*registry_)),
+      triggered_family_(
+          prometheus::BuildGauge()
+              .Name("hsa_triggered")
+              .Help("1 if at least one kernel dispatch has been observed on "
+                    "this GPU since startup, 0 otherwise; latches at 1")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
       rate_window_sec_(rate_window_sec) {
     // Start the HTTP exposition endpoint.
     std::string addr = "0.0.0.0:" + std::to_string(port);
@@ -348,6 +355,16 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
                      {"kernel_name", rec.kernel_name}});
                 lks.gauge->Set(1.0);
                 lks.kernel_name = rec.kernel_name;
+            }
+        }
+
+        // hsa_triggered — latch at 1 on first kernel dispatch per GPU
+        {
+            auto*& tg = triggered_gauges_[gpu_str];
+            if (!tg) {
+                tg = &triggered_family_.Add(
+                    {{"gpu_id", gpu_str}, {"gpu_type", meta.gpu_type}});
+                tg->Set(1.0);
             }
         }
 
