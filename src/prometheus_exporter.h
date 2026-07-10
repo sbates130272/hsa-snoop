@@ -85,6 +85,7 @@ class PrometheusExporter {
     prometheus::Family<prometheus::Gauge>& last_launch_ts_family_;
     prometheus::Family<prometheus::Gauge>& last_kernel_info_family_;
     prometheus::Family<prometheus::Histogram>& duration_family_;
+    prometheus::Family<prometheus::Gauge>& triggered_family_;
 
     // Guards all metadata maps and per-gpu gauge pointer caches.
     std::mutex meta_mu_;
@@ -95,6 +96,9 @@ class PrometheusExporter {
         last_launch_ts_gauges_; // gpu_id_str -> gauge
     std::unordered_map<std::string, LastKernelState>
         last_kernel_state_; // gpu_id_str -> state
+    std::unordered_map<std::string, prometheus::Gauge*>
+        triggered_gauges_; // gpu_id_str -> gauge (latches at 1 on first
+                           // dispatch)
 
     // Guards the launch-event deque used for rate computation.
     std::mutex rate_mu_;
