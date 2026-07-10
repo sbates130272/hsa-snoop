@@ -1,0 +1,67 @@
+name: debian-publish
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  publish-deb:
+    name: Publish Debian package to GitHub Releases
+    runs-on: ubuntu-latest
+    container:
+      image: rocm/dev-ubuntu-24.04:7.2
+      options: --user root
+    env:
+      LD_LIBRARY_PATH: /opt/rocm/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y cmake git dpkg-dev gh
+
+    - name: Configure with CMake (Prometheus enabled)
+      run: |
+        cmake -B build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DGPU_TARGETS=gfx942 \
+          -DHSA_SNOOP_PROMETHEUS=ON
+
+    - name: Build
+      run: cmake --build build --parallel $(nproc)
+
+    - name: Install into staging tree
+      run: cmake --install build --prefix /tmp/pkg/usr/local
+
+    - name: Assemble .deb
+      shell: bash
+      run: |
+        mkdir -p /tmp/pkg/DEBIAN
+        cp debian/control debian/postinst debian/prerm debian/conffiles /tmp/pkg/DEBIAN/
+        chmod 0755 /tmp/pkg/DEBIAN/postinst /tmp/pkg/DEBIAN/prerm
+        VERSION=${GITHUB_SHA::8}
+        sed -i "s/^Version:.*/Version: 0~${VERSION}/" /tmp/pkg/DEBIAN/control
+        dpkg-deb --build --root-owner-group /tmp/pkg hsa-snoop_${VERSION}_amd64.deb
+        echo "DEB_FILE=hsa-snoop_${VERSION}_amd64.deb" >> "$GITHUB_ENV"
+        echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+    - name: Verify .deb metadata
+      run: dpkg-deb --info "$DEB_FILE"
+
+    - name: Publish to GitHub Releases
+      run: |
+        gh release delete latest --yes || true
+        gh release create latest \
+          --title "Latest build (${VERSION})" \
+          --notes "Automatically published from main at commit ${GITHUB_SHA}." \
+          --prerelease \
+          "$DEB_FILE"

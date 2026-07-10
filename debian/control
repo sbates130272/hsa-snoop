@@ -1,0 +1,12 @@
+Package: hsa-snoop
+Version: PLACEHOLDER
+Architecture: amd64
+Maintainer: Stephen Bates <sbates@raithlin.com>
+Depends: systemd
+Section: utils
+Priority: optional
+Description: HSA/HIP AQL queue snooper with Prometheus metrics exporter
+ hsa-snoop monitors AMD GPU HSA/HIP AQL command queues at the kernel level
+ using kprobes or bpftrace. When installed via this package it runs as a
+ systemd service in Prometheus mode, exposing live GPU queue metrics at
+ http://localhost:9488/metrics.

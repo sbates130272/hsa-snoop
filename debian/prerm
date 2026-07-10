@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        systemctl stop hsa-snoop-prometheus.service || true
+        systemctl disable hsa-snoop-prometheus.service || true
+        ;;
+esac
+
+exit 0
