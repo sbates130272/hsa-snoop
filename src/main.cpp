@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -176,6 +177,12 @@ int main(int argc, char** argv) {
                 "hsa-snoop: --all is mutually exclusive with --pid and --\n");
         return 2;
     }
+    if (pid_filter && !child_cmd.empty()) {
+        fprintf(stderr,
+                "hsa-snoop: specify either --pid or a command, not both\n");
+        Usage(argv[0]);
+        return 2;
+    }
 
     // In --all mode each queue's trace is written to <out-dir>/<comm>-<uid>.ext
     // so that concurrent workloads don't clobber each other.
@@ -251,6 +258,87 @@ int main(int argc, char** argv) {
         },
         poll_us);
 
+    // Launch mode: fork the child stopped so we can scope discovery to its pid
+    // and arm the probe before it can create any queue. It is resumed
+    // (SIGCONT) once discovery is live. This keeps launch-mode tracing scoped
+    // to the child and closes the create-queue race.
+    pid_t child = -1;
+    uid_t run_uid = geteuid();
+    gid_t run_gid = getegid();
+    bool drop_privs = false;
+    if (!child_cmd.empty()) {
+        child_cmd.push_back(nullptr);
+
+        // In bpftrace/WSL2 mode the GPU is only accessible to the session user,
+        // not root. When hsa-snoop runs via `sudo`, drop back to the invoking
+        // user (SUDO_UID/SUDO_GID/SUDO_USER) so the child can access the GPU.
+        const char* sudo_uid_str = getenv("SUDO_UID");
+        const char* sudo_gid_str = getenv("SUDO_GID");
+        drop_privs = disc_mode == DiscoveryMode::kBpftrace && sudo_uid_str &&
+                     sudo_gid_str;
+        if (drop_privs) {
+            run_uid = (uid_t)atoi(sudo_uid_str);
+            run_gid = (gid_t)atoi(sudo_gid_str);
+        }
+
+        child = fork();
+        if (child == 0) {
+            // Restore default signal disposition before stopping. Otherwise a
+            // Ctrl-C during the SIGSTOP window is delivered to the inherited
+            // OnSignal handler on resume and swallowed, letting the command run
+            // even though the user interrupted tracing.
+            signal(SIGINT, SIG_DFL);
+            signal(SIGTERM, SIG_DFL);
+            raise(SIGSTOP); // wait until discovery is armed, then continue
+            if (disc_mode == DiscoveryMode::kBpftrace) {
+                // Ensure the ROCm library path is set (sudo strips
+                // LD_LIBRARY_PATH).
+                if (getenv("LD_LIBRARY_PATH") == nullptr)
+                    setenv("LD_LIBRARY_PATH", "/opt/rocm/lib:/usr/lib/wsl/lib",
+                           0);
+                // HSA_ENABLE_DXG_DETECTION selects the WSL2/librocdxg DXG
+                // backend; without it the GPU is not accessible.
+                setenv("HSA_ENABLE_DXG_DETECTION", "1", 0);
+                // XDG_RUNTIME_DIR is needed for the GPU agent socket.
+                if (getenv("XDG_RUNTIME_DIR") == nullptr && run_uid != 0) {
+                    char xdg[64];
+                    snprintf(xdg, sizeof(xdg), "/run/user/%u", run_uid);
+                    setenv("XDG_RUNTIME_DIR", xdg, 0);
+                }
+            }
+            if (drop_privs) {
+                const char* sudo_user = getenv("SUDO_USER");
+                if (sudo_user && initgroups(sudo_user, run_gid) < 0)
+                    setgroups(0, nullptr);
+                if (setgid(run_gid) < 0 || setuid(run_uid) < 0) {
+                    perror("hsa-snoop: drop privileges");
+                    _exit(1);
+                }
+            }
+            execvp(child_cmd[0], child_cmd.data());
+            perror("execvp");
+            _exit(127);
+        }
+        if (child < 0) {
+            fprintf(stderr, "hsa-snoop: fork failed: %s\n", strerror(errno));
+            return 1;
+        }
+
+        int status = 0;
+        pid_t w;
+        do {
+            w = waitpid(child, &status, WUNTRACED);
+        } while (w < 0 && errno == EINTR); // don't mistake a caught signal for
+                                           // child failure
+        if (w != child || !WIFSTOPPED(status)) {
+            fprintf(stderr, "hsa-snoop: failed to stop child before tracing\n");
+            kill(child, SIGKILL);
+            waitpid(child, nullptr, 0);
+            return 1;
+        }
+        pid_filter = child; // scope discovery to the child
+    }
+
     int queue_count = 0;
     Discovery discovery(tracefs, pid_filter, disc_mode, librocdxg_path);
     auto on_queue = [&](const QueueInfo& q_in) {
@@ -287,65 +375,17 @@ int main(int argc, char** argv) {
 
     if (!discovery.Start(on_queue)) {
         fprintf(stderr, "hsa-snoop: failed to start discovery\n");
+        if (child > 0) {
+            kill(child, SIGKILL);
+            waitpid(child, nullptr, 0);
+        }
         return 1;
     }
     fprintf(stderr, "hsa-snoop: discovery armed. Watching for AQL queues...\n");
 
-    // Launch mode: fork/exec the target now that the probe is armed.
-    pid_t child = -1;
-    if (!child_cmd.empty()) {
-        child_cmd.push_back(nullptr);
-
-        // In bpftrace/WSL2 mode, the GPU is only accessible to the session
-        // user, not to root. When hsa-snoop runs via `sudo`, we must drop back
-        // to the invoking user so the child process can access the GPU.
-        // SUDO_UID/SUDO_GID/SUDO_USER are set by sudo and identify the original
-        // user.
-        uid_t run_uid = geteuid();
-        gid_t run_gid = getegid();
-        const char* sudo_uid_str = getenv("SUDO_UID");
-        const char* sudo_gid_str = getenv("SUDO_GID");
-        bool drop_privs = disc_mode == DiscoveryMode::kBpftrace &&
-                          sudo_uid_str && sudo_gid_str;
-        if (drop_privs) {
-            run_uid = (uid_t)atoi(sudo_uid_str);
-            run_gid = (gid_t)atoi(sudo_gid_str);
-        }
-
-        child = fork();
-        if (child == 0) {
-            if (disc_mode == DiscoveryMode::kBpftrace) {
-                // Ensure the ROCm library path is set (sudo strips
-                // LD_LIBRARY_PATH).
-                if (getenv("LD_LIBRARY_PATH") == nullptr)
-                    setenv("LD_LIBRARY_PATH", "/opt/rocm/lib:/usr/lib/wsl/lib",
-                           0);
-                // HSA_ENABLE_DXG_DETECTION tells the HSA runtime to use the
-                // WSL2/librocdxg DXG backend. Without it the GPU is not
-                // accessible.
-                setenv("HSA_ENABLE_DXG_DETECTION", "1", 0);
-                // XDG_RUNTIME_DIR is needed for the GPU agent socket.
-                if (getenv("XDG_RUNTIME_DIR") == nullptr && run_uid != 0) {
-                    char xdg[64];
-                    snprintf(xdg, sizeof(xdg), "/run/user/%u", run_uid);
-                    setenv("XDG_RUNTIME_DIR", xdg, 0);
-                }
-            }
-            if (drop_privs) {
-                // Drop to the invoking user so the GPU is accessible in WSL2.
-                const char* sudo_user = getenv("SUDO_USER");
-                if (sudo_user && initgroups(sudo_user, run_gid) < 0)
-                    setgroups(0, nullptr);
-                if (setgid(run_gid) < 0 || setuid(run_uid) < 0) {
-                    perror("hsa-snoop: drop privileges");
-                    _exit(1);
-                }
-            }
-            execvp(child_cmd[0], child_cmd.data());
-            perror("execvp");
-            _exit(127);
-        }
-        pid_filter = child; // (discovery already filters; informational)
+    // The probe is armed; let the stopped child run.
+    if (child > 0) {
+        kill(child, SIGCONT);
         fprintf(stderr, "hsa-snoop: launched '%s' pid=%d%s\n", child_cmd[0],
                 child, drop_privs ? " (as original user)" : "");
     }
@@ -361,7 +401,8 @@ int main(int argc, char** argv) {
             int status;
             pid_t r = waitpid(child, &status, WNOHANG);
             if (r == child) {
-                // Give the parser a moment to drain remaining completions.
+                // Give the parser a moment to observe remaining queue
+                // consumption.
                 usleep(200 * 1000);
                 break;
             }

@@ -17,7 +17,7 @@ class TraceWriter {
   public:
     explicit TraceWriter(Format fmt) : fmt_(fmt) {}
 
-    // Called (thread-safe) as packets complete.
+    // Called (thread-safe) as packets are observed as queue-consumed.
     void Add(const PacketRecord& rec);
 
     // Register a queue so tracks are labeled even before packets arrive.

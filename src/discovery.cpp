@@ -116,7 +116,8 @@ std::string FindLibrocdxg() {
 Discovery::Discovery(std::string tracefs_root, int pid_filter,
                      DiscoveryMode mode, std::string librocdxg_path)
     : tracefs_(std::move(tracefs_root)), pid_filter_(pid_filter), mode_(mode),
-      librocdxg_path_(std::move(librocdxg_path)), probe_name_("hsasnoop_cq") {}
+      librocdxg_path_(std::move(librocdxg_path)),
+      probe_name_("hsasnoop_cq_" + std::to_string(getpid())) {}
 
 Discovery::~Discovery() { Stop(); }
 
@@ -199,7 +200,7 @@ bool Discovery::InstallKprobe() {
                       " ring_size=+32(%dx):u32"
                       " gpu_id=+36(%dx):u32"
                       " qtype=+40(%dx):u32\n";
-    if (!WriteFile(kp, def, /*append=*/false)) {
+    if (!WriteFile(kp, def, /*append=*/true)) {
         fprintf(stderr,
                 "hsa-snoop: failed to install kprobe (%s). Need root?\n",
                 strerror(errno));
@@ -209,6 +210,7 @@ bool Discovery::InstallKprobe() {
                    "1\n", false)) {
         fprintf(stderr, "hsa-snoop: failed to enable kprobe (%s)\n",
                 strerror(errno));
+        RemoveKprobe();
         return false;
     }
     return true;
