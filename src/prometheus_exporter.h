@@ -97,7 +97,8 @@ class PrometheusExporter {
     std::unordered_map<std::string, LastKernelState>
         last_kernel_state_; // gpu_id_str -> state
     std::unordered_map<std::string, prometheus::Gauge*>
-        triggered_gauges_; // gpu_id_str -> gauge (latches at 1 on first dispatch)
+        triggered_gauges_; // gpu_id_str -> gauge (latches at 1 on first
+                           // dispatch)
 
     // Guards the launch-event deque used for rate computation.
     std::mutex rate_mu_;
