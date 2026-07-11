@@ -1,0 +1,68 @@
+name: debian-package
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**.cpp'
+      - '**.h'
+      - '**.hip'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'systemd/**'
+      - 'debian/**'
+      - '.github/workflows/debian-package.yml'
+
+jobs:
+  build-deb:
+    name: Build Debian package (Prometheus)
+    runs-on: ubuntu-latest
+    container:
+      image: rocm/dev-ubuntu-24.04:7.2
+      options: --user root
+    env:
+      LD_LIBRARY_PATH: /opt/rocm/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y cmake git dpkg-dev
+
+    - name: Configure with CMake (Prometheus enabled)
+      run: |
+        cmake -B build \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DGPU_TARGETS=gfx942 \
+          -DHSA_SNOOP_PROMETHEUS=ON
+
+    - name: Build
+      run: cmake --build build --parallel $(nproc)
+
+    - name: Install into staging tree
+      run: cmake --install build --prefix /tmp/pkg/usr/local
+
+    - name: Assemble .deb
+      shell: bash
+      run: |
+        mkdir -p /tmp/pkg/DEBIAN
+        cp debian/control debian/postinst debian/prerm debian/conffiles /tmp/pkg/DEBIAN/
+        chmod 0755 /tmp/pkg/DEBIAN/postinst /tmp/pkg/DEBIAN/prerm
+        VERSION=${GITHUB_SHA::8}
+        sed -i "s/^Version:.*/Version: 0~${VERSION}/" /tmp/pkg/DEBIAN/control
+        dpkg-deb --build --root-owner-group /tmp/pkg hsa-snoop_${VERSION}_amd64.deb
+
+    - name: Verify .deb metadata
+      run: dpkg-deb --info hsa-snoop_*_amd64.deb
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: hsa-snoop-deb
+        path: hsa-snoop_*_amd64.deb
+        retention-days: 7
