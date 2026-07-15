@@ -10,7 +10,7 @@
     do {                                                                       \
         hipError_t e = (x);                                                    \
         if (e != hipSuccess) {                                                 \
-            fprintf(stderr, "HIP error %s:%d: %s\n", __FILE__, __LINE__,      \
+            fprintf(stderr, "HIP error %s:%d: %s\n", __FILE__, __LINE__,       \
                     hipGetErrorString(e));                                     \
             exit(1);                                                           \
         }                                                                      \
@@ -34,7 +34,8 @@ static void usage(const char* prog) {
         "  -s, --streams N     Number of async streams (default 4)\n"
         "  -m, --buf-mb N      Per-stream buffer size in MB (default 256)\n"
         "  -i, --iters N       Number of copy iterations (default 40)\n"
-        "  -r, --report N      Print throughput every N iterations (default 10)\n",
+        "  -r, --report N      Print throughput every N iterations (default "
+        "10)\n",
         prog);
 }
 
@@ -77,8 +78,7 @@ int main(int argc, char* argv[]) {
     float** h_dst = (float**)malloc(nstreams * sizeof(float*));
     float** d_a = (float**)malloc(nstreams * sizeof(float*));
     float** d_b = (float**)malloc(nstreams * sizeof(float*));
-    hipStream_t* streams =
-        (hipStream_t*)malloc(nstreams * sizeof(hipStream_t));
+    hipStream_t* streams = (hipStream_t*)malloc(nstreams * sizeof(hipStream_t));
 
     for (int s = 0; s < nstreams; s++) {
         CHECK(hipHostMalloc(&h_src[s], n, hipHostMallocDefault));

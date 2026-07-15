@@ -9,8 +9,8 @@
     do {                                                                       \
         hipError_t err = (call);                                               \
         if (err != hipSuccess) {                                               \
-            std::cerr << "HIP error: " << hipGetErrorString(err) << " at "    \
-                      << __FILE__ << ":" << __LINE__ << std::endl;            \
+            std::cerr << "HIP error: " << hipGetErrorString(err) << " at "     \
+                      << __FILE__ << ":" << __LINE__ << std::endl;             \
             std::exit(EXIT_FAILURE);                                           \
         }                                                                      \
     } while (0)
@@ -57,11 +57,16 @@ static void usage(const char* prog) {
         "\n"
         "Options:\n"
         "  -h, --help         Show this help and exit\n"
-        "  -n, --elements N   Number of float elements per vector (default 16777216)\n"
-        "  -i, --iters N      Inner loop count inside vdot kernel (default 1024)\n"
-        "  -b, --batch N      Kernel launches per outer loop iteration (default 10)\n"
-        "  -s, --sleep-ms N   Sleep between outer iterations in ms (default 200)\n"
-        "  -l, --loops N      Number of outer iterations; 0 = run forever (default 0)\n",
+        "  -n, --elements N   Number of float elements per vector (default "
+        "16777216)\n"
+        "  -i, --iters N      Inner loop count inside vdot kernel (default "
+        "1024)\n"
+        "  -b, --batch N      Kernel launches per outer loop iteration "
+        "(default 10)\n"
+        "  -s, --sleep-ms N   Sleep between outer iterations in ms (default "
+        "200)\n"
+        "  -l, --loops N      Number of outer iterations; 0 = run forever "
+        "(default 0)\n",
         prog);
 }
 
@@ -113,8 +118,7 @@ int main(int argc, char** argv) {
     const dim3 block(256);
     const dim3 grid((n_elems + 255) / 256);
 
-    fprintf(stderr,
-            "gfx-test: n=%d iters=%d batch=%d sleep_ms=%d loops=%s\n",
+    fprintf(stderr, "gfx-test: n=%d iters=%d batch=%d sleep_ms=%d loops=%s\n",
             n_elems, iters, batch, sleep_ms,
             loops == 0 ? "infinite" : std::to_string(loops).c_str());
 
