@@ -102,6 +102,7 @@ workgroup
 WSL
 WSL2
 xnack
+DMA
 XGMI
 dword
 dwords
@@ -115,3 +116,7 @@ gfx90a
 MI3xx
 KV
 Aldebaran
+resync
+src
+dst
+strided

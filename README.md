@@ -89,7 +89,7 @@ Output is written as a native Perfetto protobuf trace (default) or Chrome JSON
 ### SDMA capture
 
 The same discovery kprobe also sees the **SDMA** (`type 1`) and **SDMA_XGMI**
-(`type 3`) queues — the GPU's DMA copy engines. `hipMemcpyAsync`, peer-to-peer
+(`type 3`) queues — the GPU DMA copy engines. `hipMemcpyAsync`, peer-to-peer
 transfers and framework KV-cache staging are submitted here, **not** on the AQL
 compute queues, so they are invisible to `hsa_kernel_launches_total`. Capturing
 SDMA is the only user-space way to account for that bulk byte movement.
@@ -100,7 +100,7 @@ SDMA rings differ from AQL rings in three ways the parser handles separately
 * **Variable-length packets.** SDMA is dword-granular microcode, not fixed
   64-byte slots. Each packet's header dword carries an 8-bit opcode + sub-opcode;
   the decoder reads the header, computes the length, decodes, then strides
-  forward. Unknown opcodes trigger a resync rather than a mis-stride.
+  forward. Unknown opcodes trigger a resync rather than a bad stride.
 * **The COPY packet carries the byte count and src/dst addresses.** For linear
   copies we record `bytes`, `src`, `dst` and a **direction**.
 * **Direction (H2D / D2H / D2D)** is inferred by resolving the src/dst virtual
