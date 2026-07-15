@@ -38,7 +38,6 @@ set_source_files_properties(vecwork.hip PROPERTIES LANGUAGE HIP)
 add_executable(vecwork vecwork.hip)
 target_link_libraries(vecwork PRIVATE hip::device)
 
-# square.hip does not exist yet — uncomment when source is added:
-# set_source_files_properties(square.hip PROPERTIES LANGUAGE HIP)
-# add_executable(square square.hip)
-# target_link_libraries(square PRIVATE hip::device)
+set_source_files_properties(sdma_stress.hip PROPERTIES LANGUAGE HIP)
+add_executable(sdma_stress sdma_stress.hip)
+target_link_libraries(sdma_stress PRIVATE hip::device)
