@@ -95,7 +95,6 @@ ui
 uprobe
 usr
 vadd
-vecwork
 VRAM
 vscale
 workgroup

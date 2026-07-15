@@ -22,10 +22,10 @@ sudo ./hsa-snoop --all               # monitor every GPU process system-wide
 # open traces at https://ui.perfetto.dev
 ```
 
-Example (from the bundled `deep` micro-benchmark):
+Example (from the bundled `gfx-test` example):
 
 ```
-[queue] pid=404039 comm=deep uid=2 ring_va=0x75dbfc200000 ring_phys=0x1a781498000 size=1048576B slots=16384 gpu=36740
+[queue] pid=404039 comm=gfx-test uid=2 ring_va=0x75dbfc200000 ring_phys=0x1a781498000 size=1048576B slots=16384 gpu=36740
 hsa-snoop: 2 AQL queue(s), 195 packet(s) captured.
 ```
 
@@ -143,9 +143,9 @@ cmake --build build --parallel $(nproc)
 Requires a C++17 compiler and CMake 3.21+. No third-party libraries. `protoc`
 is optional (only used to sanity-check the emitted trace).
 
-If ROCm is installed, the HIP examples under `examples/` are built
-automatically. GPU targets are auto-detected via `rocm_agent_enumerator`; pass
-`-DGPU_TARGETS=gfxNNNN` to override.
+If ROCm is installed, the HIP examples under `examples/` (`gfx-test`,
+`sdma-test`) are built automatically. GPU targets are auto-detected via
+`rocm_agent_enumerator`; pass `-DGPU_TARGETS=gfxNNNN` to override.
 
 ### Prometheus exporter build
 
