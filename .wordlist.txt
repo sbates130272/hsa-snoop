@@ -119,4 +119,3 @@ Aldebaran
 resync
 src
 dst
-strided

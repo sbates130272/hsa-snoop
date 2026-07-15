@@ -413,7 +413,7 @@ systemd/hsa-snoop.logrotate        logrotate policy (512 MiB rotation, 8 kept)
   pointer unit and linear-copy `COUNT` width are hardware-revision sensitive; on
   a new platform confirm them with `HSA_SNOOP_DEBUG=1` (see
   [SDMA capture](#sdma-capture)). Non-linear copy layouts (tiled, sub-window) are
-  counted and strided over but do not yet contribute a byte total.
+  counted and stepped over but do not yet contribute a byte total.
 * **SDMA copy direction is a pagemap heuristic.** A src/dst page with no PFN is
   treated as device (VRAM) memory; this also matches a not-present/swapped host
   page, so a copy touching a paged-out host buffer can be misclassified. For
