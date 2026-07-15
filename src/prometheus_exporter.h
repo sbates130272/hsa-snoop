@@ -48,6 +48,10 @@ class PrometheusExporter {
     // Called for each completed PacketRecord from RingParser. Thread-safe.
     void Add(const PacketRecord& rec);
 
+    // Called for each completed SdmaRecord (DMA copy/op) from RingParser.
+    // Thread-safe.
+    void Add(const SdmaRecord& rec);
+
     PrometheusExporter(const PrometheusExporter&) = delete;
     PrometheusExporter& operator=(const PrometheusExporter&) = delete;
 
@@ -86,12 +90,19 @@ class PrometheusExporter {
     prometheus::Family<prometheus::Gauge>& last_kernel_info_family_;
     prometheus::Family<prometheus::Histogram>& duration_family_;
     prometheus::Family<prometheus::Gauge>& triggered_family_;
+    // SDMA (DMA copy engine) telemetry.
+    prometheus::Family<prometheus::Counter>& sdma_copies_family_;
+    prometheus::Family<prometheus::Counter>& sdma_bytes_family_;
+    prometheus::Family<prometheus::Counter>& sdma_packets_family_;
+    prometheus::Family<prometheus::Gauge>& active_sdma_queues_family_;
 
     // Guards all metadata maps and per-gpu gauge pointer caches.
     std::mutex meta_mu_;
     std::unordered_map<uint32_t, QueueMeta> queue_meta_; // uid -> meta
     std::unordered_map<std::string, prometheus::Gauge*>
         active_queue_gauges_; // gpu_id_str -> gauge
+    std::unordered_map<std::string, prometheus::Gauge*>
+        active_sdma_queue_gauges_; // gpu_id_str -> gauge
     std::unordered_map<std::string, prometheus::Gauge*>
         last_launch_ts_gauges_; // gpu_id_str -> gauge
     std::unordered_map<std::string, LastKernelState>

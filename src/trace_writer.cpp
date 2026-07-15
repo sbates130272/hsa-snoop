@@ -120,6 +120,11 @@ void TraceWriter::Add(const PacketRecord& rec) {
     records_.push_back(rec);
 }
 
+void TraceWriter::Add(const SdmaRecord& rec) {
+    std::lock_guard<std::mutex> lk(mu_);
+    sdma_records_.push_back(rec);
+}
+
 void TraceWriter::RegisterQueue(const QueueInfo& q) {
     std::lock_guard<std::mutex> lk(mu_);
     queues_[q.uid] = q;
@@ -147,8 +152,8 @@ bool TraceWriter::WriteJson(const std::string& path) {
           << ",\"tid\":0,\"args\":{\"name\":\"" << JsonEscape(q.comm) << " ("
           << q.pid << ")\"}}";
         char label[128];
-        snprintf(label, sizeof(label), "queue %lu (gpu %u, %u pkts)", q.uid,
-                 q.gpu_id, q.num_slots());
+        snprintf(label, sizeof(label), "%s queue %lu (gpu %u)",
+                 q.is_sdma() ? "sdma" : "aql", q.uid, q.gpu_id);
         f << ",\n{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":" << q.pid
           << ",\"tid\":" << q.uid << ",\"args\":{\"name\":\"" << label
           << "\"}}";
@@ -183,6 +188,33 @@ bool TraceWriter::WriteJson(const std::string& path) {
               << "\"";
         f << "}}";
     }
+
+    // SDMA copy/DMA slices on their own per-queue track.
+    for (const auto& r : sdma_records_) {
+        const QueueInfo& q =
+            queues_.count(r.queue_uid) ? queues_[r.queue_uid] : QueueInfo{};
+        double dur = r.complete_ts - r.submit_ts;
+        if (dur < kMinDurSec)
+            dur = kMinDurSec;
+        if (!first)
+            f << ",\n";
+        first = false;
+        f << "{\"ph\":\"X\",\"pid\":" << q.pid << ",\"tid\":" << r.queue_uid
+          << ",\"ts\":" << (r.submit_ts * 1e6) << ",\"dur\":" << (dur * 1e6)
+          << ",\"name\":\"" << JsonEscape(r.op_name) << "\",\"args\":{"
+          << "\"opcode\":" << static_cast<unsigned>(r.opcode)
+          << ",\"seq\":" << r.seq;
+        if (r.is_copy()) {
+            f << ",\"bytes\":" << r.bytes << ",\"direction\":\""
+              << CopyDirName(r.dir) << "\"" << ",\"src\":\"0x" << std::hex
+              << r.src_addr << std::dec << "\"" << ",\"dst\":\"0x" << std::hex
+              << r.dst_addr << std::dec << "\"";
+        }
+        if (q.ring_phys)
+            f << ",\"ring_phys\":\"0x" << std::hex << q.ring_phys << std::dec
+              << "\"";
+        f << "}}";
+    }
     f << "\n]}\n";
     return true;
 }
@@ -208,7 +240,8 @@ bool TraceWriter::WritePerfetto(const std::string& path) {
             trace.MsgField(pf::kTracePacket, pkt);
         }
         char label[128];
-        snprintf(label, sizeof(label), "queue %lu (gpu %u)", q.uid, q.gpu_id);
+        snprintf(label, sizeof(label), "%s queue %lu (gpu %u)",
+                 q.is_sdma() ? "sdma" : "aql", q.uid, q.gpu_id);
         Pb td;
         td.VarintField(pf::kTdUuid, QueueTrackUuid(q.uid));
         td.StringField(pf::kTdName, label);
@@ -262,6 +295,51 @@ bool TraceWriter::WritePerfetto(const std::string& path) {
             const QueueInfo& q = queues_[r.queue_uid];
             if (q.ring_phys)
                 te.MsgField(pf::kTeDebug, DebugUint("ring_phys", q.ring_phys));
+        } else {
+            te.VarintField(pf::kTeType, pf::kTypeSliceEnd);
+        }
+        Pb pkt;
+        pkt.VarintField(pf::kTimestamp, e.ts);
+        pkt.MsgField(pf::kTrackEvent, te);
+        pkt.VarintField(pf::kSeqId, pf::kSeq);
+        trace.MsgField(pf::kTracePacket, pkt);
+    }
+
+    // SDMA copy/DMA slices, on the same per-queue tracks (keyed by uid).
+    struct SEv {
+        uint64_t ts;
+        bool begin;
+        const SdmaRecord* r;
+    };
+    std::vector<SEv> sevs;
+    for (const auto& r : sdma_records_) {
+        double end = r.complete_ts;
+        if (end - r.submit_ts < kMinDurSec)
+            end = r.submit_ts + kMinDurSec;
+        sevs.push_back({NsOf(r.submit_ts), true, &r});
+        sevs.push_back({NsOf(end), false, &r});
+    }
+    std::stable_sort(sevs.begin(), sevs.end(), [](const SEv& a, const SEv& b) {
+        if (a.ts != b.ts)
+            return a.ts < b.ts;
+        return !a.begin && b.begin; // end before begin at equal ts
+    });
+    for (const SEv& e : sevs) {
+        const SdmaRecord& r = *e.r;
+        Pb te;
+        te.VarintField(pf::kTeTrackUuid, QueueTrackUuid(r.queue_uid));
+        if (e.begin) {
+            te.VarintField(pf::kTeType, pf::kTypeSliceBegin);
+            te.StringField(pf::kTeName, r.op_name);
+            te.MsgField(pf::kTeDebug, DebugUint("opcode", r.opcode));
+            te.MsgField(pf::kTeDebug, DebugUint("seq", r.seq));
+            if (r.is_copy()) {
+                te.MsgField(pf::kTeDebug, DebugUint("bytes", r.bytes));
+                te.MsgField(pf::kTeDebug,
+                            DebugStr("direction", CopyDirName(r.dir)));
+                te.MsgField(pf::kTeDebug, DebugUint("src", r.src_addr));
+                te.MsgField(pf::kTeDebug, DebugUint("dst", r.dst_addr));
+            }
         } else {
             te.VarintField(pf::kTeType, pf::kTypeSliceEnd);
         }

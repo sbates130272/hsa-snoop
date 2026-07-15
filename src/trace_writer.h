@@ -19,6 +19,8 @@ class TraceWriter {
 
     // Called (thread-safe) as packets are observed as queue-consumed.
     void Add(const PacketRecord& rec);
+    // SDMA copy/DMA packets from an SDMA queue.
+    void Add(const SdmaRecord& rec);
 
     // Register a queue so tracks are labeled even before packets arrive.
     void RegisterQueue(const QueueInfo& q);
@@ -26,7 +28,7 @@ class TraceWriter {
     // Flush the buffered trace to `path`. Returns true on success.
     bool Write(const std::string& path);
 
-    size_t count() const { return records_.size(); }
+    size_t count() const { return records_.size() + sdma_records_.size(); }
 
   private:
     bool WriteJson(const std::string& path);
@@ -35,6 +37,7 @@ class TraceWriter {
     Format fmt_;
     std::mutex mu_;
     std::vector<PacketRecord> records_;
+    std::vector<SdmaRecord> sdma_records_;
     std::map<uint64_t, QueueInfo> queues_; // uid -> info
 };
 

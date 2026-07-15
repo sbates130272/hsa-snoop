@@ -244,6 +244,31 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                     "this GPU since startup, 0 otherwise; latches at 1")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
+      sdma_copies_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_sdma_copies_total")
+              .Help("SDMA copy packets observed, by direction (h2d/d2h/d2d)")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      sdma_bytes_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_sdma_bytes_total")
+              .Help("Bytes moved by SDMA copy packets, by direction")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      sdma_packets_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_sdma_packets_total")
+              .Help(
+                  "SDMA packets observed, by opcode (copy/fence/timestamp/...)")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      active_sdma_queues_family_(
+          prometheus::BuildGauge()
+              .Name("hsa_active_sdma_queues")
+              .Help("Number of currently tracked SDMA queues")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
       rate_window_sec_(rate_window_sec) {
     // Start the HTTP exposition endpoint.
     std::string addr = "0.0.0.0:" + std::to_string(port);
@@ -281,6 +306,16 @@ void PrometheusExporter::RegisterQueue(const QueueInfo& q) {
 
     std::lock_guard<std::mutex> lk(meta_mu_);
     queue_meta_[q.uid] = {q.gpu_id, q.pid, q.comm, gpu_type};
+
+    // SDMA and AQL queues are counted separately.
+    if (q.is_sdma()) {
+        auto& g = active_sdma_queue_gauges_[gpu_str];
+        if (!g)
+            g = &active_sdma_queues_family_.Add(
+                {{"gpu_id", gpu_str}, {"gpu_type", gpu_type}});
+        g->Increment();
+        return;
+    }
 
     auto& g = active_queue_gauges_[gpu_str];
     if (!g)
@@ -383,6 +418,51 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
                   {"pid", pid_str},
                   {"comm", meta.comm}})
             .Increment();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Add (SDMA)
+// ---------------------------------------------------------------------------
+void PrometheusExporter::Add(const SdmaRecord& rec) {
+    std::lock_guard<std::mutex> lk(meta_mu_);
+
+    auto it = queue_meta_.find(rec.queue_uid);
+    if (it == queue_meta_.end()) {
+        errors_family_.Add({{"gpu_id", "unknown"}, {"pid", "unknown"}})
+            .Increment();
+        return;
+    }
+    const QueueMeta& meta = it->second;
+    std::string gpu_str = std::to_string(meta.gpu_id);
+    std::string pid_str = std::to_string(meta.pid);
+
+    // Every SDMA packet is counted by opcode.
+    sdma_packets_family_
+        .Add({{"gpu_id", gpu_str},
+              {"gpu_type", meta.gpu_type},
+              {"pid", pid_str},
+              {"comm", meta.comm},
+              {"opcode", sdma::OpName(rec.opcode)}})
+        .Increment();
+
+    // Copies additionally accumulate count + bytes by transfer direction.
+    if (rec.is_copy()) {
+        const std::string dir = CopyDirName(rec.dir);
+        sdma_copies_family_
+            .Add({{"gpu_id", gpu_str},
+                  {"gpu_type", meta.gpu_type},
+                  {"pid", pid_str},
+                  {"comm", meta.comm},
+                  {"direction", dir}})
+            .Increment();
+        sdma_bytes_family_
+            .Add({{"gpu_id", gpu_str},
+                  {"gpu_type", meta.gpu_type},
+                  {"pid", pid_str},
+                  {"comm", meta.comm},
+                  {"direction", dir}})
+            .Increment(static_cast<double>(rec.bytes));
     }
 }
 

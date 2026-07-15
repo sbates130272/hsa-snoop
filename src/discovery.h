@@ -60,6 +60,10 @@ class Discovery {
     pid_t bpf_pid_ = -1;      // bpftrace child PID (bpftrace mode only)
     std::string bpf_prebuf_;  // data read during arm-detection
     std::string bpf_outpath_; // path to bpftrace temp script file
+    // True if we flipped the global tracefs `tracing_on` from 0->1 (some hosts
+    // ship it disabled, which silently suppresses all kprobe events); restored
+    // to 0 on RemoveKprobe so we leave the system as we found it.
+    bool tracing_on_changed_ = false;
 };
 
 } // namespace hsasnoop

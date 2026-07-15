@@ -256,6 +256,23 @@ int main(int argc, char** argv) {
                 single_writer->Add(r);
             }
         },
+        // SDMA copy/DMA records follow the same routing as AQL packets.
+        [&](const SdmaRecord& r) {
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+            if (prom_exporter) {
+                prom_exporter->Add(r);
+                return;
+            }
+#endif
+            if (all_mode) {
+                std::lock_guard<std::mutex> lk(writers_mu);
+                auto it = per_queue_writers.find(r.queue_uid);
+                if (it != per_queue_writers.end())
+                    it->second->Add(r);
+            } else {
+                single_writer->Add(r);
+            }
+        },
         poll_us);
 
     // Launch mode: fork the child stopped so we can scope discovery to its pid
@@ -343,8 +360,9 @@ int main(int argc, char** argv) {
     Discovery discovery(tracefs, pid_filter, disc_mode, librocdxg_path);
     auto on_queue = [&](const QueueInfo& q_in) {
         QueueInfo q = q_in;
-        if (!q.is_aql())
-            return; // only host<->GPU AQL queues
+        if (!q.is_traced())
+            return; // AQL compute or SDMA copy queues only
+        const char* kind = q.is_sdma() ? "sdma" : "aql";
         q.ring_phys = VirtToPhys(q.pid, q.ring_base);
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
         if (prom_exporter) {
@@ -352,9 +370,9 @@ int main(int argc, char** argv) {
             parser.AddQueue(q);
             ++queue_count;
             fprintf(stderr,
-                    "[queue] pid=%d comm=%s uid=%u ring_va=0x%lx "
+                    "[queue] kind=%s pid=%d comm=%s uid=%u ring_va=0x%lx "
                     "ring_phys=0x%lx size=%uB slots=%u gpu=%u\n",
-                    q.pid, q.comm.c_str(), (unsigned)q.uid, q.ring_base,
+                    kind, q.pid, q.comm.c_str(), (unsigned)q.uid, q.ring_base,
                     q.ring_phys, q.ring_size, (unsigned)q.num_slots(),
                     q.gpu_id);
             return;
@@ -367,9 +385,9 @@ int main(int argc, char** argv) {
         parser.AddQueue(q);
         ++queue_count;
         fprintf(stderr,
-                "[queue] pid=%d comm=%s uid=%lu ring_va=0x%lx ring_phys=0x%lx "
-                "size=%uB slots=%u gpu=%u\n",
-                q.pid, q.comm.c_str(), q.uid, q.ring_base, q.ring_phys,
+                "[queue] kind=%s pid=%d comm=%s uid=%lu ring_va=0x%lx "
+                "ring_phys=0x%lx size=%uB slots=%u gpu=%u\n",
+                kind, q.pid, q.comm.c_str(), q.uid, q.ring_base, q.ring_phys,
                 q.ring_size, q.num_slots(), q.gpu_id);
     };
 
@@ -381,7 +399,8 @@ int main(int argc, char** argv) {
         }
         return 1;
     }
-    fprintf(stderr, "hsa-snoop: discovery armed. Watching for AQL queues...\n");
+    fprintf(stderr,
+            "hsa-snoop: discovery armed. Watching for AQL + SDMA queues...\n");
 
     // The probe is armed; let the stopped child run.
     if (child > 0) {
@@ -420,7 +439,7 @@ int main(int argc, char** argv) {
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
     if (prometheus_mode) {
         fprintf(stderr,
-                "hsa-snoop: %d AQL queue(s) observed. "
+                "hsa-snoop: %d queue(s) observed. "
                 "Prometheus mode — no trace files written.\n",
                 queue_count);
         return 0;
@@ -446,12 +465,12 @@ int main(int argc, char** argv) {
                 fprintf(stderr, "hsa-snoop: wrote %s\n", path.c_str());
             }
         }
-        fprintf(stderr, "hsa-snoop: %d AQL queue(s), %zu packet(s) captured.\n",
+        fprintf(stderr, "hsa-snoop: %d queue(s), %zu packet(s) captured.\n",
                 queue_count, total_packets);
         return failures ? 1 : 0;
     }
 
-    fprintf(stderr, "hsa-snoop: %d AQL queue(s), %zu packet(s) captured.\n",
+    fprintf(stderr, "hsa-snoop: %d queue(s), %zu packet(s) captured.\n",
             queue_count, single_writer->count());
     if (!single_writer->Write(out)) {
         fprintf(stderr, "hsa-snoop: failed to write %s\n", out.c_str());
