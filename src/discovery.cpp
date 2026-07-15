@@ -34,6 +34,16 @@ bool WriteFile(const std::string& path, const std::string& val, bool append) {
     return n == static_cast<ssize_t>(val.size());
 }
 
+// Read the first whitespace-trimmed token of a small sysfs/tracefs file.
+// Returns empty string on failure.
+std::string ReadFileToken(const std::string& path) {
+    std::ifstream f(path);
+    std::string tok;
+    if (f >> tok)
+        return tok;
+    return {};
+}
+
 uint64_t FindU64(const std::string& line, const char* key) {
     std::string needle = std::string(" ") + key + "=";
     size_t p = line.find(needle);
@@ -213,6 +223,24 @@ bool Discovery::InstallKprobe() {
         RemoveKprobe();
         return false;
     }
+
+    // Enabling a specific event is not enough: the global tracefs master switch
+    // `tracing_on` gates whether ANY event reaches the ring buffer. Some hosts
+    // ship it as 0, which silently drops every create_queue event -> hsa-snoop
+    // discovers no queues at all. Flip it on (remembering we did, so we can
+    // restore it) if needed.
+    if (ReadFileToken(tracefs_ + "/tracing_on") == "0") {
+        if (WriteFile(tracefs_ + "/tracing_on", "1\n", false)) {
+            tracing_on_changed_ = true;
+            fprintf(stderr, "hsa-snoop: enabled tracefs tracing_on "
+                            "(was off; kprobe events were being dropped)\n");
+        } else {
+            fprintf(stderr,
+                    "hsa-snoop: warning: tracing_on is 0 and could not "
+                    "be enabled (%s); no events will be captured\n",
+                    strerror(errno));
+        }
+    }
     return true;
 }
 
@@ -221,6 +249,11 @@ void Discovery::RemoveKprobe() {
               false);
     WriteFile(tracefs_ + "/kprobe_events", "-:" + probe_name_ + "\n",
               /*append=*/true);
+    // Restore the master switch only if we were the ones who turned it on.
+    if (tracing_on_changed_) {
+        WriteFile(tracefs_ + "/tracing_on", "0\n", false);
+        tracing_on_changed_ = false;
+    }
 }
 
 void Discovery::RunKprobe() {

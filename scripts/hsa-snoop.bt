@@ -11,7 +11,8 @@
  *
  * Field offsets are from struct kfd_ioctl_create_queue_args (uapi ABI):
  *   +0 ring_base_address  +8 write_pointer  +16 read_pointer
- *   +32 ring_size  +36 gpu_id  +40 queue_type (2 == COMPUTE_AQL)
+ *   +32 ring_size  +36 gpu_id  +40 queue_type
+ * queue_type: 0 COMPUTE(PM4), 1 SDMA, 2 COMPUTE_AQL, 3 SDMA_XGMI.
  * arg2 is the args pointer (3rd fn arg to kfd_ioctl_create_queue).
  */
 
@@ -26,7 +27,10 @@ kprobe:kfd_ioctl_create_queue
            *(uint64 *)($args + 16),
            *(uint64 *)($args + 8),
            *(uint32 *)($args + 36),
-           $qtype == 2 ? "[AQL]" : "[PM4/SDMA]");
+           $qtype == 2 ? "[AQL]" :
+           $qtype == 1 ? "[SDMA]" :
+           $qtype == 3 ? "[SDMA-XGMI]" :
+           $qtype == 0 ? "[COMPUTE-PM4]" : "[?]");
 }
 
 kprobe:pqm_destroy_queue

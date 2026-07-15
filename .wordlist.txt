@@ -102,3 +102,16 @@ workgroup
 WSL
 WSL2
 xnack
+XGMI
+dword
+dwords
+microcode
+opcode
+opcodes
+subwindow
+CDNA
+gfx942
+gfx90a
+MI3xx
+KV
+Aldebaran

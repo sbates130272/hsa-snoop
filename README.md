@@ -1,10 +1,16 @@
 # hsa-snoop
 
-`hsa-snoop` detects the HSA **AQL queues** an application uses to talk to an AMD
-GPU, tracks their ring-buffer addresses (virtual **and** physical), decodes the
-packets flowing across them (kernel dispatches, barriers, agent dispatches), and
-emits a **Perfetto** trace with queue-observed dispatch timing, kernel names,
-launch dimensions and more.
+`hsa-snoop` detects the HSA **AQL queues** and **SDMA copy queues** an
+application uses to talk to an AMD GPU, tracks their ring-buffer addresses
+(virtual **and** physical), decodes the packets flowing across them (kernel
+dispatches, barriers, agent dispatches, and SDMA DMA copies), and emits a
+**Perfetto** trace with queue-observed timing, kernel names, launch dimensions,
+copy byte counts and directions, and more.
+
+SDMA queues carry the DMA-engine traffic — `hipMemcpyAsync`, peer-to-peer
+copies, KV-cache staging — that never appears on the AQL compute queues, so
+capturing them is the only way to see bulk device I/O byte counts from user
+space. See [SDMA capture](#sdma-capture).
 
 It works **without modifying or rebuilding the amdgpu driver**. See
 [How it works](#how-it-works) and [Do we need to touch the
@@ -39,9 +45,10 @@ hsa-snoop has three stages, all in user space:
    (`kfd_ioctl_create_queue`). We install a **dynamic ftrace kprobe** on that
    function (by writing to `/sys/kernel/tracing/kprobe_events`) and read the
    `struct kfd_ioctl_create_queue_args` it was handed. That gives us, per queue:
-   the ring base address, ring size, read/write dispatch-id pointers, GPU id and
-   queue type. Only `COMPUTE_AQL` queues (type 2) are host↔GPU AQL queues; the
-   rest (PM4/SDMA) are ignored.
+   the ring base address, ring size, read/write pointers, GPU id and queue
+   type. `COMPUTE_AQL` queues (type 2) are the host↔GPU AQL queues; `SDMA`
+   (type 1) and `SDMA_XGMI` (type 3) are the DMA-copy queues (see
+   [SDMA capture](#sdma-capture)). PM4 compute queues (type 0) are ignored.
 
    The argument offsets come from the stable KFD uapi ABI
    (`struct kfd_ioctl_create_queue_args`), and the args pointer is the 3rd
@@ -78,6 +85,35 @@ hsa-snoop has three stages, all in user space:
 
 Output is written as a native Perfetto protobuf trace (default) or Chrome JSON
 (`--format json`); both open in <https://ui.perfetto.dev>.
+
+### SDMA capture
+
+The same discovery kprobe also sees the **SDMA** (`type 1`) and **SDMA_XGMI**
+(`type 3`) queues — the GPU's DMA copy engines. `hipMemcpyAsync`, peer-to-peer
+transfers and framework KV-cache staging are submitted here, **not** on the AQL
+compute queues, so they are invisible to `hsa_kernel_launches_total`. Capturing
+SDMA is the only user-space way to account for that bulk byte movement.
+
+SDMA rings differ from AQL rings in three ways the parser handles separately
+(`src/sdma.h`, `src/parser.cpp`):
+
+* **Variable-length packets.** SDMA is dword-granular microcode, not fixed
+  64-byte slots. Each packet's header dword carries an 8-bit opcode + sub-opcode;
+  the decoder reads the header, computes the length, decodes, then strides
+  forward. Unknown opcodes trigger a resync rather than a mis-stride.
+* **The COPY packet carries the byte count and src/dst addresses.** For linear
+  copies we record `bytes`, `src`, `dst` and a **direction**.
+* **Direction (H2D / D2H / D2D)** is inferred by resolving the src/dst virtual
+  addresses through `/proc/<pid>/pagemap`: a host page has a physical frame, a
+  device (VRAM) page has none. src=host,dst=device → `h2d`, and so on. Results
+  are cached per page.
+
+> **Calibration note.** SDMA ring pointer units (dword vs byte) and the
+> linear-copy `COUNT` field width are hardware-revision sensitive. The defaults
+> target the CDNA SDMA v4.x family (gfx90a / gfx942, MI2xx/MI3xx). Confirm them
+> on a new platform by running with `HSA_SNOOP_DEBUG=1` and checking the ring
+> dump strides against the `wptr` deltas (`kSdmaPtrIsDwords` /
+> `kLinearCopyCountMask` in `src/parser.cpp` / `src/sdma.h`).
 
 ## Do we need to touch the driver?
 
@@ -231,6 +267,10 @@ Metrics exposed (all carry constant labels `host`, `platform`, `rocm_version`,
 | `hsa_last_kernel_launch_info` | Gauge | `gpu_id`, `gpu_type`, `kernel_name` | Most recently launched kernel name (value always 1) |
 | `hsa_active_queues` | Gauge | `gpu_id`, `gpu_type` | Currently tracked AQL queues |
 | `hsa_barrier_packets_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm` | Barrier AQL packets seen |
+| `hsa_sdma_copies_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `direction` | SDMA copy packets, by direction (`h2d`/`d2h`/`d2d`) |
+| `hsa_sdma_bytes_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `direction` | Bytes moved by SDMA copies, by direction |
+| `hsa_sdma_packets_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `opcode` | SDMA packets, by opcode (`copy`/`fence`/`timestamp`/...) |
+| `hsa_active_sdma_queues` | Gauge | `gpu_id`, `gpu_type` | Currently tracked SDMA queues |
 | `hsa_errors_total` | Counter | `gpu_id`, `pid` | Packets arriving before queue registration |
 
 Prometheus mode and trace-file mode are **independent** — both can run
@@ -330,11 +370,12 @@ sudo systemctl daemon-reload && sudo systemctl restart hsa-snoop-prometheus
 
 ```
 src/aql.{h,cpp}                    AQL packet formats (mirrors <hsa/hsa.h>)
-src/model.h                        QueueInfo / PacketRecord data model
+src/sdma.{h,cpp}                   SDMA microcode packet formats + length decode
+src/model.h                        QueueInfo / PacketRecord / SdmaRecord data model
 src/discovery.{h,cpp}              queue discovery: kprobe (native) or bpftrace (WSL2)
 src/proc_mem.{h,cpp}               process_vm_readv + pagemap (VA->phys)
 src/ksym.{h,cpp}                   kernel_object -> demangled name via code-object ELFs
-src/parser.{h,cpp}                 per-queue ring poller / AQL decoder / timing
+src/parser.{h,cpp}                 per-queue ring poller / AQL + SDMA decoder / timing
 src/trace_writer.{h,cpp}           Perfetto protobuf + Chrome JSON writers
 src/prometheus_exporter.{h,cpp}    Prometheus metrics exporter (optional)
 src/main.cpp                       CLI / orchestration
@@ -368,8 +409,17 @@ systemd/hsa-snoop.logrotate        logrotate policy (512 MiB rotation, 8 kept)
   child PID.
 * **Physical addresses** resolve for host/GTT-backed rings (the norm for AQL
   host↔GPU queues). VRAM-resident pages have no pagemap PFN and report `0`.
+* **SDMA decode is calibrated for CDNA SDMA v4.x** (gfx90a / gfx942). The ring
+  pointer unit and linear-copy `COUNT` width are hardware-revision sensitive; on
+  a new platform confirm them with `HSA_SNOOP_DEBUG=1` (see
+  [SDMA capture](#sdma-capture)). Non-linear copy layouts (tiled, sub-window) are
+  counted and strided over but do not yet contribute a byte total.
+* **SDMA copy direction is a pagemap heuristic.** A src/dst page with no PFN is
+  treated as device (VRAM) memory; this also matches a not-present/swapped host
+  page, so a copy touching a paged-out host buffer can be misclassified. For
+  live, pinned copy buffers (the common case) it is accurate.
 * Verified on: gfx90a (MI2xx / Aldebaran), ROCm 7.1.0, amdgpu 6.16 DKMS,
-  kernel 6.8, x86-64.
+  kernel 6.8, x86-64. SDMA capture calibration in progress on gfx942 (MI3xx).
 
 ## Verifying the AQL layouts
 
