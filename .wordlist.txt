@@ -95,7 +95,6 @@ ui
 uprobe
 usr
 vadd
-vecwork
 VRAM
 vscale
 workgroup
@@ -119,3 +118,9 @@ Aldebaran
 resync
 src
 dst
+async
+buf
+iters
+mb
+sdma
+vdot
