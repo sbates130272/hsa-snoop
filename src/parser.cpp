@@ -45,6 +45,17 @@ constexpr uint32_t kSdmaWindow = 16;
 // cannot grow it without limit.
 constexpr size_t kPageCacheMax = 1u << 16;
 
+// Read a u64 queue pointer (wptr or rptr). On most platforms (CDNA gfx90a /
+// gfx942) these live in GTT memory that process_vm_readv can reach. On RDNA4
+// (gfx1201) and similar, the KFD maps them inside /dev/dri/renderD128 DRM
+// pages that process_vm_readv refuses with EFAULT -- fall back to
+// /proc/<pid>/mem in that case.
+bool ReadQueuePtr(int pid, uint64_t va, uint64_t* out) {
+    if (ReadU64(pid, va, out))
+        return true;
+    return ReadU64ViaMem(pid, va, out);
+}
+
 } // namespace
 
 RingParser::RingParser(Sink sink, SdmaSink sdma_sink, int poll_us)
@@ -136,9 +147,9 @@ bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, PacketRecord* rec) {
 void RingParser::PollQueue(QueueState* qs, double now) {
     const QueueInfo& q = qs->info;
     uint64_t wptr = 0, rptr = 0;
-    if (!ReadU64(q.pid, q.wptr_addr, &wptr))
+    if (!ReadQueuePtr(q.pid, q.wptr_addr, &wptr))
         return;
-    if (!ReadU64(q.pid, q.rptr_addr, &rptr))
+    if (!ReadQueuePtr(q.pid, q.rptr_addr, &rptr))
         return;
 
     if (!qs->primed) {
@@ -271,20 +282,14 @@ CopyDir RingParser::ClassifyDir(QueueState* qs, uint64_t src, uint64_t dst) {
 void RingParser::PollSdmaQueue(QueueState* qs, double now) {
     const QueueInfo& q = qs->info;
     uint64_t wptr_raw = 0, rptr_raw = 0;
-    if (!ReadU64(q.pid, q.wptr_addr, &wptr_raw) ||
-        !ReadU64(q.pid, q.rptr_addr, &rptr_raw)) {
-        // On CDNA/gfx942 the SDMA read/write pointers live in a doorbell-style
-        // mapping that process_vm_readv cannot reach (EFAULT), even though the
-        // ring buffer itself is readable. When that happens the pointers must
-        // be sourced from the KFD debugfs queue descriptors (mqds/hqds) instead
-        // -- see the SDMA notes in the README. Warn once so this degradation is
-        // visible rather than a silent no-op.
+    if (!ReadQueuePtr(q.pid, q.wptr_addr, &wptr_raw) ||
+        !ReadQueuePtr(q.pid, q.rptr_addr, &rptr_raw)) {
         static int warn_budget = 4;
         if (warn_budget > 0) {
             --warn_budget;
             fprintf(stderr,
-                    "[sdma q%lu] read/write pointers unreadable via "
-                    "process_vm_readv (pid=%d wptr=0x%lx); SDMA progress "
+                    "[sdma q%lu] read/write pointers unreadable "
+                    "(pid=%d wptr=0x%lx); SDMA progress "
                     "tracking unavailable on this platform\n",
                     q.uid, q.pid, q.wptr_addr);
         }

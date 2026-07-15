@@ -1,5 +1,6 @@
 #include "proc_mem.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <sys/uio.h>
 #include <unistd.h>
@@ -17,6 +18,30 @@ bool ReadProcMem(int pid, uint64_t va, void* out, size_t len) {
     };
     ssize_t n = process_vm_readv(pid, &local, 1, &remote, 1, 0);
     return n == static_cast<ssize_t>(len);
+}
+
+// On some platforms (e.g. RDNA4/gfx1201) the write/read queue pointers live
+// in /dev/dri/renderD128 DRM shared mappings that process_vm_readv refuses
+// with EFAULT. /proc/<pid>/mem pread() goes through the VMA directly and
+// succeeds on those pages. We keep a small fd cache so the hot poll path
+// doesn't open/close on every call.
+bool ReadU64ViaMem(int pid, uint64_t va, uint64_t* out) {
+    // Simple thread-local fd cache: we're called from a single polling thread.
+    static __thread int cached_pid = -1;
+    static __thread int cached_fd = -1;
+
+    if (cached_pid != pid) {
+        if (cached_fd >= 0)
+            close(cached_fd);
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/%d/mem", pid);
+        cached_fd = open(path, O_RDONLY);
+        cached_pid = pid;
+    }
+    if (cached_fd < 0)
+        return false;
+    return pread(cached_fd, out, sizeof(*out), static_cast<off_t>(va)) ==
+           static_cast<ssize_t>(sizeof(*out));
 }
 
 uint64_t VirtToPhys(int pid, uint64_t va) {
