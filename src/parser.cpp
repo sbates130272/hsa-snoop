@@ -96,7 +96,7 @@ void RingParser::AddQueue(const QueueInfo& q) {
 // intact and we synthesize a KernelDispatch record rather than silently
 // dropping it.
 bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
-                             PacketRecord* rec) {
+                            PacketRecord* rec) {
     const QueueInfo& q = qs->info;
     uint32_t slots = q.num_slots();
     if (!slots)
@@ -126,7 +126,8 @@ bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
     // intact and we decode it as KernelDispatch.
     if (type == aql::PacketType::Invalid) {
         if (id < rptr) {
-            // Slot consumed; check if kernel_object is set (dispatch body intact).
+            // Slot consumed; check if kernel_object is set (dispatch body
+            // intact).
             aql::KernelDispatchPacket p;
             memcpy(&p, raw, sizeof(p));
             if (p.kernel_object != 0) {

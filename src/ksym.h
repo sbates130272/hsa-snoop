@@ -32,10 +32,11 @@ class KernelSymbolResolver {
     // but the low bits (intra-object offset) are identical. Maps
     // (kernel_object & kOffsetMask) -> name for fallback lookup.
     // An empty string value signals an ambiguous mapping (two different .kd
-    // symbols share the same low bits); ambiguous entries are skipped in Resolve
-    // to avoid returning the wrong name.
+    // symbols share the same low bits); ambiguous entries are skipped in
+    // Resolve to avoid returning the wrong name.
     static constexpr uint64_t kOffsetMask = (1ULL << 12) - 1; // 4KB page offset
-    std::unordered_map<uint64_t, std::string> offset_cache_; // low bits -> name (empty = ambiguous)
+    std::unordered_map<uint64_t, std::string>
+        offset_cache_; // low bits -> name (empty = ambiguous)
     int scanned_generation_ = 0;
 };
 

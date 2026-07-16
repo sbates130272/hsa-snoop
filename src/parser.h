@@ -47,8 +47,9 @@ class RingParser {
         // Cache: page-aligned VA -> host-backed? (used for copy direction).
         std::unordered_map<uint64_t, bool> page_host;
         // Consecutive pointer-read failures. On WSL2/bpftrace --all mode, PID
-        // reuse can cause a queue record to outlive the process that created it;
-        // the ring VA is then invalid in the new process. Evict after threshold.
+        // reuse can cause a queue record to outlive the process that created
+        // it; the ring VA is then invalid in the new process. Evict after
+        // threshold.
         int read_fail_count = 0;
         bool evict = false;
     };
