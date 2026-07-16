@@ -269,6 +269,14 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
               .Help("Number of currently tracked SDMA queues")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
+      sdma_present_family_(
+          prometheus::BuildGauge()
+              .Name("hsa_sdma_present")
+              .Help("1 if at least one SDMA queue has been observed on this "
+                    "system, 0 otherwise; always 0 on APU nodes (e.g. Strix "
+                    "Halo) where no discrete SDMA engine exists")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
       rate_window_sec_(rate_window_sec) {
     // Start the HTTP exposition endpoint.
     std::string addr = "0.0.0.0:" + std::to_string(port);
@@ -284,6 +292,11 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
     // Signal that the exporter is live. Set immediately so the first scrape
     // after startup always sees hsa_snoop_up=1, even before any queue arrives.
     up_family_.Add({}).Set(1.0);
+
+    // Initialise sdma_present to 0; latched to 1 when the first SDMA queue is
+    // registered. Stays 0 on APU nodes with no discrete SDMA engine.
+    sdma_present_gauge_ = &sdma_present_family_.Add({});
+    sdma_present_gauge_->Set(0.0);
 
     // Start the background rate-update thread.
     rate_running_ = true;
@@ -309,6 +322,9 @@ void PrometheusExporter::RegisterQueue(const QueueInfo& q) {
 
     // SDMA and AQL queues are counted separately.
     if (q.is_sdma()) {
+        // Latch hsa_sdma_present = 1 on the first SDMA queue seen.
+        if (sdma_present_gauge_)
+            sdma_present_gauge_->Set(1.0);
         auto& g = active_sdma_queue_gauges_[gpu_str];
         if (!g)
             g = &active_sdma_queues_family_.Add(

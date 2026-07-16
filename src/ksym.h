@@ -28,6 +28,14 @@ class KernelSymbolResolver {
     int pid_;
     std::mutex mu_;
     std::unordered_map<uint64_t, std::string> cache_; // kernel_object -> name
+    // WSL2/APU fallback: GPU VAs differ from CPU VAs for the same code object,
+    // but the low bits (intra-object offset) are identical. Maps
+    // (kernel_object & kOffsetMask) -> name for fallback lookup.
+    // An empty string value signals an ambiguous mapping (two different .kd
+    // symbols share the same low bits); ambiguous entries are skipped in Resolve
+    // to avoid returning the wrong name.
+    static constexpr uint64_t kOffsetMask = (1ULL << 12) - 1; // 4KB page offset
+    std::unordered_map<uint64_t, std::string> offset_cache_; // low bits -> name (empty = ambiguous)
     int scanned_generation_ = 0;
 };
 

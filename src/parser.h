@@ -46,13 +46,19 @@ class RingParser {
         std::map<uint64_t, SdmaRecord> sdma_inflight; // SDMA: end-dword -> rec
         // Cache: page-aligned VA -> host-backed? (used for copy direction).
         std::unordered_map<uint64_t, bool> page_host;
+        // Consecutive pointer-read failures. On WSL2/bpftrace --all mode, PID
+        // reuse can cause a queue record to outlive the process that created it;
+        // the ring VA is then invalid in the new process. Evict after threshold.
+        int read_fail_count = 0;
+        bool evict = false;
     };
 
     void Run();
 
     // AQL path.
     void PollQueue(QueueState* qs, double now);
-    bool DecodeSlot(QueueState* qs, uint64_t id, PacketRecord* rec);
+    bool DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
+                    PacketRecord* rec);
 
     // SDMA path.
     void PollSdmaQueue(QueueState* qs, double now);

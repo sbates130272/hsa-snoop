@@ -203,8 +203,18 @@ int main(int argc, char** argv) {
     if (prometheus_mode) {
         const std::string disc_label =
             disc_mode == DiscoveryMode::kBpftrace ? "dxg" : "kprobe";
-        prom_exporter = std::make_unique<PrometheusExporter>(prometheus_port,
-                                                             10.0, disc_label);
+        try {
+            prom_exporter = std::make_unique<PrometheusExporter>(
+                prometheus_port, 10.0, disc_label);
+        } catch (const std::exception& e) {
+            fprintf(stderr,
+                    "hsa-snoop: failed to start Prometheus endpoint on port "
+                    "%u: %s\n"
+                    "hsa-snoop: is another process already bound to that "
+                    "port? Try --prometheus-port <n>\n",
+                    prometheus_port, e.what());
+            return 1;
+        }
         fprintf(stderr,
                 "hsa-snoop: Prometheus metrics at http://0.0.0.0:%u/metrics\n",
                 prometheus_port);

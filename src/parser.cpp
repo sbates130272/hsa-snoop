@@ -88,7 +88,15 @@ void RingParser::AddQueue(const QueueInfo& q) {
 // Read and decode the AQL packet at ring slot for `id`. Returns false if the
 // packet is not yet ready (producer reserved the slot but has not published the
 // header) or the read failed.
-bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, PacketRecord* rec) {
+//
+// rptr is passed so we can handle the WSL2/APU fast-reset case: on gfx1151
+// (Strix Halo) the GPU resets the header to Invalid immediately on consumption,
+// faster than our poll interval. When id < rptr (slot already consumed) and the
+// header reads as Invalid but kernel_object is non-zero, the packet body is
+// intact and we synthesize a KernelDispatch record rather than silently
+// dropping it.
+bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
+                             PacketRecord* rec) {
     const QueueInfo& q = qs->info;
     uint32_t slots = q.num_slots();
     if (!slots)
@@ -110,8 +118,43 @@ bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, PacketRecord* rec) {
     // Producer publishes the header (with release) last. Treat
     // not-yet-published slots as pending so we don't decode a half-written
     // packet.
-    if (type == aql::PacketType::Invalid ||
-        type == aql::PacketType::VendorSpecific) {
+    //
+    // Exception: on WSL2/APU (gfx1151, Strix Halo) the GPU resets the header
+    // to Invalid immediately after consumption, before our poll loop can
+    // observe it. If id < rptr the slot was committed and consumed; if
+    // kernel_object at the expected offset is non-zero the dispatch body is
+    // intact and we decode it as KernelDispatch.
+    if (type == aql::PacketType::Invalid) {
+        if (id < rptr) {
+            // Slot consumed; check if kernel_object is set (dispatch body intact).
+            aql::KernelDispatchPacket p;
+            memcpy(&p, raw, sizeof(p));
+            if (p.kernel_object != 0) {
+                // Synthesize as KernelDispatch — header was reset by GPU.
+                if (kDebug)
+                    fprintf(stderr,
+                            "[decode q%lu id%lu] fast-reset: synthesising "
+                            "KernelDispatch kernel_obj=0x%lx\n",
+                            q.uid, id, p.kernel_object);
+                rec->queue_uid = q.uid;
+                rec->dispatch_id = id;
+                rec->type = aql::PacketType::KernelDispatch;
+                rec->barrier = false;
+                rec->kernel_object = p.kernel_object;
+                rec->grid[0] = p.grid_size_x;
+                rec->grid[1] = p.grid_size_y;
+                rec->grid[2] = p.grid_size_z;
+                rec->wg[0] = p.workgroup_size_x;
+                rec->wg[1] = p.workgroup_size_y;
+                rec->wg[2] = p.workgroup_size_z;
+                rec->private_seg = p.private_segment_size;
+                rec->group_seg = p.group_segment_size;
+                rec->completion_signal = p.completion_signal;
+                rec->kernarg_address = p.kernarg_address;
+                rec->kernel_name = qs->ksym->Resolve(p.kernel_object);
+                return true;
+            }
+        }
         if (kDebug)
             fprintf(stderr, "[decode q%lu id%lu] not-ready header=0x%x\n",
                     q.uid, id, header);
@@ -147,10 +190,20 @@ bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, PacketRecord* rec) {
 void RingParser::PollQueue(QueueState* qs, double now) {
     const QueueInfo& q = qs->info;
     uint64_t wptr = 0, rptr = 0;
-    if (!ReadQueuePtr(q.pid, q.wptr_addr, &wptr))
+    if (!ReadQueuePtr(q.pid, q.wptr_addr, &wptr) ||
+        !ReadQueuePtr(q.pid, q.rptr_addr, &rptr)) {
+        // On WSL2 --all mode, PID reuse can leave queue records with VAs that
+        // are invalid in the new process. Evict after sustained read failures.
+        if (++qs->read_fail_count >= 5) {
+            fprintf(stderr,
+                    "[parser] evicting stale queue uid=%lu pid=%d "
+                    "(wptr/rptr unreadable after %d attempts)\n",
+                    q.uid, q.pid, qs->read_fail_count);
+            qs->evict = true;
+        }
         return;
-    if (!ReadQueuePtr(q.pid, q.rptr_addr, &rptr))
-        return;
+    }
+    qs->read_fail_count = 0; // clear on success
 
     if (!qs->primed) {
         // Start from the current head so we only report new activity.
@@ -183,9 +236,18 @@ void RingParser::PollQueue(QueueState* qs, double now) {
     //                  skip.
     while (qs->next_id < wptr) {
         PacketRecord rec;
-        if (DecodeSlot(qs, qs->next_id, &rec)) {
+        if (DecodeSlot(qs, qs->next_id, rptr, &rec)) {
             rec.submit_ts = now;
-            qs->inflight.emplace(qs->next_id, std::move(rec));
+            // Fast-reset path: slot already consumed by GPU (id < rptr), emit
+            // directly as completed rather than adding to inflight.
+            if (qs->next_id < rptr) {
+                rec.complete_ts = now;
+                rec.completed = true;
+                if (sink_)
+                    sink_(rec);
+            } else {
+                qs->inflight.emplace(qs->next_id, std::move(rec));
+            }
             qs->next_id++;
         } else if (qs->next_id < rptr) {
             qs->dropped++;
@@ -221,12 +283,24 @@ void RingParser::Run() {
                 snapshot.push_back(q.get());
         }
         for (QueueState* qs : snapshot) {
+            if (qs->evict)
+                continue;
             if (!ProcAlive(qs->info.pid))
                 continue;
             if (qs->info.is_sdma())
                 PollSdmaQueue(qs, now);
             else
                 PollQueue(qs, now);
+        }
+        // Remove evicted queues under the lock.
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            queues_.erase(
+                std::remove_if(queues_.begin(), queues_.end(),
+                               [](const std::unique_ptr<QueueState>& q) {
+                                   return q->evict;
+                               }),
+                queues_.end());
         }
         usleep(poll_us_);
     }
@@ -284,14 +358,12 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
     uint64_t wptr_raw = 0, rptr_raw = 0;
     if (!ReadQueuePtr(q.pid, q.wptr_addr, &wptr_raw) ||
         !ReadQueuePtr(q.pid, q.rptr_addr, &rptr_raw)) {
-        static int warn_budget = 4;
-        if (warn_budget > 0) {
-            --warn_budget;
+        if (++qs->read_fail_count >= 5) {
             fprintf(stderr,
-                    "[sdma q%lu] read/write pointers unreadable "
-                    "(pid=%d wptr=0x%lx); SDMA progress "
-                    "tracking unavailable on this platform\n",
-                    q.uid, q.pid, q.wptr_addr);
+                    "[parser] evicting stale sdma queue uid=%lu pid=%d "
+                    "(wptr/rptr unreadable after %d attempts)\n",
+                    q.uid, q.pid, qs->read_fail_count);
+            qs->evict = true;
         }
         return;
     }
