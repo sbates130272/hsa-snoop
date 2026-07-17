@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "ais_monitor.h"
 #include "discovery.h"
 #include "parser.h"
 #include "proc_mem.h"
@@ -66,7 +67,12 @@ void Usage(const char* p) {
         "time)\n"
         "  --prometheus-port <n>\n"
         "                     Port for Prometheus /metrics endpoint "
-        "(default 9488)\n",
+        "(default 9488)\n"
+        "  --ais-snoop        Enable AMD Infinity Storage (AIS) IO snooping\n"
+        "                     via kprobe on kfd_ioctl_ais (requires bpftrace)\n"
+        "                     AIS events are included in the trace or "
+        "Prometheus\n"
+        "                     output alongside HSA/SDMA events\n",
         p, p, p);
 }
 } // namespace
@@ -75,6 +81,7 @@ int main(int argc, char** argv) {
     int pid_filter = 0, poll_us = 20, duration = 0;
     bool all_mode = false;
     bool prometheus_mode = false;
+    bool ais_mode = false;
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
     uint16_t prometheus_port = 9488;
 #endif
@@ -105,6 +112,8 @@ int main(int argc, char** argv) {
             librocdxg_path = argv[++i];
         else if (a == "--prometheus")
             prometheus_mode = true;
+        else if (a == "--ais-snoop")
+            ais_mode = true;
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
         else if (a == "--prometheus-port" && i + 1 < argc)
             prometheus_port = static_cast<uint16_t>(atoi(argv[++i]));
@@ -248,6 +257,40 @@ int main(int argc, char** argv) {
 
     if (!all_mode && !prometheus_mode)
         single_writer = std::make_unique<TraceWriter>(fmt);
+
+    // AIS monitor: system-wide kprobe on kfd_ioctl_ais via bpftrace.
+    // Runs independently of the queue-based ring parser; events are routed to
+    // the same trace writer or prometheus exporter as AQL/SDMA events.
+    std::unique_ptr<AisMonitor> ais_monitor;
+    if (ais_mode) {
+        ais_monitor = std::make_unique<AisMonitor>();
+        bool ais_ok = ais_monitor->Start([&](const AisRecord& r) {
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+            if (prom_exporter) {
+                prom_exporter->Add(r);
+                return;
+            }
+#endif
+            // In trace mode: route to the single writer (pid/all-mode routing
+            // for AIS uses the record's own pid, not a queue uid, so we always
+            // use the single writer when not in --all mode).
+            if (!all_mode && single_writer)
+                single_writer->Add(r);
+            // In --all mode we write AIS events to a dedicated file.
+            // (AIS events don't belong to a specific queue uid, so we can't
+            // look them up in per_queue_writers; use the single writer instead
+            // if it exists, otherwise they are silently dropped in --all mode
+            // unless prometheus is active.)
+        });
+        if (!ais_ok) {
+            fprintf(stderr, "hsa-snoop: failed to start AIS monitor "
+                            "(is bpftrace installed and are you root?)\n");
+            ais_monitor.reset();
+        } else {
+            fprintf(stderr, "hsa-snoop: AIS monitor armed "
+                            "(kprobe:kfd_ioctl_ais via bpftrace)\n");
+        }
+    }
 
     RingParser parser(
         [&](const PacketRecord& r) {
@@ -410,7 +453,8 @@ int main(int argc, char** argv) {
         return 1;
     }
     fprintf(stderr,
-            "hsa-snoop: discovery armed. Watching for AQL + SDMA queues...\n");
+            "hsa-snoop: discovery armed. Watching for AQL + SDMA queues%s...\n",
+            ais_mode ? " + AIS storage IO" : "");
 
     // The probe is armed; let the stopped child run.
     if (child > 0) {
@@ -445,6 +489,8 @@ int main(int argc, char** argv) {
 
     discovery.Stop();
     parser.Stop();
+    if (ais_monitor)
+        ais_monitor->Stop();
 
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
     if (prometheus_mode) {

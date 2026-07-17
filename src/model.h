@@ -108,4 +108,50 @@ struct SdmaRecord {
     bool is_copy() const { return opcode == sdma::OP_COPY; }
 };
 
+// Classification of a PCIe device backing an AIS IO target, derived from the
+// PCI class code and a vendor-ID RDMA table. Used as Prometheus labels.
+struct PcieDeviceInfo {
+    std::string bdf;         // "0000:01:00.0"
+    std::string device_type; // "nvme" | "rdma" | "unknown"
+    std::string vendor; // human-readable vendor name, e.g. "NVIDIA / Mellanox"
+    std::string vendor_id;  // raw hex VID, e.g. "15b3"
+    std::string device_id;  // raw hex DID, e.g. "101e"
+    std::string class_code; // raw hex class, e.g. "010802"
+};
+
+// IO direction for AIS (AMD Infinity Storage) operations. READ = file→VRAM,
+// WRITE = VRAM→file. Mirrors enum kfd_ais_ops in kfd_ioctl.h.
+enum class AisOp : uint8_t {
+    Unknown = 0,
+    Read = 1,  // KFD_IOC_AIS_READ  — file → VRAM (storage → GPU)
+    Write = 2, // KFD_IOC_AIS_WRITE — VRAM → file (GPU → storage)
+};
+
+const char* AisOpName(AisOp op);
+
+// One AIS (AMD Infinity Storage) ioctl observed via kprobe on kfd_ioctl_ais.
+// Tracks per-GPU (via gpu_id from the handle upper-32 bits) and per-PCIe device
+// (via pcie_id = pdev->devfn encoded as domain:bus:dev.fn string from
+// bpftrace).
+struct AisRecord {
+    uint64_t seq = 0; // monotonic per-monitor sequence number
+    int pid = 0;      // calling process pid
+    std::string comm; // process name
+    AisOp op = AisOp::Unknown;
+    uint32_t gpu_id = 0;      // KFD gpu_id (upper 32 bits of handle)
+    std::string pcie_id;      // PCIe BDF string e.g. "0000:01:00.0"
+    PcieDeviceInfo pcie_info; // device type, vendor, raw IDs
+    uint64_t size_req = 0;    // requested transfer size (in->size)
+    uint64_t size_copied = 0; // actual bytes transferred (out->size_copied)
+    int error = 0;            // 0 = success, negative errno on failure
+    double submit_ts = 0;     // CLOCK_MONOTONIC_RAW seconds at ioctl entry
+    double complete_ts = 0;   // CLOCK_MONOTONIC_RAW seconds at ioctl return
+    bool completed = false;
+
+    double latency_sec() const {
+        return completed ? (complete_ts - submit_ts) : 0.0;
+    }
+    bool is_error() const { return error != 0; }
+};
+
 } // namespace hsasnoop
