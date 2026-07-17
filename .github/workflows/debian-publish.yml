@@ -5,6 +5,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
 
 permissions:
   contents: write
@@ -28,12 +30,32 @@ jobs:
 
     - name: Check out code
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
     - name: Mark repo as safe for git
       run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
     - name: Install build dependencies
       run: apt-get install -y cmake dpkg-dev
+
+    - name: Determine version
+      id: version
+      shell: bash
+      run: |
+        # Use the git tag if this run was triggered by one, otherwise fall back
+        # to the short commit SHA prefixed with 0~ (pre-release ordering).
+        TAG=$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+        if [[ -n "$TAG" ]]; then
+          VERSION="${TAG#v}"        # strip leading 'v'
+          PRERELEASE=false
+        else
+          VERSION="0~${GITHUB_SHA::8}"
+          PRERELEASE=true
+        fi
+        echo "VERSION=${VERSION}"    >> "$GITHUB_ENV"
+        echo "PRERELEASE=${PRERELEASE}" >> "$GITHUB_ENV"
+        echo "TAG=${TAG}"            >> "$GITHUB_ENV"
 
     - name: Configure with CMake (Prometheus enabled)
       run: |
@@ -54,20 +76,29 @@ jobs:
         mkdir -p /tmp/pkg/DEBIAN
         cp debian/control debian/postinst debian/prerm debian/conffiles /tmp/pkg/DEBIAN/
         chmod 0755 /tmp/pkg/DEBIAN/postinst /tmp/pkg/DEBIAN/prerm
-        VERSION=${GITHUB_SHA::8}
-        sed -i "s/^Version:.*/Version: 0~${VERSION}/" /tmp/pkg/DEBIAN/control
-        dpkg-deb --build --root-owner-group /tmp/pkg hsa-snoop_${VERSION}_amd64.deb
-        echo "DEB_FILE=hsa-snoop_${VERSION}_amd64.deb" >> "$GITHUB_ENV"
-        echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+        sed -i "s/^Version:.*/Version: ${VERSION}/" /tmp/pkg/DEBIAN/control
+        DEB_FILE="hsa-snoop_${VERSION}_amd64.deb"
+        dpkg-deb --build --root-owner-group /tmp/pkg "${DEB_FILE}"
+        echo "DEB_FILE=${DEB_FILE}" >> "$GITHUB_ENV"
 
     - name: Verify .deb metadata
       run: dpkg-deb --info "$DEB_FILE"
 
     - name: Publish to GitHub Releases
+      shell: bash
       run: |
-        gh release delete latest --yes || true
-        gh release create latest \
-          --title "Latest build (${VERSION})" \
-          --notes "Automatically published from main at commit ${GITHUB_SHA}." \
-          --prerelease \
-          "$DEB_FILE"
+        if [[ "${PRERELEASE}" == "false" ]]; then
+          # Named semver release — create once, do not overwrite
+          gh release create "${TAG}" \
+            --title "hsa-snoop ${TAG}" \
+            --notes "Release ${TAG}." \
+            "${DEB_FILE}"
+        else
+          # Rolling latest pre-release for every main push
+          gh release delete latest --yes || true
+          gh release create latest \
+            --title "Latest build (${VERSION})" \
+            --notes "Automatically published from main at commit ${GITHUB_SHA}." \
+            --prerelease \
+            "${DEB_FILE}"
+        fi
