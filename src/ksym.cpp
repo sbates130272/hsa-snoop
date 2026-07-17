@@ -111,8 +111,12 @@ std::string Demangle(const std::string& mangled) {
 
 // Walk one AMDGPU ELF image (loaded at `base`) via its dynamic segment and add
 // every "<name>.kd" symbol to the cache as kernel_object -> demangled name.
+// Also populates offset_cache (keyed by runtime_va & kOffsetMask) for the
+// WSL2/APU case where the GPU VA and CPU VA of the same code object differ.
 static void ScanImage(const MemReader& pid, uint64_t base,
-                      std::unordered_map<uint64_t, std::string>* cache) {
+                      std::unordered_map<uint64_t, std::string>* cache,
+                      std::unordered_map<uint64_t, std::string>* offset_cache,
+                      uint64_t offset_mask) {
     Elf64_Ehdr eh;
     if (!Peek(pid, base, &eh))
         return;
@@ -191,7 +195,20 @@ static void ScanImage(const MemReader& pid, uint64_t base,
         if (name.compare(name.size() - 3, 3, ".kd") != 0)
             continue;
         uint64_t runtime = sym.st_value + bias;
-        (*cache)[runtime] = Demangle(name.substr(0, name.size() - 3));
+        std::string demangled = Demangle(name.substr(0, name.size() - 3));
+        (*cache)[runtime] = demangled;
+        // Low-bit fallback for WSL2/APU: GPU VAs of code objects differ from
+        // CPU VAs, but the offset within the code object is the same. Store
+        // by low bits so Resolve can match GPU VAs that miss the primary cache.
+        // If two different .kd symbols share the same low bits, mark the entry
+        // as ambiguous (empty string) so Resolve skips it rather than returning
+        // the wrong name.
+        if (offset_cache) {
+            uint64_t key = runtime & offset_mask;
+            auto [oit, inserted] = offset_cache->emplace(key, demangled);
+            if (!inserted && oit->second != demangled && !oit->second.empty())
+                oit->second = {}; // collision: mark ambiguous
+        }
     }
 }
 
@@ -200,7 +217,7 @@ void KernelSymbolResolver::ScanCodeObjects() {
     auto bases = FindElfBases(pid_, mem);
     size_t before = cache_.size();
     for (uint64_t base : bases)
-        ScanImage(mem, base, &cache_);
+        ScanImage(mem, base, &cache_, &offset_cache_, kOffsetMask);
     ++scanned_generation_;
     if (getenv("HSA_SNOOP_DEBUG"))
         fprintf(stderr,
@@ -221,6 +238,17 @@ std::string KernelSymbolResolver::Resolve(uint64_t kernel_object) {
     if (it != cache_.end())
         return it->second;
 
+    // WSL2/APU fallback: GPU VAs of code objects differ from CPU VAs, but the
+    // intra-object offset (low bits) is the same. Try matching by low bits.
+    // Skip ambiguous entries (empty string = two .kd symbols share the same
+    // low bits; we can't tell which is correct).
+    auto oit = offset_cache_.find(kernel_object & kOffsetMask);
+    if (oit != offset_cache_.end() && !oit->second.empty()) {
+        // Populate the primary cache so future lookups are O(1).
+        cache_[kernel_object] = oit->second;
+        return oit->second;
+    }
+
     if (getenv("HSA_SNOOP_DEBUG")) {
         fprintf(stderr,
                 "[ksym pid=%d] MISS kernel_object=0x%lx; sample cache:\n", pid_,
@@ -234,6 +262,9 @@ std::string KernelSymbolResolver::Resolve(uint64_t kernel_object) {
     }
     char buf[32];
     snprintf(buf, sizeof(buf), "kernel_0x%lx", kernel_object);
+    // Cache the hex label so the same unresolvable address doesn't trigger
+    // another ScanCodeObjects() scan on the next call.
+    cache_[kernel_object] = buf;
     return buf;
 }
 

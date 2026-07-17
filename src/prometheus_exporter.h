@@ -95,6 +95,10 @@ class PrometheusExporter {
     prometheus::Family<prometheus::Counter>& sdma_bytes_family_;
     prometheus::Family<prometheus::Counter>& sdma_packets_family_;
     prometheus::Family<prometheus::Gauge>& active_sdma_queues_family_;
+    // Latches at 1 the first time an SDMA queue is registered; stays 0 on APU
+    // nodes (e.g. Strix Halo) where all memory is shared and no SDMA engine
+    // exists. Grafana panels can gate on this metric.
+    prometheus::Family<prometheus::Gauge>& sdma_present_family_;
 
     // Guards all metadata maps and per-gpu gauge pointer caches.
     std::mutex meta_mu_;
@@ -110,6 +114,8 @@ class PrometheusExporter {
     std::unordered_map<std::string, prometheus::Gauge*>
         triggered_gauges_; // gpu_id_str -> gauge (latches at 1 on first
                            // dispatch)
+    prometheus::Gauge* sdma_present_gauge_{
+        nullptr}; // latches at 1 on first SDMA queue
 
     // Guards the launch-event deque used for rate computation.
     std::mutex rate_mu_;
