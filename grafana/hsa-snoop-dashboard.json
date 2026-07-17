@@ -14,7 +14,7 @@
       "type": "grafana",
       "id": "grafana",
       "name": "Grafana",
-      "version": "10.0.0"
+      "version": "10.2.0"
     },
     {
       "type": "datasource",
@@ -146,7 +146,8 @@
         }
       ],
       "title": "hsa-snoop Status",
-      "type": "stat"
+      "type": "stat",
+      "description": "Exporter liveness — green means hsa-snoop is scraping the host."
     },
     {
       "datasource": {
@@ -205,7 +206,8 @@
         }
       ],
       "title": "Active AQL Queues",
-      "type": "stat"
+      "type": "stat",
+      "description": "Current number of open AQL dispatch queues per GPU."
     },
     {
       "datasource": {
@@ -264,7 +266,8 @@
         }
       ],
       "title": "Total Kernel Launches (range)",
-      "type": "stat"
+      "type": "stat",
+      "description": "Cumulative kernel launches seen over the selected dashboard time range."
     },
     {
       "datasource": {
@@ -323,7 +326,8 @@
         }
       ],
       "title": "Kernel Launch Rate",
-      "type": "stat"
+      "type": "stat",
+      "description": "Instantaneous kernel launches per second as reported by the exporter gauge."
     },
     {
       "datasource": {
@@ -383,7 +387,8 @@
         }
       ],
       "title": "Last Kernel Launch",
-      "type": "stat"
+      "type": "stat",
+      "description": "Timestamp of the most recent kernel launch event, shown as time-ago."
     },
     {
       "datasource": {
@@ -441,7 +446,8 @@
         }
       ],
       "title": "Last Kernel Name",
-      "type": "stat"
+      "type": "stat",
+      "description": "Most recently dispatched kernel name per GPU. One tile per GPU×kernel_name is intentional — the gauge resets as the active kernel changes."
     },
     {
       "datasource": {
@@ -520,7 +526,8 @@
         }
       ],
       "title": "GPU Triggered",
-      "type": "stat"
+      "type": "stat",
+      "description": "Latches to 1 on the first kernel dispatch seen per GPU; never resets. Use as a basic activity indicator."
     },
     {
       "collapsed": false,
@@ -611,7 +618,8 @@
         }
       ],
       "title": "Kernel Launch Rate",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Kernel launches per second from the exporter-maintained rolling gauge, one series per GPU."
     },
     {
       "datasource": {
@@ -666,13 +674,14 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rate(hsa_kernel_launches_total{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__rate_interval])",
-          "legendFormat": "GPU {{gpu_id}} / {{kernel_name}} / pid {{pid}}",
+          "expr": "sum by (gpu_id, gpu_type, kernel_name) (rate(hsa_kernel_launches_total{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__rate_interval]))",
+          "legendFormat": "GPU {{gpu_id}} — {{kernel_name}}",
           "refId": "A"
         }
       ],
-      "title": "Kernel Launches Rate (by kernel, Prometheus rate())",
-      "type": "timeseries"
+      "title": "Kernel Launch Rate (by kernel)",
+      "type": "timeseries",
+      "description": "Per-kernel launch rate via Prometheus rate(), aggregated across all PIDs for readability."
     },
     {
       "collapsed": false,
@@ -735,13 +744,14 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rate(hsa_kernel_duration_seconds_sum{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__rate_interval])\n/ rate(hsa_kernel_duration_seconds_count{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__rate_interval])",
-          "legendFormat": "GPU {{gpu_id}} / {{kernel_name}} avg",
+          "expr": "sum by (gpu_id, gpu_type, kernel_name) (rate(hsa_kernel_duration_seconds_sum{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__rate_interval]))\n/ sum by (gpu_id, gpu_type, kernel_name) (rate(hsa_kernel_duration_seconds_count{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__rate_interval]))",
+          "legendFormat": "GPU {{gpu_id}} — {{kernel_name}} avg",
           "refId": "A"
         }
       ],
       "title": "Average Kernel Duration",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Rolling average kernel execution time per kernel name, computed as rate(sum)/rate(count)."
     },
     {
       "datasource": {
@@ -793,7 +803,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "histogram_quantile(0.99, sum by (le, gpu_id, gpu_type, kernel_name) (\n  rate(hsa_kernel_duration_seconds_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__rate_interval])\n))",
-          "legendFormat": "p99 GPU {{gpu_id}} / {{kernel_name}}",
+          "legendFormat": "p99 GPU {{gpu_id}} — {{kernel_name}}",
           "refId": "A"
         },
         {
@@ -802,12 +812,13 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "expr": "histogram_quantile(0.50, sum by (le, gpu_id, gpu_type, kernel_name) (\n  rate(hsa_kernel_duration_seconds_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__rate_interval])\n))",
-          "legendFormat": "p50 GPU {{gpu_id}} / {{kernel_name}}",
+          "legendFormat": "p50 GPU {{gpu_id}} — {{kernel_name}}",
           "refId": "B"
         }
       ],
-      "title": "Kernel Duration Percentiles (p50/p99)",
-      "type": "timeseries"
+      "title": "Kernel Duration Percentiles",
+      "type": "timeseries",
+      "description": "p50 and p99 kernel execution time per kernel name, derived from histogram bucket series."
     },
     {
       "collapsed": false,
@@ -880,7 +891,8 @@
         }
       ],
       "title": "Active AQL Queues",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Active AQL dispatch queue count over time, stacked by GPU."
     },
     {
       "datasource": {
@@ -931,13 +943,14 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rate(hsa_barrier_packets_total{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__rate_interval])",
-          "legendFormat": "GPU {{gpu_id}} / pid {{pid}} ({{comm}})",
+          "expr": "sum by (gpu_id, gpu_type) (rate(hsa_barrier_packets_total{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__rate_interval]))",
+          "legendFormat": "GPU {{gpu_id}} ({{gpu_type}})",
           "refId": "A"
         }
       ],
-      "title": "Barrier Packet Rate",
-      "type": "timeseries"
+      "title": "Barrier Packet Rate (by GPU)",
+      "type": "timeseries",
+      "description": "AQL barrier packet submission rate summed per GPU, removing per-process noise."
     },
     {
       "collapsed": false,
@@ -1056,7 +1069,8 @@
           }
         }
       ],
-      "type": "table"
+      "type": "table",
+      "description": "Live-ranked table of kernel names by current launch rate. Use as a dispatch hotspot finder."
     },
     {
       "collapsed": false,
@@ -1107,7 +1121,7 @@
       },
       "gridPos": {
         "h": 6,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 44
       },
@@ -1131,13 +1145,14 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "rate(hsa_errors_total{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__rate_interval])",
-          "legendFormat": "GPU {{gpu_id}} / pid {{pid}}",
+          "expr": "sum by (gpu_id) (rate(hsa_errors_total{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__rate_interval]))",
+          "legendFormat": "GPU {{gpu_id}}",
           "refId": "A"
         }
       ],
-      "title": "Packet Errors (missed RegisterQueue races)",
-      "type": "timeseries"
+      "title": "Packet Errors",
+      "type": "timeseries",
+      "description": "Rate of missed RegisterQueue races (errors_total) per GPU. Non-zero values indicate queue registration timing issues."
     },
     {
       "collapsed": false,
@@ -1148,7 +1163,7 @@
         "y": 50
       },
       "id": 106,
-      "title": "SDMA I/O (DMA copy engines \u2014 N/A on APU/unified-memory nodes)",
+      "title": "SDMA I/O (DMA copy engines — N/A on APU/unified-memory nodes)",
       "type": "row"
     },
     {
@@ -1234,7 +1249,8 @@
         }
       ],
       "title": "SDMA Engine Status",
-      "type": "stat"
+      "type": "stat",
+      "description": "Orange means APU or unified-memory node with no dedicated SDMA DMA engine."
     },
     {
       "datasource": {
@@ -1291,7 +1307,8 @@
         }
       ],
       "title": "SDMA Throughput (bytes/s by direction)",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "DMA copy engine throughput in bytes/s, split by direction (h2d / d2h)."
     },
     {
       "datasource": {
@@ -1348,7 +1365,8 @@
         }
       ],
       "title": "SDMA Copy Rate (by direction)",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Number of DMA copy operations per second by direction."
     },
     {
       "datasource": {
@@ -1405,7 +1423,8 @@
         }
       ],
       "title": "Active SDMA Queues",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Active SDMA engine queue count per GPU over time."
     },
     {
       "datasource": {
@@ -1462,25 +1481,44 @@
         }
       ],
       "title": "SDMA Packet Rate (by opcode)",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "SDMA ring packet submission rate broken down by opcode type."
     },
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 70 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 70
+      },
       "id": 107,
       "title": "AIS — AMD Infinity Storage P2P Direct IO (requires --ais-snoop)",
       "type": "row"
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [
             {
               "options": {
-                "0": { "color": "blue",  "index": 1, "text": "NOT SEEN" },
-                "1": { "color": "green", "index": 0, "text": "ACTIVE"   }
+                "0": {
+                  "color": "blue",
+                  "index": 1,
+                  "text": "NOT SEEN"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "ACTIVE"
+                }
               },
               "type": "value"
             }
@@ -1488,26 +1526,46 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue",  "value": null },
-              { "color": "green", "value": 1    }
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
             ]
           }
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 6, "x": 0, "y": 71 },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 0,
+        "y": 71
+      },
       "id": 300,
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto"
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "ais_active{host=~\"$host\"}",
           "instant": true,
           "legendFormat": "AIS active",
@@ -1515,164 +1573,294 @@
         }
       ],
       "title": "AIS Status",
-      "type": "stat"
+      "type": "stat",
+      "description": "Green means at least one P2P direct-IO path is active on this host (requires --ais-snoop)."
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "short",
           "thresholds": {
             "mode": "absolute",
-            "steps": [{ "color": "green", "value": null }]
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
           }
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 6, "x": 6, "y": 71 },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 6,
+        "y": 71
+      },
       "id": 301,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "center",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto"
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "increase(ais_rx_ops_total{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__range])",
           "instant": true,
-          "legendFormat": "RX GPU {{gpu_id}} / {{pcie_id}}",
+          "legendFormat": "RX GPU {{gpu_id}} — {{pcie_id}}",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "increase(ais_tx_ops_total{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__range])",
           "instant": true,
-          "legendFormat": "TX GPU {{gpu_id}} / {{pcie_id}}",
+          "legendFormat": "TX GPU {{gpu_id}} — {{pcie_id}}",
           "refId": "B"
         }
       ],
       "title": "AIS Total Ops (range)",
-      "type": "stat"
+      "type": "stat",
+      "description": "Total AIS RX and TX operation count over the selected range, per GPU and PCIe endpoint."
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "bytes",
           "thresholds": {
             "mode": "absolute",
-            "steps": [{ "color": "green", "value": null }]
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
           }
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 6, "x": 12, "y": 71 },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 12,
+        "y": 71
+      },
       "id": 302,
       "options": {
         "colorMode": "value",
         "graphMode": "area",
         "justifyMode": "center",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto"
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "increase(ais_rx_bytes_total{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__range])",
           "instant": true,
-          "legendFormat": "RX GPU {{gpu_id}} / {{pcie_id}}",
+          "legendFormat": "RX GPU {{gpu_id}} — {{pcie_id}}",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "increase(ais_tx_bytes_total{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__range])",
           "instant": true,
-          "legendFormat": "TX GPU {{gpu_id}} / {{pcie_id}}",
+          "legendFormat": "TX GPU {{gpu_id}} — {{pcie_id}}",
           "refId": "B"
         }
       ],
       "title": "AIS Total Bytes (range)",
-      "type": "stat"
+      "type": "stat",
+      "description": "Total AIS RX and TX bytes transferred over the selected range, per GPU and PCIe endpoint."
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green",  "value": null  },
-              { "color": "yellow", "value": 1     },
-              { "color": "red",    "value": 10    }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
             ]
           },
           "unit": "short"
         },
         "overrides": []
       },
-      "gridPos": { "h": 3, "w": 6, "x": 18, "y": 71 },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 18,
+        "y": 71
+      },
       "id": 303,
       "options": {
         "colorMode": "background",
         "graphMode": "area",
         "justifyMode": "center",
         "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "textMode": "auto"
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "increase(ais_rx_errors_total{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__range])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (gpu_id, pcie_id) (increase(ais_rx_errors_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__range]))",
           "instant": true,
-          "legendFormat": "RX GPU {{gpu_id}} / {{pcie_id}} / errno {{errno}}",
+          "legendFormat": "RX GPU {{gpu_id}} — {{pcie_id}}",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "increase(ais_tx_errors_total{host=~\"$host\", gpu_id=~\"$gpu_id\"}[$__range])",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (gpu_id, pcie_id) (increase(ais_tx_errors_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__range]))",
           "instant": true,
-          "legendFormat": "TX GPU {{gpu_id}} / {{pcie_id}} / errno {{errno}}",
+          "legendFormat": "TX GPU {{gpu_id}} — {{pcie_id}}",
           "refId": "B"
         }
       ],
       "title": "AIS Errors (range)",
-      "type": "stat"
+      "type": "stat",
+      "description": "Total AIS errors over the selected range, collapsed to GPU and PCIe device. See AIS Error Rate below for errno breakdown."
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
-          "custom": { "align": "auto", "displayMode": "auto", "inspect": false },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "inspect": false
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "device_type" },
-            "properties": [{ "id": "custom.displayMode", "value": "color-background" }]
+            "matcher": {
+              "id": "byName",
+              "options": "device_type"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
+            ]
           }
         ]
       },
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 74 },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 74
+      },
       "id": 305,
       "options": {
-        "footer": { "enablePagination": false, "show": false },
+        "footer": {
+          "enablePagination": false,
+          "show": false
+        },
         "showHeader": true,
-        "sortBy": [{ "desc": false, "displayName": "pcie_id" }]
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "pcie_id"
+          }
+        ]
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "ais_pcie_device_info{host=~\"$host\"}",
           "format": "table",
           "instant": true,
@@ -1685,21 +1873,37 @@
         {
           "id": "organize",
           "options": {
-            "excludeByName": { "Time": true, "Value": true, "__name__": true,
-                               "discovery_mode": true, "host": true,
-                               "platform": true, "rocm_version": true },
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "__name__": true,
+              "discovery_mode": true,
+              "host": true,
+              "platform": true,
+              "rocm_version": true,
+              "instance": true,
+              "job": true,
+              "rocm_gpu_id": true,
+              "server_name": true
+            },
             "indexByName": {},
             "renameByName": {}
           }
         }
       ],
-      "type": "table"
+      "type": "table",
+      "description": "PCIe device discovery table: topology, device type, vendor, and ROCm version per AIS-capable endpoint."
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisLabel": "bytes/s",
             "drawStyle": "line",
@@ -1707,40 +1911,70 @@
             "lineWidth": 1,
             "showPoints": "never",
             "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" }
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            }
           },
           "unit": "Bps"
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 82 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 80
+      },
       "id": 310,
       "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (pcie_id, device_type) (rate(ais_rx_bytes_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\", device_type=~\"$device_type\"}[$__rate_interval]))",
           "legendFormat": "RX {{pcie_id}} ({{device_type}})",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (pcie_id, device_type) (rate(ais_tx_bytes_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\", device_type=~\"$device_type\"}[$__rate_interval]))",
           "legendFormat": "TX {{pcie_id}} ({{device_type}})",
           "refId": "B"
         }
       ],
-      "title": "AIS Throughput (bytes/s by direction and PCIe device)",
-      "type": "timeseries"
+      "title": "AIS Throughput (bytes/s)",
+      "type": "timeseries",
+      "description": "AIS RX and TX throughput in bytes/s per PCIe device."
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisLabel": "ops/s",
             "drawStyle": "line",
@@ -1753,34 +1987,61 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 82 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 80
+      },
       "id": 311,
       "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (pcie_id, device_type) (rate(ais_rx_ops_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\", device_type=~\"$device_type\"}[$__rate_interval]))",
           "legendFormat": "RX {{pcie_id}} ({{device_type}})",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (pcie_id, device_type) (rate(ais_tx_ops_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\", device_type=~\"$device_type\"}[$__rate_interval]))",
           "legendFormat": "TX {{pcie_id}} ({{device_type}})",
           "refId": "B"
         }
       ],
-      "title": "AIS IOPS (by direction and PCIe device)",
-      "type": "timeseries"
+      "title": "AIS IOPS",
+      "type": "timeseries",
+      "description": "AIS RX and TX operation rate (IOPS) per PCIe device."
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisLabel": "seconds",
             "drawStyle": "line",
@@ -1793,46 +2054,79 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 90 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 88
+      },
       "id": 320,
       "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.99, sum by (le, pcie_id) (\n  rate(ais_rx_latency_seconds_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval])\n))",
           "legendFormat": "RX p99 {{pcie_id}}",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.50, sum by (le, pcie_id) (\n  rate(ais_rx_latency_seconds_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval])\n))",
           "legendFormat": "RX p50 {{pcie_id}}",
           "refId": "B"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.99, sum by (le, pcie_id) (\n  rate(ais_tx_latency_seconds_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval])\n))",
           "legendFormat": "TX p99 {{pcie_id}}",
           "refId": "C"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.50, sum by (le, pcie_id) (\n  rate(ais_tx_latency_seconds_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval])\n))",
           "legendFormat": "TX p50 {{pcie_id}}",
           "refId": "D"
         }
       ],
-      "title": "AIS Latency Percentiles (p50 / p99 by direction)",
-      "type": "timeseries"
+      "title": "AIS Latency Percentiles",
+      "type": "timeseries",
+      "description": "p50 and p99 AIS I/O latency in seconds per PCIe device and direction."
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisLabel": "bytes",
             "drawStyle": "line",
@@ -1845,46 +2139,79 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 90 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 88
+      },
       "id": 321,
       "options": {
-        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.99, sum by (le, pcie_id) (\n  rate(ais_rx_io_size_bytes_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval])\n))",
           "legendFormat": "RX p99 {{pcie_id}}",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.50, sum by (le, pcie_id) (\n  rate(ais_rx_io_size_bytes_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval])\n))",
           "legendFormat": "RX p50 {{pcie_id}}",
           "refId": "B"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.99, sum by (le, pcie_id) (\n  rate(ais_tx_io_size_bytes_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval])\n))",
           "legendFormat": "TX p99 {{pcie_id}}",
           "refId": "C"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.50, sum by (le, pcie_id) (\n  rate(ais_tx_io_size_bytes_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval])\n))",
           "legendFormat": "TX p50 {{pcie_id}}",
           "refId": "D"
         }
       ],
-      "title": "AIS IO Size Distribution (p50 / p99 by direction and PCIe device)",
-      "type": "timeseries"
+      "title": "AIS IO Size Distribution",
+      "type": "timeseries",
+      "description": "p50 and p99 I/O request size in bytes per PCIe device and direction."
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": {
+            "mode": "palette-classic"
+          },
           "custom": {
             "axisLabel": "errors/s",
             "drawStyle": "bars",
@@ -1897,96 +2224,197 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green",  "value": null  },
-              { "color": "yellow", "value": 0.001 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.001
+              }
             ]
           }
         },
         "overrides": []
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 98 },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 96
+      },
       "id": 330,
       "options": {
-        "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom" },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (pcie_id, errno) (rate(ais_rx_errors_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval]))",
           "legendFormat": "RX {{pcie_id}} errno {{errno}}",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (pcie_id, errno) (rate(ais_tx_errors_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval]))",
           "legendFormat": "TX {{pcie_id}} errno {{errno}}",
           "refId": "B"
         }
       ],
       "title": "AIS Error Rate (by direction, device, errno)",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "AIS error rate in errors/s by PCIe device and errno. Non-zero warrants investigation."
     },
     {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
-          "custom": { "align": "auto", "displayMode": "auto", "inspect": false },
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "displayMode": "auto",
+            "inspect": false
+          },
           "thresholds": {
             "mode": "absolute",
-            "steps": [{ "color": "green", "value": null }]
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
           }
         },
         "overrides": [
           {
-            "matcher": { "id": "byRegexp", "options": ".*bytes/s$" },
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*bytes/s$"
+            },
             "properties": [
-              { "id": "unit", "value": "Bps" },
-              { "id": "custom.displayMode", "value": "color-background" }
+              {
+                "id": "unit",
+                "value": "Bps"
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
             ]
           },
           {
-            "matcher": { "id": "byRegexp", "options": ".*iops$" },
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*iops$"
+            },
             "properties": [
-              { "id": "unit", "value": "ops" },
-              { "id": "custom.displayMode", "value": "color-background" }
+              {
+                "id": "unit",
+                "value": "ops"
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
             ]
           },
           {
-            "matcher": { "id": "byRegexp", "options": ".*lat_s$" },
-            "properties": [{ "id": "unit", "value": "s" }]
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*lat_s$"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              }
+            ]
           },
           {
-            "matcher": { "id": "byName", "options": "errors" },
+            "matcher": {
+              "id": "byName",
+              "options": "errors"
+            },
             "properties": [
-              { "id": "unit", "value": "short" },
+              {
+                "id": "unit",
+                "value": "short"
+              },
               {
                 "id": "thresholds",
                 "value": {
                   "mode": "absolute",
                   "steps": [
-                    { "color": "green",  "value": null },
-                    { "color": "yellow", "value": 1    },
-                    { "color": "red",    "value": 10   }
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 10
+                    }
                   ]
                 }
               },
-              { "id": "custom.displayMode", "value": "color-background" }
+              {
+                "id": "custom.displayMode",
+                "value": "color-background"
+              }
             ]
           }
         ]
       },
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 98 },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 96
+      },
       "id": 331,
       "options": {
-        "footer": { "enablePagination": true, "show": false },
+        "footer": {
+          "enablePagination": true,
+          "show": false
+        },
         "showHeader": true,
-        "sortBy": [{ "desc": true, "displayName": "bytes/s" }]
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "bytes/s"
+          }
+        ]
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (gpu_id, gpu_type, pcie_id) (rate(ais_rx_bytes_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval]))",
           "format": "table",
           "instant": true,
@@ -1994,7 +2422,10 @@
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (gpu_id, gpu_type, pcie_id) (rate(ais_tx_bytes_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval]))",
           "format": "table",
           "instant": true,
@@ -2002,7 +2433,10 @@
           "refId": "B"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (gpu_id, gpu_type, pcie_id) (rate(ais_rx_ops_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval]))",
           "format": "table",
           "instant": true,
@@ -2010,7 +2444,10 @@
           "refId": "C"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (gpu_id, gpu_type, pcie_id) (rate(ais_tx_ops_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval]))",
           "format": "table",
           "instant": true,
@@ -2018,7 +2455,10 @@
           "refId": "D"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.99, sum by (le, gpu_id, gpu_type, pcie_id) (\n  rate(ais_rx_latency_seconds_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval])\n))",
           "format": "table",
           "instant": true,
@@ -2026,7 +2466,10 @@
           "refId": "E"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.99, sum by (le, gpu_id, gpu_type, pcie_id) (\n  rate(ais_tx_latency_seconds_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__rate_interval])\n))",
           "format": "table",
           "instant": true,
@@ -2034,7 +2477,10 @@
           "refId": "F"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (gpu_id, gpu_type, pcie_id) (increase(ais_rx_errors_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__range]) + increase(ais_tx_errors_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__range]))",
           "format": "table",
           "instant": true,
@@ -2051,7 +2497,9 @@
         {
           "id": "organize",
           "options": {
-            "excludeByName": { "Time": true },
+            "excludeByName": {
+              "Time": true
+            },
             "indexByName": {},
             "renameByName": {
               "Value #A": "rx_bytes/s",
@@ -2065,7 +2513,8 @@
           }
         }
       ],
-      "type": "table"
+      "type": "table",
+      "description": "Summary table: current RX/TX bytes/s, IOPS, p99 latency, and total errors per GPU and PCIe device."
     }
   ],
   "refresh": "10s",
@@ -2143,7 +2592,8 @@
         "refresh": 2,
         "regex": "",
         "sort": 1,
-        "type": "query"
+        "type": "query",
+        "allValue": ".*"
       },
       {
         "current": {},
@@ -2151,7 +2601,7 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(ais_pcie_device_info{host=~\"$host\"}, device_type)",
+        "definition": "label_values(ais_pcie_device_info{host=~\"$host\", pcie_id=~\"$pcie_id\"}, device_type)",
         "hide": 0,
         "includeAll": true,
         "label": "Device Type",
@@ -2159,13 +2609,14 @@
         "name": "device_type",
         "options": [],
         "query": {
-          "query": "label_values(ais_pcie_device_info{host=~\"$host\"}, device_type)",
+          "query": "label_values(ais_pcie_device_info{host=~\"$host\", pcie_id=~\"$pcie_id\"}, device_type)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
         "regex": "",
         "sort": 1,
-        "type": "query"
+        "type": "query",
+        "allValue": ".*"
       }
     ]
   },
@@ -2176,6 +2627,7 @@
   "timepicker": {},
   "timezone": "browser",
   "title": "HSA Snoop",
-  "uid": "hsa-snoop-v1",
-  "version": 2
+  "uid": "hsa-snoop",
+  "version": 5,
+  "gnetId": null
 }
