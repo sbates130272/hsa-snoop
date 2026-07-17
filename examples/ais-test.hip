@@ -113,7 +113,7 @@ static double now_sec() {
 // encodes (domain<<20)|(bus<<8)|(slot<<3)|fn on Genoa/modern AMD platforms.
 // We then find the render node via /sys/bus/pci/devices/<BDF>/drm/renderD*.
 static bool find_kfd_device(int device_index, uint32_t* gpu_id_out,
-                             int* render_fd_out) {
+                            int* render_fd_out) {
     int found = 0;
     for (int n = 0; n < 128; ++n) {
         char path[256];
@@ -150,9 +150,9 @@ static bool find_kfd_device(int device_index, uint32_t* gpu_id_out,
             return true;
 
         // Decode location_id → BDF (AMD: domain=0, bus=bits[15:8]).
-        unsigned bus  = (location_id >> 8) & 0xff;
+        unsigned bus = (location_id >> 8) & 0xff;
         unsigned slot = (location_id >> 3) & 0x1f;
-        unsigned fn   = location_id & 0x7;
+        unsigned fn = location_id & 0x7;
         char bdf[32];
         snprintf(bdf, sizeof(bdf), "0000:%02x:%02x.%u", bus, slot, fn);
         fprintf(stderr, "ais-test: GPU device=%d gpu_id=%u bdf=%s\n",
@@ -365,8 +365,7 @@ int main(int argc, char* argv[]) {
         struct kfd_ioctl_acquire_vm_args avm = {};
         avm.drm_fd = (uint32_t)render_fd;
         avm.gpu_id = gpu_id;
-        if (ioctl(kfd_fd, AMDKFD_IOC_ACQUIRE_VM, &avm) < 0 &&
-            errno != EBUSY) {
+        if (ioctl(kfd_fd, AMDKFD_IOC_ACQUIRE_VM, &avm) < 0 && errno != EBUSY) {
             fprintf(stderr, "ais-test: ACQUIRE_VM failed: %s\n",
                     strerror(errno));
             goto cleanup;
