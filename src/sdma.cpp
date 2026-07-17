@@ -150,4 +150,16 @@ const char* CopyDirName(CopyDir d) {
     return "unknown";
 }
 
+const char* AisOpName(AisOp op) {
+    switch (op) {
+    case AisOp::Read:
+        return "read";
+    case AisOp::Write:
+        return "write";
+    case AisOp::Unknown:
+        break;
+    }
+    return "unknown";
+}
+
 } // namespace hsasnoop

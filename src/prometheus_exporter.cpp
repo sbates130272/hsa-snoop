@@ -277,6 +277,87 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                     "Halo) where no discrete SDMA engine exists")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
+      // AIS (AMD Infinity Storage) P2P direct-storage metrics.
+      // Read (file→VRAM) and write (VRAM→file) are separate metric families.
+      ais_rx_ops_family_(
+          prometheus::BuildCounter()
+              .Name("ais_rx_ops_total")
+              .Help("AIS read operations observed (file→VRAM, storage→GPU) "
+                    "by GPU and PCIe storage device")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      ais_tx_ops_family_(
+          prometheus::BuildCounter()
+              .Name("ais_tx_ops_total")
+              .Help("AIS write operations observed (VRAM→file, GPU→storage) "
+                    "by GPU and PCIe storage device")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      ais_rx_bytes_family_(
+          prometheus::BuildCounter()
+              .Name("ais_rx_bytes_total")
+              .Help("Bytes transferred by AIS read operations (file→VRAM)")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      ais_tx_bytes_family_(
+          prometheus::BuildCounter()
+              .Name("ais_tx_bytes_total")
+              .Help("Bytes transferred by AIS write operations (VRAM→file)")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      ais_rx_errors_family_(prometheus::BuildCounter()
+                                .Name("ais_rx_errors_total")
+                                .Help("AIS read operations (file→VRAM) that "
+                                      "returned a non-zero error code")
+                                .Labels(MakeConstLabels(discovery_mode))
+                                .Register(*registry_)),
+      ais_tx_errors_family_(prometheus::BuildCounter()
+                                .Name("ais_tx_errors_total")
+                                .Help("AIS write operations (VRAM→file) that "
+                                      "returned a non-zero error code")
+                                .Labels(MakeConstLabels(discovery_mode))
+                                .Register(*registry_)),
+      ais_rx_latency_family_(
+          prometheus::BuildHistogram()
+              .Name("ais_rx_latency_seconds")
+              .Help("AIS read ioctl end-to-end latency (file→VRAM) from kprobe "
+                    "entry to return")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      ais_tx_latency_family_(
+          prometheus::BuildHistogram()
+              .Name("ais_tx_latency_seconds")
+              .Help("AIS write ioctl end-to-end latency (VRAM→file) from "
+                    "kprobe entry to return")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      ais_rx_io_size_family_(prometheus::BuildHistogram()
+                                 .Name("ais_rx_io_size_bytes")
+                                 .Help("AIS read IO size distribution (bytes "
+                                       "requested per ioctl, file→VRAM)")
+                                 .Labels(MakeConstLabels(discovery_mode))
+                                 .Register(*registry_)),
+      ais_tx_io_size_family_(prometheus::BuildHistogram()
+                                 .Name("ais_tx_io_size_bytes")
+                                 .Help("AIS write IO size distribution (bytes "
+                                       "requested per ioctl, VRAM→file)")
+                                 .Labels(MakeConstLabels(discovery_mode))
+                                 .Register(*registry_)),
+      ais_active_family_(
+          prometheus::BuildGauge()
+              .Name("ais_active")
+              .Help("1 if at least one AIS IO operation has been observed "
+                    "since startup, 0 otherwise; latches at 1")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      ais_pcie_info_family_(
+          prometheus::BuildGauge()
+              .Name("ais_pcie_device_info")
+              .Help("Static device metadata for each PCIe storage device seen "
+                    "by AIS; value is always 1. Labels: pcie_id, device_type, "
+                    "vendor, vendor_id, device_id, class_code.")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
       rate_window_sec_(rate_window_sec) {
     // Start the HTTP exposition endpoint.
     std::string addr = "0.0.0.0:" + std::to_string(port);
@@ -297,6 +378,10 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
     // registered. Stays 0 on APU nodes with no discrete SDMA engine.
     sdma_present_gauge_ = &sdma_present_family_.Add({});
     sdma_present_gauge_->Set(0.0);
+
+    // Initialise ais_active to 0; latched to 1 on the first AIS ioctl seen.
+    ais_active_gauge_ = &ais_active_family_.Add({});
+    ais_active_gauge_->Set(0.0);
 
     // Start the background rate-update thread.
     rate_running_ = true;
@@ -479,6 +564,124 @@ void PrometheusExporter::Add(const SdmaRecord& rec) {
                   {"comm", meta.comm},
                   {"direction", dir}})
             .Increment(static_cast<double>(rec.bytes));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Add (AIS)
+// ---------------------------------------------------------------------------
+void PrometheusExporter::Add(const AisRecord& rec) {
+    std::lock_guard<std::mutex> lk(meta_mu_);
+
+    std::string gpu_str = std::to_string(rec.gpu_id);
+    std::string gpu_type = DetectGpuType(rec.gpu_id);
+    std::string pcie_str = rec.pcie_id.empty() ? "unknown" : rec.pcie_id;
+    std::string pid_str = std::to_string(rec.pid);
+    std::string dev_type = rec.pcie_info.device_type.empty()
+                               ? "unknown"
+                               : rec.pcie_info.device_type;
+    std::string vendor_str =
+        rec.pcie_info.vendor.empty() ? "unknown" : rec.pcie_info.vendor;
+    const bool is_read = (rec.op == AisOp::Read);
+
+    // Latch ais_active on the first AIS op.
+    if (ais_active_gauge_)
+        ais_active_gauge_->Set(1.0);
+
+    // ais_pcie_device_info — emit once per unique BDF (idempotent via
+    // prometheus-cpp).
+    if (!pcie_str.empty() && pcie_str != "unknown") {
+        ais_pcie_info_family_
+            .Add({{"pcie_id", pcie_str},
+                  {"device_type", dev_type},
+                  {"vendor", vendor_str},
+                  {"vendor_id", rec.pcie_info.vendor_id.empty()
+                                    ? "unknown"
+                                    : rec.pcie_info.vendor_id},
+                  {"device_id", rec.pcie_info.device_id.empty()
+                                    ? "unknown"
+                                    : rec.pcie_info.device_id},
+                  {"class_code", rec.pcie_info.class_code.empty()
+                                     ? "unknown"
+                                     : rec.pcie_info.class_code}})
+            .Set(1.0);
+    }
+
+    // ais_rx_ops_total / ais_tx_ops_total — separate families, no op label.
+    auto& ops_family = is_read ? ais_rx_ops_family_ : ais_tx_ops_family_;
+    ops_family
+        .Add({{"gpu_id", gpu_str},
+              {"gpu_type", gpu_type},
+              {"pcie_id", pcie_str},
+              {"device_type", dev_type},
+              {"vendor", vendor_str},
+              {"pid", pid_str},
+              {"comm", rec.comm}})
+        .Increment();
+
+    // ais_rx_bytes_total / ais_tx_bytes_total — successful transfers only.
+    if (!rec.is_error() && rec.size_copied > 0) {
+        auto& bytes_family =
+            is_read ? ais_rx_bytes_family_ : ais_tx_bytes_family_;
+        bytes_family
+            .Add({{"gpu_id", gpu_str},
+                  {"gpu_type", gpu_type},
+                  {"pcie_id", pcie_str},
+                  {"device_type", dev_type},
+                  {"vendor", vendor_str}})
+            .Increment(static_cast<double>(rec.size_copied));
+    }
+
+    // ais_rx_errors_total / ais_tx_errors_total — failures with errno.
+    if (rec.is_error()) {
+        char errbuf[32];
+        snprintf(errbuf, sizeof(errbuf), "%d", rec.error);
+        auto& err_family =
+            is_read ? ais_rx_errors_family_ : ais_tx_errors_family_;
+        err_family
+            .Add({{"gpu_id", gpu_str},
+                  {"gpu_type", gpu_type},
+                  {"pcie_id", pcie_str},
+                  {"device_type", dev_type},
+                  {"vendor", vendor_str},
+                  {"errno", errbuf}})
+            .Increment();
+    }
+
+    // ais_rx_latency_seconds / ais_tx_latency_seconds — µs to seconds.
+    if (rec.completed) {
+        static const prometheus::Histogram::BucketBoundaries kLatBuckets{
+            1e-6, 5e-6, 1e-5, 5e-5, 1e-4, 5e-4, 1e-3, 5e-3,
+            1e-2, 5e-2, 0.1,  0.5,  1.0,  5.0,  10.0};
+        double lat = rec.latency_sec();
+        auto& lat_family =
+            is_read ? ais_rx_latency_family_ : ais_tx_latency_family_;
+        lat_family
+            .Add({{"gpu_id", gpu_str},
+                  {"gpu_type", gpu_type},
+                  {"pcie_id", pcie_str},
+                  {"device_type", dev_type},
+                  {"vendor", vendor_str}},
+                 kLatBuckets)
+            .Observe(lat);
+    }
+
+    // ais_rx_io_size_bytes / ais_tx_io_size_bytes — 4 KiB to 4 GiB.
+    if (rec.size_req > 0) {
+        static const prometheus::Histogram::BucketBoundaries kSizeBuckets{
+            4096,     8192,     16384,     32768,      65536,
+            131072,   262144,   524288,    1048576,    4194304,
+            16777216, 67108864, 268435456, 1073741824, 4294967296.0};
+        auto& size_family =
+            is_read ? ais_rx_io_size_family_ : ais_tx_io_size_family_;
+        size_family
+            .Add({{"gpu_id", gpu_str},
+                  {"gpu_type", gpu_type},
+                  {"pcie_id", pcie_str},
+                  {"device_type", dev_type},
+                  {"vendor", vendor_str}},
+                 kSizeBuckets)
+            .Observe(static_cast<double>(rec.size_req));
     }
 }
 

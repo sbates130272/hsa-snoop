@@ -52,6 +52,9 @@ class PrometheusExporter {
     // Thread-safe.
     void Add(const SdmaRecord& rec);
 
+    // Called for each completed AisRecord from AisMonitor. Thread-safe.
+    void Add(const AisRecord& rec);
+
     PrometheusExporter(const PrometheusExporter&) = delete;
     PrometheusExporter& operator=(const PrometheusExporter&) = delete;
 
@@ -99,6 +102,22 @@ class PrometheusExporter {
     // nodes (e.g. Strix Halo) where all memory is shared and no SDMA engine
     // exists. Grafana panels can gate on this metric.
     prometheus::Family<prometheus::Gauge>& sdma_present_family_;
+    // AIS (AMD Infinity Storage) P2P direct-storage metrics.
+    // Reads (file→VRAM) and writes (VRAM→file) are separate metric families
+    // rather than a label so that dashboards can select them independently.
+    prometheus::Family<prometheus::Counter>& ais_rx_ops_family_;
+    prometheus::Family<prometheus::Counter>& ais_tx_ops_family_;
+    prometheus::Family<prometheus::Counter>& ais_rx_bytes_family_;
+    prometheus::Family<prometheus::Counter>& ais_tx_bytes_family_;
+    prometheus::Family<prometheus::Counter>& ais_rx_errors_family_;
+    prometheus::Family<prometheus::Counter>& ais_tx_errors_family_;
+    prometheus::Family<prometheus::Histogram>& ais_rx_latency_family_;
+    prometheus::Family<prometheus::Histogram>& ais_tx_latency_family_;
+    prometheus::Family<prometheus::Histogram>& ais_rx_io_size_family_;
+    prometheus::Family<prometheus::Histogram>& ais_tx_io_size_family_;
+    prometheus::Family<prometheus::Gauge>& ais_active_family_;
+    // Info metric: one time-series per unique PCIe device, value=1, all labels.
+    prometheus::Family<prometheus::Gauge>& ais_pcie_info_family_;
 
     // Guards all metadata maps and per-gpu gauge pointer caches.
     std::mutex meta_mu_;
@@ -116,6 +135,8 @@ class PrometheusExporter {
                            // dispatch)
     prometheus::Gauge* sdma_present_gauge_{
         nullptr}; // latches at 1 on first SDMA queue
+    prometheus::Gauge* ais_active_gauge_{
+        nullptr}; // latches at 1 on first AIS op
 
     // Guards the launch-event deque used for rate computation.
     std::mutex rate_mu_;

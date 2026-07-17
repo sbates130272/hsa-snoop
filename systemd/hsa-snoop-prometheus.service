@@ -1,5 +1,5 @@
 [Unit]
-Description=hsa-snoop — Prometheus metrics exporter for HSA/HIP AQL queues
+Description=hsa-snoop — Prometheus metrics exporter for HSA/HIP AQL + AIS queues
 Documentation=https://github.com/sbates130272/hsa-snoop
 After=local-fs.target
 # The two services are independent and can run simultaneously. If both are
@@ -8,7 +8,7 @@ After=local-fs.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/hsa-snoop --all --prometheus
+ExecStart=/usr/local/bin/hsa-snoop --all --prometheus --ais-snoop
 Restart=on-failure
 RestartSec=5s
 

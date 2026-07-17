@@ -101,6 +101,11 @@ Pb DebugUint(const std::string& name, uint64_t val) {
 
 uint64_t NsOf(double sec) { return static_cast<uint64_t>(sec * 1e9); }
 uint64_t QueueTrackUuid(uint64_t uid) { return 0x51000000ULL + uid; }
+// AIS tracks: per-(pid, pcie_id) combination. Hash pcie_id into low 16 bits.
+uint64_t AisTrackUuid(int pid, const std::string& pcie_id) {
+    uint64_t h = std::hash<std::string>{}(pcie_id) & 0xFFFF;
+    return 0xA1500000ULL | ((uint64_t)(uint32_t)pid << 16) | h;
+}
 
 std::string Dims(const uint32_t* g) {
     char b[64];
@@ -123,6 +128,11 @@ void TraceWriter::Add(const PacketRecord& rec) {
 void TraceWriter::Add(const SdmaRecord& rec) {
     std::lock_guard<std::mutex> lk(mu_);
     sdma_records_.push_back(rec);
+}
+
+void TraceWriter::Add(const AisRecord& rec) {
+    std::lock_guard<std::mutex> lk(mu_);
+    ais_records_.push_back(rec);
 }
 
 void TraceWriter::RegisterQueue(const QueueInfo& q) {
@@ -214,6 +224,30 @@ bool TraceWriter::WriteJson(const std::string& path) {
             f << ",\"ring_phys\":\"0x" << std::hex << q.ring_phys << std::dec
               << "\"";
         f << "}}";
+    }
+    // AIS ioctl slices: one track per (pid, pcie_id) combination.
+    // tid for JSON = use a synthetic value: hash of (pid ^ pcie string hash).
+    for (const auto& r : ais_records_) {
+        double dur = r.completed ? (r.complete_ts - r.submit_ts) : 0.0;
+        if (dur < kMinDurSec)
+            dur = kMinDurSec;
+        if (!first)
+            f << ",\n";
+        first = false;
+        // Use pid as the JSON "pid" and a synthetic tid derived from pcie_id.
+        size_t tid_hash = std::hash<std::string>{}(r.pcie_id) & 0xFFFF;
+        uint64_t ais_tid = 0xA15 * 0x10000ULL + tid_hash;
+        std::string label = std::string("ais/") + AisOpName(r.op);
+        if (!r.pcie_id.empty() && r.pcie_id != "unknown")
+            label += " [" + r.pcie_id + "]";
+        f << "{\"ph\":\"X\",\"pid\":" << r.pid << ",\"tid\":" << ais_tid
+          << ",\"ts\":" << (r.submit_ts * 1e6) << ",\"dur\":" << (dur * 1e6)
+          << ",\"name\":\"" << JsonEscape(label) << "\",\"args\":{"
+          << "\"op\":\"" << AisOpName(r.op) << "\""
+          << ",\"gpu_id\":" << r.gpu_id << ",\"pcie_id\":\""
+          << JsonEscape(r.pcie_id) << "\"" << ",\"size_req\":" << r.size_req
+          << ",\"size_copied\":" << r.size_copied << ",\"error\":" << r.error
+          << ",\"seq\":" << r.seq << "}}";
     }
     f << "\n]}\n";
     return true;
@@ -348,6 +382,101 @@ bool TraceWriter::WritePerfetto(const std::string& path) {
         pkt.MsgField(pf::kTrackEvent, te);
         pkt.VarintField(pf::kSeqId, pf::kSeq);
         trace.MsgField(pf::kTracePacket, pkt);
+    }
+
+    // AIS ioctl slices: per-(pid, pcie_id) track, one slice per ioctl.
+    {
+        // Emit track descriptors for each unique (pid, pcie_id) pair. We need
+        // a process descriptor parent for each pid we haven't already seen.
+        std::map<int, bool> ais_seen_pid;
+        std::map<std::string, bool> ais_seen_track; // "pid:pcie_id"
+
+        for (const auto& r : ais_records_) {
+            std::string tk_key = std::to_string(r.pid) + ":" + r.pcie_id;
+            if (!ais_seen_track[tk_key]) {
+                ais_seen_track[tk_key] = true;
+
+                // Process descriptor (if not emitted for this pid yet by queue
+                // loop).
+                if (!seen_pid[r.pid] && !ais_seen_pid[r.pid]) {
+                    ais_seen_pid[r.pid] = true;
+                    Pb proc;
+                    proc.VarintField(pf::kPdPid, r.pid);
+                    proc.StringField(pf::kPdName, r.comm);
+                    Pb td;
+                    td.VarintField(pf::kTdUuid, r.pid);
+                    td.MsgField(pf::kTdProcess, proc);
+                    Pb pkt;
+                    pkt.MsgField(pf::kTrackDescriptor, td);
+                    trace.MsgField(pf::kTracePacket, pkt);
+                }
+
+                // Child track: one per (pid, pcie_id).
+                char label[256];
+                snprintf(label, sizeof(label), "ais [gpu %u] [%s]", r.gpu_id,
+                         r.pcie_id.c_str());
+                uint64_t track_uuid = AisTrackUuid(r.pid, r.pcie_id);
+                Pb td;
+                td.VarintField(pf::kTdUuid, track_uuid);
+                td.StringField(pf::kTdName, label);
+                td.VarintField(pf::kTdParentUuid, r.pid);
+                Pb pkt;
+                pkt.MsgField(pf::kTrackDescriptor, td);
+                trace.MsgField(pf::kTracePacket, pkt);
+            }
+        }
+
+        // Emit time-sorted begin/end pairs for each AIS record.
+        struct AEv {
+            uint64_t ts;
+            bool begin;
+            const AisRecord* r;
+        };
+        std::vector<AEv> aevs;
+        for (const auto& r : ais_records_) {
+            double end = r.complete_ts;
+            if (end - r.submit_ts < kMinDurSec)
+                end = r.submit_ts + kMinDurSec;
+            aevs.push_back({NsOf(r.submit_ts), true, &r});
+            aevs.push_back({NsOf(end), false, &r});
+        }
+        std::stable_sort(aevs.begin(), aevs.end(),
+                         [](const AEv& a, const AEv& b) {
+                             if (a.ts != b.ts)
+                                 return a.ts < b.ts;
+                             return !a.begin && b.begin;
+                         });
+
+        for (const AEv& e : aevs) {
+            const AisRecord& r = *e.r;
+            uint64_t track_uuid = AisTrackUuid(r.pid, r.pcie_id);
+            Pb te;
+            te.VarintField(pf::kTeTrackUuid, track_uuid);
+            if (e.begin) {
+                te.VarintField(pf::kTeType, pf::kTypeSliceBegin);
+                std::string name = std::string("ais/") + AisOpName(r.op);
+                te.StringField(pf::kTeName, name);
+                te.MsgField(pf::kTeDebug, DebugStr("op", AisOpName(r.op)));
+                te.MsgField(pf::kTeDebug, DebugUint("gpu_id", r.gpu_id));
+                te.MsgField(pf::kTeDebug, DebugStr("pcie_id", r.pcie_id));
+                te.MsgField(pf::kTeDebug, DebugUint("size_req", r.size_req));
+                te.MsgField(pf::kTeDebug,
+                            DebugUint("size_copied", r.size_copied));
+                if (r.is_error()) {
+                    char errbuf[32];
+                    snprintf(errbuf, sizeof(errbuf), "%d", r.error);
+                    te.MsgField(pf::kTeDebug, DebugStr("error", errbuf));
+                }
+                te.MsgField(pf::kTeDebug, DebugUint("seq", r.seq));
+            } else {
+                te.VarintField(pf::kTeType, pf::kTypeSliceEnd);
+            }
+            Pb pkt;
+            pkt.VarintField(pf::kTimestamp, e.ts);
+            pkt.MsgField(pf::kTrackEvent, te);
+            pkt.VarintField(pf::kSeqId, pf::kSeq);
+            trace.MsgField(pf::kTracePacket, pkt);
+        }
     }
 
     std::ofstream f(path, std::ios::binary);
