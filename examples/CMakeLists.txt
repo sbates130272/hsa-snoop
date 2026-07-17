@@ -43,7 +43,7 @@ add_executable(sdma-test sdma-test.hip)
 target_link_libraries(sdma-test PRIVATE hip::device)
 
 # AIS (AMD Infinity Storage) P2P direct IO test.
-# Uses raw KFD ioctls for VRAM alloc/map/transfer; HIP provides device init.
-set_source_files_properties(ais-test.hip PROPERTIES LANGUAGE HIP)
+# Uses raw KFD ioctls only; no HIP runtime dependency.
+# Built as .hip for consistency but compiled as plain C++.
+set_source_files_properties(ais-test.hip PROPERTIES LANGUAGE CXX)
 add_executable(ais-test ais-test.hip)
-target_link_libraries(ais-test PRIVATE hip::device)
