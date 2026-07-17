@@ -112,49 +112,55 @@ static std::string ClassifyByVendorId(const std::string& vid) {
     return "";
 }
 
-// Vendor-ID → human-readable vendor name.
+// Vendor-ID → human-readable vendor name, looked up from the system pci.ids
+// database. Falls back to "unknown" if the file is absent or the VID is not
+// listed. Results are cached after the first parse.
 static std::string VendorName(const std::string& vid) {
-    if (vid == "15b3")
-        return "NVIDIA / Mellanox";
-    if (vid == "1425")
-        return "Chelsio";
-    if (vid == "8086")
-        return "Intel";
-    if (vid == "14e4")
-        return "Broadcom";
-    if (vid == "1d0f")
-        return "Amazon";
-    if (vid == "1dd8")
-        return "Pensando / AMD";
-    if (vid == "1077")
-        return "Marvell / QLogic";
-    if (vid == "10ee")
-        return "Xilinx";
-    if (vid == "1924")
-        return "Solarflare";
-    if (vid == "144d")
-        return "Samsung";
-    if (vid == "1987")
-        return "Phison";
-    if (vid == "1179")
-        return "Toshiba / Kioxia";
-    if (vid == "1c5c")
-        return "SK hynix";
-    if (vid == "1d97")
-        return "Shenzhen Longsys";
-    if (vid == "1e0f")
-        return "KIOXIA";
-    if (vid == "1e95")
-        return "Solid State Storage";
-    if (vid == "126f")
-        return "Silicon Motion";
-    if (vid == "10ec")
-        return "Realtek";
-    if (vid == "1002")
-        return "AMD";
-    if (vid == "10de")
-        return "NVIDIA";
-    return "unknown";
+    static std::unordered_map<std::string, std::string> db;
+    static bool loaded = false;
+
+    if (!loaded) {
+        loaded = true;
+        // Standard locations for pci.ids across distros.
+        static const char* const kPaths[] = {
+            "/usr/share/misc/pci.ids",
+            "/usr/share/pci.ids",
+            "/usr/share/hwdata/pci.ids",
+            nullptr,
+        };
+        for (int i = 0; kPaths[i]; ++i) {
+            std::ifstream f(kPaths[i]);
+            if (!f.is_open())
+                continue;
+            std::string line;
+            while (std::getline(f, line)) {
+                // Vendor lines: "VVVV  Vendor Name" (no leading tab)
+                if (line.empty() || line[0] == '#' || line[0] == '\t')
+                    continue;
+                if (line.size() < 6)
+                    continue;
+                std::string key = line.substr(0, 4);
+                // Verify it's a 4-digit hex VID.
+                bool hex = true;
+                for (char c : key)
+                    if (!isxdigit((unsigned char)c)) {
+                        hex = false;
+                        break;
+                    }
+                if (!hex)
+                    continue;
+                // Vendor name starts after the VID and whitespace.
+                size_t name_start = line.find_first_not_of(" \t", 4);
+                if (name_start == std::string::npos)
+                    continue;
+                db[key] = line.substr(name_start);
+            }
+            break; // use the first file found
+        }
+    }
+
+    auto it = db.find(vid);
+    return it != db.end() ? it->second : "unknown";
 }
 
 // Resolve the full PCIe device info for the block device backing fd in pid.

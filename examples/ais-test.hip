@@ -35,12 +35,12 @@
 //   6. AMDKFD_IOC_UNMAP_MEMORY_FROM_GPU
 //   7. AMDKFD_IOC_FREE_MEMORY_OF_GPU
 //
-// Build: compiled as part of the examples/ CMake target (hip::device).
-// The HIP runtime is used only to pick the device and resolve the DRM node;
-// actual IO is via raw KFD ioctls so it is visible to the ais-snoop kprobe.
+// Build: compiled as part of the examples/ CMake target.
+// No HIP runtime is used — GPU selection and gpu_id resolution are done
+// entirely via /sys/class/kfd/kfd/topology so the tool starts without
+// requiring an active ROCm context or any prior GPU workload.
 
-#include <hip/hip_runtime.h>
-
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/fs.h>
@@ -90,16 +90,6 @@ struct kfd_ioctl_ais_args {
 #define AMDKFD_IOC_AIS_OP AMDKFD_IOWR(0x87, struct kfd_ioctl_ais_args)
 #endif // AMDKFD_IOC_AIS_OP
 
-#define CHECK_HIP(x)                                                           \
-    do {                                                                       \
-        hipError_t _e = (x);                                                   \
-        if (_e != hipSuccess) {                                                \
-            fprintf(stderr, "HIP error at %s:%d: %s\n", __FILE__, __LINE__,    \
-                    hipGetErrorString(_e));                                    \
-            exit(1);                                                           \
-        }                                                                      \
-    } while (0)
-
 #define CHECK_IOCTL(fd, req, arg, label)                                       \
     do {                                                                       \
         if (ioctl((fd), (req), (arg)) < 0) {                                   \
@@ -115,10 +105,17 @@ static double now_sec() {
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
-// Return GPU ID from KFD topology for the given PCI BDF string.
-static uint32_t find_kfd_gpu_id(const char* pci_bdf) {
-    // Walk /sys/class/kfd/kfd/topology/nodes/<N>/gpu_id and location.
-    for (int n = 0; n < 64; ++n) {
+// Enumerate KFD GPU devices from sysfs topology, ordered by node index.
+// Fills gpu_id and opens the matching DRM render node (needed for ACQUIRE_VM).
+// Returns true on success. No HIP runtime required.
+//
+// BDF derivation: topology/nodes/N/properties has "location_id <N>" where N
+// encodes (domain<<20)|(bus<<8)|(slot<<3)|fn on Genoa/modern AMD platforms.
+// We then find the render node via /sys/bus/pci/devices/<BDF>/drm/renderD*.
+static bool find_kfd_device(int device_index, uint32_t* gpu_id_out,
+                            int* render_fd_out) {
+    int found = 0;
+    for (int n = 0; n < 128; ++n) {
         char path[256];
         snprintf(path, sizeof(path),
                  "/sys/class/kfd/kfd/topology/nodes/%d/gpu_id", n);
@@ -126,60 +123,62 @@ static uint32_t find_kfd_gpu_id(const char* pci_bdf) {
         if (!f)
             continue;
         uint32_t id = 0;
-        if (fscanf(f, "%u", &id) != 1 || id == 0) {
-            fclose(f);
-            continue;
-        }
+        int ok = (fscanf(f, "%u", &id) == 1 && id != 0);
         fclose(f);
+        if (!ok)
+            continue;
+        if (found++ != device_index)
+            continue;
 
-        // Check the location file for a matching PCI BDF.
+        *gpu_id_out = id;
+        *render_fd_out = -1;
+
+        // Read location_id from properties to decode the PCI BDF.
         snprintf(path, sizeof(path),
                  "/sys/class/kfd/kfd/topology/nodes/%d/properties", n);
         f = fopen(path, "r");
         if (!f)
-            continue;
+            return true;
+        uint32_t location_id = 0;
         char line[256];
-        bool found = false;
         while (fgets(line, sizeof(line), f)) {
-            // properties has "location_id <pci_devfn>" not BDF directly;
-            // but the node's device symlink points to the BDF we want.
-            (void)line;
+            if (sscanf(line, "location_id %u", &location_id) == 1)
+                break;
         }
         fclose(f);
+        if (!location_id)
+            return true;
 
-        // Resolve the device symlink to get its BDF.
-        snprintf(path, sizeof(path),
-                 "/sys/class/kfd/kfd/topology/nodes/%d/device", n);
-        char real[PATH_MAX];
-        if (realpath(path, real) != NULL) {
-            const char* bdf = strrchr(real, '/');
-            if (bdf && strcasecmp(bdf + 1, pci_bdf) == 0) {
-                found = true;
+        // Decode location_id → BDF (AMD: domain=0, bus=bits[15:8]).
+        unsigned bus = (location_id >> 8) & 0xff;
+        unsigned slot = (location_id >> 3) & 0x1f;
+        unsigned fn = location_id & 0x7;
+        char bdf[32];
+        snprintf(bdf, sizeof(bdf), "0000:%02x:%02x.%u", bus, slot, fn);
+        fprintf(stderr, "ais-test: GPU device=%d gpu_id=%u bdf=%s\n",
+                device_index, id, bdf);
+
+        // Find renderD* under /sys/bus/pci/devices/<BDF>/drm/.
+        char drm_dir[256];
+        snprintf(drm_dir, sizeof(drm_dir), "/sys/bus/pci/devices/%s/drm", bdf);
+        DIR* dir = opendir(drm_dir);
+        if (!dir)
+            return true;
+        struct dirent* ent;
+        while ((ent = readdir(dir)) != nullptr) {
+            int r = -1;
+            if (sscanf(ent->d_name, "renderD%d", &r) == 1 && r >= 128) {
+                char dev_path[64];
+                snprintf(dev_path, sizeof(dev_path), "/dev/dri/renderD%d", r);
+                *render_fd_out = open(dev_path, O_RDWR | O_CLOEXEC);
+                fprintf(stderr, "ais-test: render node: %s\n", dev_path);
+                break;
             }
         }
-        if (found)
-            return id;
+        closedir(dir);
+        return true;
     }
-    fprintf(stderr,
-            "ais-test: cannot find KFD gpu_id for %s; "
-            "trying fallback sysfs scan\n",
-            pci_bdf);
-
-    // Fallback: scan by matching the first non-zero gpu_id (single GPU system).
-    for (int n = 0; n < 64; ++n) {
-        char path[256];
-        snprintf(path, sizeof(path),
-                 "/sys/class/kfd/kfd/topology/nodes/%d/gpu_id", n);
-        FILE* f = fopen(path, "r");
-        if (!f)
-            continue;
-        uint32_t id = 0;
-        fscanf(f, "%u", &id);
-        fclose(f);
-        if (id != 0)
-            return id;
-    }
-    return 0;
+    return false;
 }
 
 static void usage(const char* prog) {
@@ -200,7 +199,7 @@ static void usage(const char* prog) {
         "\n"
         "Options:\n"
         "  -h, --help         Show this help and exit\n"
-        "  -d, --device N     HIP device index (default 0)\n"
+        "  -d, --device N     GPU device index (0-based, default 0)\n"
         "  -s, --size N       IO size in KiB per transfer (default 64).\n"
         "                     0 = random size each iteration, drawn uniformly\n"
         "                     from power-of-two values between 4 KiB and 8 "
@@ -318,8 +317,8 @@ int main(int argc, char* argv[]) {
         else
             snprintf(dur_str, sizeof(dur_str), "%ds", duration_sec);
 
-        printf("ais-test: device=%d target=%s size=%s duration=%s%s dir=%s\n",
-               device_index, filepath, size_str, dur_str, max_iters ? "" : "",
+        printf("ais-test: device=%d target=%s size=%s duration=%s dir=%s\n",
+               device_index, filepath, size_str, dur_str,
                dir == DIR_READ    ? "read(file→VRAM)"
                : dir == DIR_WRITE ? "write(VRAM→file)"
                                   : "both");
@@ -328,19 +327,22 @@ int main(int argc, char* argv[]) {
     }
     fflush(stdout);
 
-    // Initialise HIP on the target device.
-    CHECK_HIP(hipSetDevice(device_index));
-    CHECK_HIP(hipFree(nullptr)); // force context initialisation
-
-    char pci_bdf[32] = {};
-    CHECK_HIP(hipDeviceGetPCIBusId(pci_bdf, sizeof(pci_bdf), device_index));
+    // Resolve GPU device via KFD sysfs topology — no HIP runtime needed.
+    uint32_t gpu_id = 0;
+    int render_fd = -1;
+    if (!find_kfd_device(device_index, &gpu_id, &render_fd)) {
+        fprintf(stderr,
+                "ais-test: no KFD GPU at device index %d "
+                "(check /sys/class/kfd/kfd/topology/nodes/)\n",
+                device_index);
+        return 1;
+    }
 
     int kfd_fd = -1;
     int file_fd = -1;
     uint64_t mem_handle = 0;
     uint64_t va_addr = 0;
     uint64_t target_size = 0;
-    uint32_t gpu_id = 0;
     bool mapped = false;
     int ret = 1;
 
@@ -350,7 +352,27 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    gpu_id = find_kfd_gpu_id(pci_bdf);
+    // ACQUIRE_VM binds this process to the GPU VM address space.
+    // Required before ALLOC_MEMORY_OF_GPU; pass the render node fd.
+    if (render_fd < 0) {
+        fprintf(stderr,
+                "ais-test: could not open render node for gpu_id=%u; "
+                "ALLOC_MEMORY_OF_GPU will fail\n",
+                gpu_id);
+        goto cleanup;
+    }
+    {
+        struct kfd_ioctl_acquire_vm_args avm = {};
+        avm.drm_fd = (uint32_t)render_fd;
+        avm.gpu_id = gpu_id;
+        if (ioctl(kfd_fd, AMDKFD_IOC_ACQUIRE_VM, &avm) < 0 && errno != EBUSY) {
+            fprintf(stderr, "ais-test: ACQUIRE_VM failed: %s\n",
+                    strerror(errno));
+            goto cleanup;
+        }
+        close(render_fd);
+        render_fd = -1;
+    }
     if (gpu_id == 0) {
         fprintf(stderr, "ais-test: could not resolve KFD gpu_id\n");
         goto cleanup;
@@ -468,7 +490,8 @@ int main(int argc, char* argv[]) {
 
         // Seed the random state from the kernel.
         uint64_t rng_state = 0;
-        getrandom(&rng_state, sizeof(rng_state), 0);
+        if (getrandom(&rng_state, sizeof(rng_state), 0) < 0)
+            rng_state = (uint64_t)(uintptr_t)&rng_state ^ (uint64_t)now_sec();
 
         // xorshift64 — fast, good enough for random offsets.
         auto rng_next = [&]() -> uint64_t {
@@ -601,6 +624,8 @@ int main(int argc, char* argv[]) {
 cleanup:
     if (file_fd >= 0)
         close(file_fd);
+    if (render_fd >= 0)
+        close(render_fd);
     if (mapped && mem_handle) {
         struct kfd_ioctl_unmap_memory_from_gpu_args unmap = {};
         unmap.handle = mem_handle;
