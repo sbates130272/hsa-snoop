@@ -13,6 +13,7 @@ on:
       - 'src/**'
       - 'systemd/**'
       - 'debian/**'
+      - 'grafana/**'
       - '.github/workflows/debian-package.yml'
 
 jobs:
@@ -26,13 +27,33 @@ jobs:
       LD_LIBRARY_PATH: /opt/rocm/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 
     steps:
-    - name: Check out code
-      uses: actions/checkout@v4
-
-    - name: Install dependencies
+    - name: Install git
       run: |
         apt-get update
-        apt-get install -y cmake git dpkg-dev bpftrace
+        apt-get install -y git
+
+    - name: Check out code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Mark repo as safe for git
+      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+    - name: Install dependencies
+      run: apt-get install -y cmake dpkg-dev bpftrace
+
+    - name: Determine version
+      id: version
+      shell: bash
+      run: |
+        TAG=$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+        if [[ -n "$TAG" ]]; then
+          VERSION="${TAG#v}"
+        else
+          VERSION="0~${GITHUB_SHA::8}"
+        fi
+        echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
 
     - name: Configure with CMake (Prometheus enabled)
       run: |
@@ -53,12 +74,13 @@ jobs:
         mkdir -p /tmp/pkg/DEBIAN
         cp debian/control debian/postinst debian/prerm debian/conffiles /tmp/pkg/DEBIAN/
         chmod 0755 /tmp/pkg/DEBIAN/postinst /tmp/pkg/DEBIAN/prerm
-        VERSION=${GITHUB_SHA::8}
-        sed -i "s/^Version:.*/Version: 0~${VERSION}/" /tmp/pkg/DEBIAN/control
-        dpkg-deb --build --root-owner-group /tmp/pkg hsa-snoop_${VERSION}_amd64.deb
+        sed -i "s/^Version:.*/Version: ${VERSION}/" /tmp/pkg/DEBIAN/control
+        DEB_FILE="hsa-snoop_${VERSION}_amd64.deb"
+        dpkg-deb --build --root-owner-group /tmp/pkg "${DEB_FILE}"
+        echo "DEB_FILE=${DEB_FILE}" >> "$GITHUB_ENV"
 
     - name: Verify .deb metadata
-      run: dpkg-deb --info hsa-snoop_*_amd64.deb
+      run: dpkg-deb --info "$DEB_FILE"
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4

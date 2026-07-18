@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(hsa-snoop LANGUAGES CXX)
+project(hsa-snoop VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -56,6 +56,8 @@ install(FILES systemd/hsa-snoop.conf
 install(FILES systemd/hsa-snoop.logrotate
         DESTINATION etc/logrotate.d
         RENAME hsa-snoop)
+install(FILES grafana/hsa-snoop-dashboard.json
+        DESTINATION share/hsa-snoop/grafana)
 
 list(APPEND CMAKE_PREFIX_PATH /opt/rocm)
 find_package(hip QUIET)
