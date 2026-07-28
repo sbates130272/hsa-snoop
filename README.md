@@ -29,10 +29,49 @@ Example (from the bundled `gfx-test` example):
 hsa-snoop: 2 AQL queue(s), 195 packet(s) captured.
 ```
 
-...producing slices named `vadd(float*, float*, float*, int)` /
-`vscale(float*, float, int)` on a per-queue track, each annotated with grid,
-workgroup, `kernel_object`, group/private segment sizes, completion signal and
-the ring's physical address.
+## Perfetto trace visualization
+
+`hsa-snoop` emits native Perfetto traces that can be opened in
+[Perfetto UI](https://ui.perfetto.dev/). Each discovered AQL or SDMA queue is
+shown on a separate timeline track, making kernel dispatches, barrier packets,
+DMA copies, and queue activity easy to correlate.
+
+Selecting a slice exposes its decoded metadata. AQL packets include the packet
+type and dispatch ID; kernel dispatches additionally include grid and workgroup
+dimensions, the kernel object, segment sizes, and completion signal. The
+physical ring address is included when available.
+
+<table>
+  <tr>
+    <td width="50%">
+      <a href="docs/images/perfetto-trace-overview.png">
+        <img src="docs/images/perfetto-trace-overview.png"
+             alt="Overview of an hsa-snoop trace in Perfetto"
+             width="100%">
+      </a>
+    </td>
+    <td width="50%">
+      <a href="docs/images/perfetto-dispatch-detail.png">
+        <img src="docs/images/perfetto-dispatch-detail.png"
+             alt="Detailed kernel dispatch metadata in Perfetto"
+             width="100%">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <sub>Full trace showing packet activity across two AQL queues.</sub>
+    </td>
+    <td align="center">
+      <sub>Kernel dispatches and barrier packets, with decoded dispatch metadata.</sub>
+    </td>
+  </tr>
+</table>
+
+> [!NOTE]
+> This example captures a workload that combines asynchronous copies with
+> kernel launches. `hsa-snoop` slice durations represent approximate
+> enqueue-to-queue-consumed residency, not GPU execution time.
 
 ---
 
