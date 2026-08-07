@@ -108,12 +108,12 @@ SDMA rings differ from AQL rings in three ways the parser handles separately
   device (VRAM) page has none. src=host,dst=device → `h2d`, and so on. Results
   are cached per page.
 
-> **Calibration note.** SDMA ring pointer units (dword vs byte) and the
-> linear-copy `COUNT` field width are hardware-revision sensitive. The defaults
-> target the CDNA SDMA v4.x family (gfx90a / gfx942, MI2xx/MI3xx). Confirm them
-> on a new platform by running with `HSA_SNOOP_DEBUG=1` and checking the ring
-> dump strides against the `wptr` deltas (`kSdmaPtrIsDwords` /
-> `kLinearCopyCountMask` in `src/parser.cpp` / `src/sdma.h`).
+> **Calibration note.** KFD/ROCR publish SDMA ring pointers as byte offsets;
+> hsa-snoop normalises them to dword indices before walking packets. The
+> linear-copy `COUNT` field width remains hardware-revision sensitive. The
+> current decoder targets the CDNA SDMA v4.x family (gfx90a / gfx942,
+> MI2xx/MI3xx); confirm packet layouts on new hardware with
+> `HSA_SNOOP_SDMA_DUMP=1`.
 
 ## Do we need to touch the driver?
 
@@ -146,6 +146,30 @@ is optional (only used to sanity-check the emitted trace).
 If ROCm is installed, the HIP examples under `examples/` (`gfx-test`,
 `sdma-test`) are built automatically. GPU targets are auto-detected via
 `rocm_agent_enumerator`; pass `-DGPU_TARGETS=gfxNNNN` to override.
+
+### Tests
+
+The default test suite is hardware-independent and can run in a GPU-less CI
+environment:
+
+```
+cmake -B build -DBUILD_TESTING=ON
+cmake --build build --parallel $(nproc)
+ctest --test-dir build --output-on-failure
+```
+
+Enable the SDMA integration test explicitly when building on an AMD GPU host
+with ROCm. The test launches `sdma-test` through hsa-snoop and checks the real
+trace for COPY_LINEAR count/address decoding and false NOP packets. Queue
+discovery and cross-process memory access require the test to run as root.
+
+```
+cmake -B build-hw \
+  -DBUILD_TESTING=ON \
+  -DHSA_SNOOP_HARDWARE_TESTS=ON
+cmake --build build-hw --parallel $(nproc)
+sudo ctest --test-dir build-hw -L hardware --output-on-failure
+```
 
 ### Prometheus exporter build
 

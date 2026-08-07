@@ -22,6 +22,13 @@
 
 namespace sdma {
 
+// KFD/ROCR expose SDMA ring read/write indices as monotonically increasing
+// byte offsets. Packet decoding walks the ring in dwords, so normalise the
+// shared queue pointers before doing any ring arithmetic.
+constexpr uint64_t RingBytesToDwords(uint64_t byte_offset) {
+    return byte_offset / sizeof(uint32_t);
+}
+
 // SDMA opcodes (SDMA_OP_*), the low 8 bits of the header dword.
 enum Op : uint8_t {
     OP_NOP = 0,
