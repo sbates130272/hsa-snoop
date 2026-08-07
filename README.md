@@ -70,7 +70,7 @@ physical ring address is included when available.
 
 > [!NOTE]
 > This example captures a workload that combines asynchronous copies with
-> kernel launches. `hsa-snoop` slice durations represent approximate
+> kernel launches. `hsa-snoop` slices represent approximate
 > enqueue-to-queue-consumed residency, not GPU execution time.
 
 ---
