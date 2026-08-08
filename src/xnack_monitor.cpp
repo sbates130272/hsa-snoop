@@ -169,8 +169,8 @@ void XnackMonitor::ReadLoop(Sink sink) {
         char comm[256] = {};
         unsigned pasid = 0;
 
-        int n = sscanf(line, "XNACK pid=%d comm=%255s pasid=%u", &rec.pid,
-                       comm, &pasid);
+        int n = sscanf(line, "XNACK pid=%d comm=%255s pasid=%u", &rec.pid, comm,
+                       &pasid);
         if (n < 3)
             continue;
 

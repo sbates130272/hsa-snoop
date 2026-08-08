@@ -700,8 +700,7 @@ void PrometheusExporter::Add(const XnackRecord& rec) {
     std::lock_guard<std::mutex> lk(meta_mu_);
     char pasid_str[16];
     snprintf(pasid_str, sizeof(pasid_str), "%u", rec.pasid);
-    xnack_total_family_
-        .Add({{"pasid", pasid_str}, {"comm", rec.comm}})
+    xnack_total_family_.Add({{"pasid", pasid_str}, {"comm", rec.comm}})
         .Increment();
 }
 

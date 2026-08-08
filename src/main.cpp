@@ -315,8 +315,7 @@ int main(int argc, char** argv) {
 #endif
             // In trace mode: print a summary line to stderr. XNACK events are
             // not currently routed to Perfetto traces.
-            fprintf(stderr,
-                    "hsa-snoop: XNACK fault pid=%d comm=%s pasid=%u\n",
+            fprintf(stderr, "hsa-snoop: XNACK fault pid=%d comm=%s pasid=%u\n",
                     r.pid, r.comm.c_str(), r.pasid);
         });
         if (!xnack_ok) {
