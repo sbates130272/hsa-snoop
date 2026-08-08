@@ -124,3 +124,9 @@ iters
 mb
 sdma
 vdot
+kfd
+pasid
+stderr
+vm
+VMFAULT
+XNACK
