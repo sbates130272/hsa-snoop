@@ -22,6 +22,7 @@
 #include "parser.h"
 #include "proc_mem.h"
 #include "trace_writer.h"
+#include "xnack_monitor.h"
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
 #include "prometheus_exporter.h"
 #endif
@@ -72,7 +73,12 @@ void Usage(const char* p) {
         "                     via kprobe on kfd_ioctl_ais (requires bpftrace)\n"
         "                     AIS events are included in the trace or "
         "Prometheus\n"
-        "                     output alongside HSA/SDMA events\n",
+        "                     output alongside HSA/SDMA events\n"
+        "  --xnack-snoop      Enable GPU page-fault retry (XNACK) counting\n"
+        "                     via kprobe on kfd_process_vm_fault (requires\n"
+        "                     bpftrace). In Prometheus mode, increments\n"
+        "                     hsa_xnack_total per pasid. In trace mode,\n"
+        "                     prints fault events to stderr.\n",
         p, p, p);
 }
 } // namespace
@@ -82,6 +88,7 @@ int main(int argc, char** argv) {
     bool all_mode = false;
     bool prometheus_mode = false;
     bool ais_mode = false;
+    bool xnack_mode = false;
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
     uint16_t prometheus_port = 9488;
 #endif
@@ -114,6 +121,8 @@ int main(int argc, char** argv) {
             prometheus_mode = true;
         else if (a == "--ais-snoop")
             ais_mode = true;
+        else if (a == "--xnack-snoop")
+            xnack_mode = true;
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
         else if (a == "--prometheus-port" && i + 1 < argc)
             prometheus_port = static_cast<uint16_t>(atoi(argv[++i]));
@@ -289,6 +298,34 @@ int main(int argc, char** argv) {
         } else {
             fprintf(stderr, "hsa-snoop: AIS monitor armed "
                             "(kprobe:kfd_ioctl_ais via bpftrace)\n");
+        }
+    }
+
+    // XNACK monitor: system-wide kprobe on kfd_process_vm_fault via bpftrace.
+    // Counts GPU page-fault retry (XNACK) events across all GPU processes.
+    std::unique_ptr<XnackMonitor> xnack_monitor;
+    if (xnack_mode) {
+        xnack_monitor = std::make_unique<XnackMonitor>();
+        bool xnack_ok = xnack_monitor->Start([&](const XnackRecord& r) {
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+            if (prom_exporter) {
+                prom_exporter->Add(r);
+                return;
+            }
+#endif
+            // In trace mode: print a summary line to stderr. XNACK events are
+            // not currently routed to Perfetto traces.
+            fprintf(stderr,
+                    "hsa-snoop: XNACK fault pid=%d comm=%s pasid=%u\n",
+                    r.pid, r.comm.c_str(), r.pasid);
+        });
+        if (!xnack_ok) {
+            fprintf(stderr, "hsa-snoop: failed to start XNACK monitor "
+                            "(is bpftrace installed and are you root?)\n");
+            xnack_monitor.reset();
+        } else {
+            fprintf(stderr, "hsa-snoop: XNACK monitor armed "
+                            "(kprobe:kfd_process_vm_fault via bpftrace)\n");
         }
     }
 
@@ -491,6 +528,8 @@ int main(int argc, char** argv) {
     parser.Stop();
     if (ais_monitor)
         ais_monitor->Stop();
+    if (xnack_monitor)
+        xnack_monitor->Stop();
 
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
     if (prometheus_mode) {

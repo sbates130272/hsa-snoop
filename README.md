@@ -188,6 +188,10 @@ Options:
                      writing trace files (requires -DHSA_SNOOP_PROMETHEUS=ON)
   --prometheus-port <n>
                      Port for the Prometheus /metrics endpoint (default 9488)
+  --xnack-snoop      Count GPU page-fault retry (XNACK) events via
+                     kprobe:kfd_process_vm_fault (requires bpftrace and root).
+                     Prometheus: increments hsa_xnack_total per pasid.
+                     Trace mode: prints fault events to stderr.
 ```
 
 Must run as root (tracefs, pagemap and cross-process reads all require it).
@@ -272,6 +276,7 @@ Metrics exposed (all carry constant labels `host`, `platform`, `rocm_version`,
 | `hsa_sdma_packets_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `opcode` | SDMA packets, by opcode (`copy`/`fence`/`timestamp`/...) |
 | `hsa_active_sdma_queues` | Gauge | `gpu_id`, `gpu_type` | Currently tracked SDMA queues |
 | `hsa_errors_total` | Counter | `gpu_id`, `pid` | Packets arriving before queue registration |
+| `hsa_xnack_total` | Counter | `pasid`, `comm` | GPU page-fault retry (XNACK) events observed via `kprobe:kfd_process_vm_fault`; requires `--xnack-snoop` |
 
 Prometheus mode and trace-file mode are **independent** — both can run
 simultaneously using separate hsa-snoop instances (or via the two systemd
