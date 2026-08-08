@@ -358,6 +358,14 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                     "vendor, vendor_id, device_id, class_code.")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
+      xnack_total_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_xnack_total")
+              .Help("GPU page-fault retry (XNACK) events observed via "
+                    "kprobe:kfd_process_vm_fault; labeled by AMD Process ASID "
+                    "(pasid) which uniquely identifies the GPU context")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
       rate_window_sec_(rate_window_sec) {
     // Start the HTTP exposition endpoint.
     std::string addr = "0.0.0.0:" + std::to_string(port);
@@ -683,6 +691,17 @@ void PrometheusExporter::Add(const AisRecord& rec) {
                  kSizeBuckets)
             .Observe(static_cast<double>(rec.size_req));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Add (XNACK)
+// ---------------------------------------------------------------------------
+void PrometheusExporter::Add(const XnackRecord& rec) {
+    std::lock_guard<std::mutex> lk(meta_mu_);
+    char pasid_str[16];
+    snprintf(pasid_str, sizeof(pasid_str), "%u", rec.pasid);
+    xnack_total_family_.Add({{"pasid", pasid_str}, {"comm", rec.comm}})
+        .Increment();
 }
 
 // ---------------------------------------------------------------------------

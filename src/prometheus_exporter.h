@@ -55,6 +55,9 @@ class PrometheusExporter {
     // Called for each completed AisRecord from AisMonitor. Thread-safe.
     void Add(const AisRecord& rec);
 
+    // Called for each XnackRecord from XnackMonitor. Thread-safe.
+    void Add(const XnackRecord& rec);
+
     PrometheusExporter(const PrometheusExporter&) = delete;
     PrometheusExporter& operator=(const PrometheusExporter&) = delete;
 
@@ -118,6 +121,8 @@ class PrometheusExporter {
     prometheus::Family<prometheus::Gauge>& ais_active_family_;
     // Info metric: one time-series per unique PCIe device, value=1, all labels.
     prometheus::Family<prometheus::Gauge>& ais_pcie_info_family_;
+    // XNACK (GPU page-fault retry) event counter.
+    prometheus::Family<prometheus::Counter>& xnack_total_family_;
 
     // Guards all metadata maps and per-gpu gauge pointer caches.
     std::mutex meta_mu_;

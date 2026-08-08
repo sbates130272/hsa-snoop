@@ -119,6 +119,23 @@ struct PcieDeviceInfo {
     std::string class_code; // raw hex class, e.g. "010802"
 };
 
+// One XNACK (GPU page-fault retry) event observed via kprobe on
+// kfd_process_vm_fault. XNACK is the mechanism by which XNACK-capable AMD GPUs
+// (Vega10+, gfx900+) retry a faulting memory access after the CPU resolves the
+// page mapping rather than immediately aborting execution.
+//
+// Note: kfd_process_vm_fault is called from interrupt/work-queue context, so
+// pid/comm describe the kernel thread that handled the interrupt rather than
+// the GPU user process. pasid (AMD Process ASID) is the stable per-GPU-context
+// identifier.
+struct XnackRecord {
+    uint64_t seq = 0;     // monotonic per-monitor sequence number
+    uint32_t pasid = 0;   // AMD process ASID (GPU context identifier)
+    int pid = 0;          // kernel-thread pid at fault time (may be kworker)
+    std::string comm;     // comm at fault time (may be "kfd_restore" etc.)
+    double timestamp = 0; // CLOCK_MONOTONIC_RAW seconds
+};
+
 // IO direction for AIS (AMD Infinity Storage) operations. READ = file→VRAM,
 // WRITE = VRAM→file. Mirrors enum kfd_ais_ops in kfd_ioctl.h.
 enum class AisOp : uint8_t {

@@ -37,3 +37,29 @@ kprobe:pqm_destroy_queue
 {
     printf("%-16s pid=%-7d queue destroyed\n", comm, pid);
 }
+
+/*
+ * XNACK counter — GPU page-fault retry events.
+ *
+ * kfd_process_vm_fault(struct device_queue_manager *dqm, u32 pasid)
+ *   arg0 = dqm   (struct device_queue_manager *)
+ *   arg1 = pasid (u32) — AMD Process ASID, unique per GPU context
+ *
+ * Fires whenever the KFD driver handles a GPU VM fault through the XNACK
+ * (retry) path (gfx900+/Vega10+). The per-pasid count shows which GPU
+ * context is generating page faults.
+ */
+kprobe:kfd_process_vm_fault
+{
+    @xnack_by_pasid[(uint32)arg1] = count();
+    printf("XNACK comm=%-16s pid=%-7d pasid=%u\n", comm, pid, (uint32)arg1);
+}
+
+END
+{
+    if (@xnack_by_pasid) {
+        printf("\nXNACK summary (faults per pasid):\n");
+        print(@xnack_by_pasid);
+        clear(@xnack_by_pasid);
+    }
+}
