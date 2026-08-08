@@ -92,9 +92,12 @@ bool XnackMonitor::Start(Sink sink) {
             _exit(1);
         }
         close(tmpfd);
-        execlp("bpftrace", "bpftrace", tmppath, nullptr);
-        // bpftrace not found or exec failed — clean up and exit.
+        // Unlink before exec: the inode stays alive while bpftrace holds it
+        // open, but the directory entry is removed immediately so no stale
+        // files are left behind if the process is killed.
         unlink(tmppath);
+        execlp("bpftrace", "bpftrace", tmppath, nullptr);
+        // execlp failed.
         _exit(127);
     }
 
@@ -122,10 +125,10 @@ void XnackMonitor::Stop() {
         waitpid(bpftrace_pid_, nullptr, 0);
         bpftrace_pid_ = -1;
     }
-    if (bpftrace_stdout_ >= 0) {
-        close(bpftrace_stdout_);
-        bpftrace_stdout_ = -1;
-    }
+    // Do not close bpftrace_stdout_ here: ReadLoop owns it via fdopen and
+    // will fclose it (which closes the fd) when fgets returns EOF. Killing
+    // the bpftrace child above closes the write end of the pipe and causes
+    // fgets to return EOF, which unblocks ReadLoop naturally.
     if (reader_thread_.joinable())
         reader_thread_.join();
 }
