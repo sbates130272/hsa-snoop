@@ -18,9 +18,17 @@ add_compile_options(
 )
 
 find_package(Threads REQUIRED)
+include(CTest)
 
 # ---- Optional Prometheus exporter ----
 option(HSA_SNOOP_PROMETHEUS "Build Prometheus exporter support" OFF)
+option(HSA_SNOOP_HARDWARE_TESTS
+  "Enable tests that require an AMD GPU, ROCm, and root privileges" OFF)
+
+if(HSA_SNOOP_HARDWARE_TESTS AND NOT BUILD_TESTING)
+  message(FATAL_ERROR
+    "HSA_SNOOP_HARDWARE_TESTS requires BUILD_TESTING=ON")
+endif()
 
 if(HSA_SNOOP_PROMETHEUS)
   include(FetchContent)
@@ -39,6 +47,20 @@ file(GLOB HSA_SNOOP_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 add_executable(hsa-snoop ${HSA_SNOOP_SOURCES})
 target_compile_features(hsa-snoop PRIVATE cxx_std_17)
 target_link_libraries(hsa-snoop PRIVATE Threads::Threads)
+
+if(BUILD_TESTING)
+  add_executable(sdma-ring-test
+    tests/sdma_ring_test.cpp
+    src/aql.cpp
+    src/ksym.cpp
+    src/parser.cpp
+    src/proc_mem.cpp
+    src/sdma.cpp
+  )
+  target_include_directories(sdma-ring-test PRIVATE src)
+  target_link_libraries(sdma-ring-test PRIVATE Threads::Threads)
+  add_test(NAME sdma-ring-test COMMAND sdma-ring-test)
+endif()
 
 if(HSA_SNOOP_PROMETHEUS)
   target_compile_definitions(hsa-snoop PRIVATE HSA_SNOOP_PROMETHEUS_ENABLED)
@@ -66,4 +88,21 @@ if(hip_FOUND)
   add_subdirectory(examples)
 else()
   message(STATUS "ROCm HIP not found — skipping examples/")
+endif()
+
+if(HSA_SNOOP_HARDWARE_TESTS)
+  if(NOT hip_FOUND)
+    message(FATAL_ERROR
+      "HSA_SNOOP_HARDWARE_TESTS requires a ROCm HIP installation")
+  endif()
+  add_test(
+    NAME sdma-hardware-test
+    COMMAND ${CMAKE_COMMAND}
+      -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
+      -DSDMA_TEST=$<TARGET_FILE:sdma-test>
+      -DTRACE_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/sdma-hardware-test.json
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/sdma_hardware_test.cmake)
+  set_tests_properties(sdma-hardware-test PROPERTIES
+    LABELS "hardware;sdma"
+    TIMEOUT 60)
 endif()

@@ -62,6 +62,7 @@ misattribute
 monotonic
 namespace
 NVMe
+NOP
 pagemap
 Perfetto
 perfetto

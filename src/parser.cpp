@@ -27,14 +27,6 @@ const bool kDebug = getenv("HSA_SNOOP_DEBUG") != nullptr;
 // it is very verbose.
 const bool kSdmaDump = getenv("HSA_SNOOP_SDMA_DUMP") != nullptr;
 
-// SDMA read/write pointers (the u64s at rptr_addr/wptr_addr) are, on the CDNA
-// KFD path, expressed in dwords and advance monotonically; the ring wraps at
-// ring_size. If a driver revision expresses them in bytes instead, set this to
-// false. This is the single most important thing to confirm during on-hardware
-// calibration -- run with HSA_SNOOP_DEBUG=1 and check that packet strides line
-// up with the wptr deltas in the debug dump.
-constexpr bool kSdmaPtrIsDwords = true;
-
 // Largest SDMA-packet dword window we read up front to decode header + length
 // and (for linear copies) the src/dst addresses. Big WRITE payloads exceed this
 // but their length is derived from the count dword within the window, so we can
@@ -373,9 +365,10 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
     if (!ring_dw)
         return;
 
-    // Normalise both pointers to dword counts.
-    uint64_t wptr = kSdmaPtrIsDwords ? wptr_raw : wptr_raw / 4;
-    uint64_t rptr = kSdmaPtrIsDwords ? rptr_raw : rptr_raw / 4;
+    // KFD/ROCR publish SDMA queue pointers as byte offsets. Normalise them to
+    // the dword indices used by the packet decoder and ring-size arithmetic.
+    uint64_t wptr = sdma::RingBytesToDwords(wptr_raw);
+    uint64_t rptr = sdma::RingBytesToDwords(rptr_raw);
 
     // Calibration dump: raw pointer magnitudes + head of the ring, so the
     // pointer unit and packet layout can be read off against a known workload.
