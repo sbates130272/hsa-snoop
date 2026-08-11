@@ -17,7 +17,8 @@ struct QueueInfo {
     uint32_t ring_size = 0; // ring buffer size in bytes
     uint32_t gpu_id = 0;    // KFD gpu_id
     uint32_t qtype = 0;     // KFD_IOC_QUEUE_TYPE_*
-    double create_ts = 0;   // host CLOCK_MONOTONIC_RAW seconds
+    sdma::Version sdma_version = sdma::Version::Unknown;
+    double create_ts = 0; // host CLOCK_MONOTONIC_RAW seconds
 
     // Physical address of the first ring page (from /proc/pid/pagemap), or 0.
     uint64_t ring_phys = 0;
@@ -91,7 +92,8 @@ struct SdmaRecord {
     uint64_t seq = 0;       // monotonic packet index on this queue
     uint8_t opcode = 0;     // SDMA_OP_* (sdma::Op)
     uint8_t sub_opcode = 0; // opcode-specific sub-op (e.g. copy layout)
-    std::string op_name;    // decoded op[/sub-op] name for display
+    sdma::Version sdma_version = sdma::Version::Unknown;
+    std::string op_name; // decoded op[/sub-op] name for display
 
     // Copy fields (valid when opcode == sdma::OP_COPY). bytes is the transfer
     // size; src/dst are the GPU-virtual (== process-virtual) addresses.
