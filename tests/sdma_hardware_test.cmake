@@ -2,6 +2,9 @@ if(NOT DEFINED HSA_SNOOP OR NOT DEFINED SDMA_TEST OR
    NOT DEFINED TRACE_OUTPUT)
   message(FATAL_ERROR "hardware test paths were not supplied")
 endif()
+if(NOT DEFINED EXPECTED_SDMA_VERSION)
+  set(EXPECTED_SDMA_VERSION "AUTO")
+endif()
 
 execute_process(
   COMMAND id -u
@@ -29,6 +32,20 @@ if(NOT snoop_result EQUAL 0)
     "hsa-snoop hardware run failed (${snoop_result})\n"
     "stdout:\n${snoop_stdout}\n"
     "stderr:\n${snoop_stderr}")
+endif()
+
+string(REGEX MATCH "kind=sdma[^\n]*sdma=v([46])" detected_sdma_line
+       "${snoop_stderr}")
+if(NOT detected_sdma_line)
+  message(FATAL_ERROR
+    "no supported SDMA generation was detected\n${snoop_stderr}")
+endif()
+set(detected_sdma_version "${CMAKE_MATCH_1}")
+if(NOT "${EXPECTED_SDMA_VERSION}" STREQUAL "AUTO" AND
+   NOT "${EXPECTED_SDMA_VERSION}" STREQUAL "${detected_sdma_version}")
+  message(FATAL_ERROR
+    "expected SDMA v${EXPECTED_SDMA_VERSION}, but detected "
+    "v${detected_sdma_version}\n${snoop_stderr}")
 endif()
 
 if(NOT EXISTS "${TRACE_OUTPUT}")
@@ -69,4 +86,5 @@ if(NOT trace_json MATCHES "\"direction\":\"h2d\"" OR
 endif()
 
 message(STATUS
-  "decoded ${copy_count} COPY_LINEAR and ${nop_count} bounded NOP packets")
+  "SDMA v${detected_sdma_version}: decoded ${copy_count} COPY_LINEAR and "
+  "${nop_count} bounded NOP packets")

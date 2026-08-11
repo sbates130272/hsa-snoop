@@ -451,7 +451,19 @@ int main(int argc, char** argv) {
         QueueInfo q = q_in;
         if (!q.is_traced())
             return; // AQL compute or SDMA copy queues only
+        if (q.is_sdma()) {
+            q.sdma_version = sdma::DetectVersion(q.gpu_id);
+            if (!sdma::IsSupportedVersion(q.sdma_version)) {
+                fprintf(stderr,
+                        "[queue] ignoring sdma pid=%d gpu=%u: unsupported "
+                        "SDMA %s\n",
+                        q.pid, q.gpu_id, sdma::VersionName(q.sdma_version));
+                return;
+            }
+        }
         const char* kind = q.is_sdma() ? "sdma" : "aql";
+        const char* sdma_version =
+            q.is_sdma() ? sdma::VersionName(q.sdma_version) : "n/a";
         q.ring_phys = VirtToPhys(q.pid, q.ring_base);
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
         if (prom_exporter) {
@@ -460,10 +472,10 @@ int main(int argc, char** argv) {
             ++queue_count;
             fprintf(stderr,
                     "[queue] kind=%s pid=%d comm=%s uid=%u ring_va=0x%lx "
-                    "ring_phys=0x%lx size=%uB slots=%u gpu=%u\n",
+                    "ring_phys=0x%lx size=%uB slots=%u gpu=%u sdma=%s\n",
                     kind, q.pid, q.comm.c_str(), (unsigned)q.uid, q.ring_base,
-                    q.ring_phys, q.ring_size, (unsigned)q.num_slots(),
-                    q.gpu_id);
+                    q.ring_phys, q.ring_size, (unsigned)q.num_slots(), q.gpu_id,
+                    sdma_version);
             return;
         }
 #endif
@@ -475,9 +487,9 @@ int main(int argc, char** argv) {
         ++queue_count;
         fprintf(stderr,
                 "[queue] kind=%s pid=%d comm=%s uid=%lu ring_va=0x%lx "
-                "ring_phys=0x%lx size=%uB slots=%u gpu=%u\n",
+                "ring_phys=0x%lx size=%uB slots=%u gpu=%u sdma=%s\n",
                 kind, q.pid, q.comm.c_str(), q.uid, q.ring_base, q.ring_phys,
-                q.ring_size, q.num_slots(), q.gpu_id);
+                q.ring_size, q.num_slots(), q.gpu_id, sdma_version);
     };
 
     if (!discovery.Start(on_queue)) {

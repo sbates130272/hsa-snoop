@@ -67,6 +67,13 @@ void RingParser::Stop() {
 }
 
 void RingParser::AddQueue(const QueueInfo& q) {
+    if (q.is_sdma() && !sdma::IsSupportedVersion(q.sdma_version)) {
+        fprintf(stderr,
+                "[parser] ignoring sdma queue uid=%lu gpu=%u: unsupported "
+                "SDMA %s\n",
+                q.uid, q.gpu_id, sdma::VersionName(q.sdma_version));
+        return;
+    }
     auto qs = std::make_unique<QueueState>();
     qs->info = q;
     // Kernel-name resolution only applies to AQL dispatch packets; SDMA copies
@@ -428,7 +435,7 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
             break;
         }
 
-        uint32_t len = sdma::PacketLenDwords(dws, win);
+        uint32_t len = sdma::PacketLenDwords(q.sdma_version, dws, win);
         if (len == 0) {
             // avail < 4 -> the length-bearing dword may not be published yet;
             // wait for the next poll. Otherwise this is an unrecognised opcode
@@ -451,17 +458,22 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
         rec.seq = qs->sdma_seq++;
         rec.opcode = sdma::HeaderOp(dws[0]);
         rec.sub_opcode = sdma::HeaderSubOp(dws[0]);
+        rec.sdma_version = q.sdma_version;
         if (rec.opcode == sdma::OP_COPY) {
-            rec.op_name =
-                std::string("copy_") + sdma::CopySubOpName(rec.sub_opcode);
-            if (rec.sub_opcode == sdma::SUBOP_COPY_LINEAR && win >= 7) {
-                rec.bytes = sdma::LinearCopyBytes(dws[1]);
+            rec.op_name = std::string("copy_") +
+                          sdma::CopySubOpName(q.sdma_version, rec.sub_opcode);
+            if (sdma::HeaderBroadcast(dws[0]))
+                rec.op_name += "_broadcast";
+            if (sdma::IsLinearCopy(q.sdma_version, rec.sub_opcode) &&
+                win >= 7) {
+                rec.bytes = sdma::LinearCopyBytes(q.sdma_version,
+                                                  rec.sub_opcode, dws[1]);
                 rec.src_addr = dws[3] | (static_cast<uint64_t>(dws[4]) << 32);
                 rec.dst_addr = dws[5] | (static_cast<uint64_t>(dws[6]) << 32);
                 rec.dir = ClassifyDir(qs, rec.src_addr, rec.dst_addr);
             }
         } else {
-            rec.op_name = sdma::OpName(rec.opcode);
+            rec.op_name = sdma::OpName(q.sdma_version, rec.opcode);
         }
         rec.submit_ts = now;
 

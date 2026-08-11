@@ -81,6 +81,7 @@ rocm
 rocminfo
 rocprofiler
 ROCr
+RDNA
 SDMA
 Strix
 sudo
