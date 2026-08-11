@@ -366,6 +366,36 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                     "(pasid) which uniquely identifies the GPU context")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
+      mem_lds_family_(
+          prometheus::BuildGauge()
+              .Name("hsa_kernel_lds_bytes")
+              .Help("LDS (group segment / shared memory) bytes per workgroup for "
+                    "the most recent dispatch of this kernel")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      mem_scratch_family_(
+          prometheus::BuildGauge()
+              .Name("hsa_kernel_scratch_bytes_total")
+              .Help("Total private (scratch) memory bytes for the entire dispatch "
+                    "grid (private_segment_size * grid_size) of the most recent "
+                    "dispatch")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      mem_mapped_vram_family_(
+          prometheus::BuildGauge()
+              .Name("hsa_kernel_mapped_vram_bytes")
+              .Help("Upper-bound VRAM mapped by the most recent dispatch: sum of "
+                    "backing region sizes for pointer-sized arguments found in "
+                    "the kernarg buffer (heuristic; may over-count)")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      mem_mapped_vram_total_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_kernel_mapped_vram_bytes_total")
+              .Help("Cumulative hsa_kernel_mapped_vram_bytes across all "
+                    "dispatches of this kernel")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
       rate_window_sec_(rate_window_sec) {
     // Start the HTTP exposition endpoint.
     std::string addr = "0.0.0.0:" + std::to_string(port);
@@ -702,6 +732,44 @@ void PrometheusExporter::Add(const XnackRecord& rec) {
     snprintf(pasid_str, sizeof(pasid_str), "%u", rec.pasid);
     xnack_total_family_.Add({{"pasid", pasid_str}, {"comm", rec.comm}})
         .Increment();
+}
+
+// ---------------------------------------------------------------------------
+// Add (MemRecord)
+// ---------------------------------------------------------------------------
+void PrometheusExporter::Add(const MemRecord& rec) {
+    std::lock_guard<std::mutex> lk(meta_mu_);
+
+    std::string gpu_str = std::to_string(rec.gpu_id);
+    std::string gpu_type = DetectGpuType(rec.gpu_id);
+
+    // Per-dispatch gauges: reflect the most recent value for each kernel.
+    mem_lds_family_
+        .Add({{"kernel_name", rec.kernel_name},
+              {"gpu_id", gpu_str},
+              {"gpu_type", gpu_type}})
+        .Set(static_cast<double>(rec.group_seg_bytes));
+
+    uint64_t total_scratch =
+        static_cast<uint64_t>(rec.private_seg_bytes) * rec.grid_size;
+    mem_scratch_family_
+        .Add({{"kernel_name", rec.kernel_name},
+              {"gpu_id", gpu_str},
+              {"gpu_type", gpu_type}})
+        .Set(static_cast<double>(total_scratch));
+
+    mem_mapped_vram_family_
+        .Add({{"kernel_name", rec.kernel_name},
+              {"gpu_id", gpu_str},
+              {"gpu_type", gpu_type}})
+        .Set(static_cast<double>(rec.mapped_vram_bytes));
+
+    // Cumulative counter: monotonically increases across all dispatches.
+    mem_mapped_vram_total_family_
+        .Add({{"kernel_name", rec.kernel_name},
+              {"gpu_id", gpu_str},
+              {"gpu_type", gpu_type}})
+        .Increment(static_cast<double>(rec.mapped_vram_bytes));
 }
 
 // ---------------------------------------------------------------------------

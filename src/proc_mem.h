@@ -28,4 +28,20 @@ uint64_t VirtToPhys(int pid, uint64_t va);
 // True if the process is still alive.
 bool ProcAlive(int pid);
 
+// Scan the kernarg buffer at `kernarg_va` (size `kernarg_bytes`) in `pid` for
+// 64-bit aligned values that are valid mapped addresses in the process's VM
+// map. For each such pointer, accumulate the size of its backing /proc/maps
+// region as an upper-bound VRAM footprint estimate.
+//
+// Returns false if the kernarg buffer cannot be read. On success:
+//   *mapped_vram_bytes  — sum of unique region sizes whose start address a
+//                         candidate pointer falls within
+//   *ptr_count          — number of candidate pointers found
+//
+// This is a best-effort heuristic: it will over-count if unrelated integer
+// fields happen to match VA ranges, and under-count for pointer-chasing
+// (nested pointers inside buffers). It requires no HSA runtime linkage.
+bool ScanKernargFootprint(int pid, uint64_t kernarg_va, uint32_t kernarg_bytes,
+                          uint64_t* mapped_vram_bytes, uint32_t* ptr_count);
+
 } // namespace hsasnoop

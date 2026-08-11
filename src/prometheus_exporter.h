@@ -58,6 +58,9 @@ class PrometheusExporter {
     // Called for each XnackRecord from XnackMonitor. Thread-safe.
     void Add(const XnackRecord& rec);
 
+    // Called for each MemRecord from the mem-snoop enrichment path. Thread-safe.
+    void Add(const MemRecord& rec);
+
     PrometheusExporter(const PrometheusExporter&) = delete;
     PrometheusExporter& operator=(const PrometheusExporter&) = delete;
 
@@ -123,6 +126,12 @@ class PrometheusExporter {
     prometheus::Family<prometheus::Gauge>& ais_pcie_info_family_;
     // XNACK (GPU page-fault retry) event counter.
     prometheus::Family<prometheus::Counter>& xnack_total_family_;
+    // Memory footprint metrics (--mem-snoop).
+    // Each metric is observed once per kernel dispatch.
+    prometheus::Family<prometheus::Gauge>& mem_lds_family_;
+    prometheus::Family<prometheus::Gauge>& mem_scratch_family_;
+    prometheus::Family<prometheus::Gauge>& mem_mapped_vram_family_;
+    prometheus::Family<prometheus::Counter>& mem_mapped_vram_total_family_;
 
     // Guards all metadata maps and per-gpu gauge pointer caches.
     std::mutex meta_mu_;
