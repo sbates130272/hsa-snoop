@@ -552,7 +552,7 @@ void PrometheusExporter::Add(const SdmaRecord& rec) {
               {"gpu_type", meta.gpu_type},
               {"pid", pid_str},
               {"comm", meta.comm},
-              {"opcode", sdma::OpName(rec.opcode)}})
+              {"opcode", sdma::OpName(rec.sdma_version, rec.opcode)}})
         .Increment();
 
     // Copies additionally accumulate count + bytes by transfer direction.
