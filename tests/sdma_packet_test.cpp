@@ -103,6 +103,25 @@ bool TestLinearCopyLayouts() {
     ok &= Expect(sdma::PacketLenDwords(sdma::Version::V6, packet, 1) == 17,
                  "v6 tiled subwindow length must be 17 dwords");
 
+    // Bit 27 is `broadcast` only in the LINEAR and TILED headers. The v4
+    // TILED_SUB_WIND header uses bits [27:24] for mip_id, so a mip_id >= 8
+    // must not be mistaken for a broadcast copy and rejected.
+    packet[0] = Header(sdma::OP_COPY, sdma::SUBOP_COPY_TILED_SUB_WIND) |
+                (0xAu << 24); // mip_id = 10, sets bit 27
+    ok &= Expect(!sdma::HeaderBroadcast(packet[0]),
+                 "mip_id bit 27 must not read as broadcast");
+    ok &= Expect(sdma::PacketLenDwords(sdma::Version::V4, packet, 1) == 14,
+                 "v4 tiled subwindow with mip_id >= 8 must still be 14 dwords");
+    ok &= Expect(sdma::PacketLenDwords(sdma::Version::V6, packet, 1) == 17,
+                 "v6 tiled subwindow with bit 27 set must still be 17 dwords");
+
+    packet[0] =
+        Header(sdma::OP_COPY, sdma::SUBOP_COPY_T2T_SUB_WIND) | (1u << 27);
+    ok &= Expect(sdma::PacketLenDwords(sdma::Version::V4, packet, 1) == 15,
+                 "v4 t2t subwindow must ignore bit 27");
+    ok &= Expect(sdma::PacketLenDwords(sdma::Version::V6, packet, 1) == 18,
+                 "v6 t2t subwindow must ignore bit 27");
+
     packet[0] = Header(sdma::OP_COPY, sdma::SUBOP_COPY_LINEAR_SUB_WIND_LARGE);
     ok &= Expect(sdma::PacketLenDwords(sdma::Version::V4, packet, 1) == 0,
                  "v6-only copy layout must be rejected by v4");

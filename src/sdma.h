@@ -89,8 +89,19 @@ enum CopySubOp : uint8_t {
 // Header field accessors (header is the packet's first dword).
 inline uint8_t HeaderOp(uint32_t dw0) { return dw0 & 0xFF; }
 inline uint8_t HeaderSubOp(uint32_t dw0) { return (dw0 >> 8) & 0xFF; }
-inline bool HeaderBroadcast(uint32_t dw0) { return (dw0 & (1u << 27)) != 0; }
-// NOP carries a count of trailing dwords to skip in bits [27:16] (14-bit).
+// Only the LINEAR and TILED copy headers define bit 27 as `broadcast` (their
+// broadcast forms are SDMA_PKT_COPY_BROADCAST_LINEAR and
+// SDMA_PKT_COPY_L2T_BROADCAST). Testing it unconditionally would misread other
+// sub-ops: on v4 the TILED_SUB_WIND header carries mip_id in bits [27:24], so
+// any tiled-subwindow copy with mip_id >= 8 would decode as a broadcast, come
+// back with length 0 and force a needless ring resync.
+inline bool HeaderBroadcast(uint32_t dw0) {
+    const uint8_t sub = (dw0 >> 8) & 0xFF;
+    if (sub != SUBOP_COPY_LINEAR && sub != SUBOP_COPY_TILED)
+        return false;
+    return (dw0 & (1u << 27)) != 0;
+}
+// NOP carries a count of trailing dwords to skip in bits [29:16] (14-bit).
 inline uint32_t NopCount(uint32_t dw0) { return (dw0 >> 16) & 0x3FFF; }
 
 // Linear-copy COUNT is the byte count minus one. The v4 layout and v6 BC
