@@ -27,6 +27,8 @@
 #include "prometheus_exporter.h"
 #endif
 
+#include <unordered_map>
+
 using namespace hsasnoop;
 
 namespace {
@@ -78,7 +80,25 @@ void Usage(const char* p) {
         "                     via kprobe on kfd_process_vm_fault (requires\n"
         "                     bpftrace). In Prometheus mode, increments\n"
         "                     hsa_xnack_total per pasid. In trace mode,\n"
-        "                     prints fault events to stderr.\n",
+        "                     prints fault events to stderr.\n"
+        "  --mem-snoop        Enable memory footprint mode: for each kernel\n"
+        "                     dispatch, scan the kernarg buffer for GPU "
+        "virtual\n"
+        "                     address arguments and estimate total mapped "
+        "VRAM\n"
+        "                     via /proc/<pid>/maps. In Prometheus mode, "
+        "exposes\n"
+        "                     hsa_kernel_lds_bytes, "
+        "hsa_kernel_scratch_bytes_total\n"
+        "                     hsa_kernel_mapped_vram_bytes, and\n"
+        "                     hsa_kernel_mapped_vram_bytes_total. In trace "
+        "mode,\n"
+        "                     prints per-dispatch footprint lines to stderr.\n"
+        "                     The mapped_vram estimate is an upper bound: it\n"
+        "                     counts full backing regions, not accessed "
+        "bytes,\n"
+        "                     and cannot follow nested (pointer-chasing) "
+        "args.\n",
         p, p, p);
 }
 } // namespace
@@ -89,6 +109,7 @@ int main(int argc, char** argv) {
     bool prometheus_mode = false;
     bool ais_mode = false;
     bool xnack_mode = false;
+    bool mem_mode = false;
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
     uint16_t prometheus_port = 9488;
 #endif
@@ -123,6 +144,8 @@ int main(int argc, char** argv) {
             ais_mode = true;
         else if (a == "--xnack-snoop")
             xnack_mode = true;
+        else if (a == "--mem-snoop")
+            mem_mode = true;
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
         else if (a == "--prometheus-port" && i + 1 < argc)
             prometheus_port = static_cast<uint16_t>(atoi(argv[++i]));
@@ -328,8 +351,81 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Maps queue uid -> {gpu_id, pid} for mem-snoop enrichment. Written under
+    // writers_mu when a queue is registered; read from the parser sink thread.
+    struct QueueIds {
+        uint32_t gpu_id;
+        int pid;
+    };
+    std::unordered_map<uint64_t, QueueIds> queue_ids;
+    std::mutex queue_ids_mu;
+
     RingParser parser(
         [&](const PacketRecord& r) {
+            // Memory footprint mode: for kernel dispatches, scan the kernarg
+            // buffer and emit a MemRecord before the normal trace/prom path.
+            if (mem_mode && r.type == aql::PacketType::KernelDispatch &&
+                r.kernarg_address != 0) {
+                MemRecord mr;
+                mr.queue_uid = r.queue_uid;
+                mr.dispatch_id = r.dispatch_id;
+                mr.kernel_name = r.kernel_name;
+                mr.group_seg_bytes = r.group_seg;
+                mr.private_seg_bytes = r.private_seg;
+                mr.grid_size =
+                    static_cast<uint64_t>(r.grid[0]) * r.grid[1] * r.grid[2];
+                mr.submit_ts = r.submit_ts;
+                {
+                    std::lock_guard<std::mutex> lk(queue_ids_mu);
+                    auto it = queue_ids.find(r.queue_uid);
+                    if (it != queue_ids.end()) {
+                        mr.gpu_id = it->second.gpu_id;
+                        // Prefer the kernarg size declared by the kernel
+                        // descriptor. The old fixed 256-byte window was wrong
+                        // in both directions: it truncated large blocks, and
+                        // for small ones it ran past the end into the next
+                        // kernel's arguments in the kernarg pool, attributing
+                        // their buffers to this dispatch. Measured on gfx908,
+                        // __amd_rocclr_fillBufferAligned declares 40 bytes, so
+                        // 216 bytes of every scan were a neighbour's data.
+                        mr.kernarg_size_bytes =
+                            ReadKernargSize(it->second.pid, r.kernel_object);
+                        uint32_t scan_bytes = mr.kernarg_size_bytes
+                                                  ? mr.kernarg_size_bytes
+                                                  : 256; // pre-v3 descriptor
+                        mr.footprint_valid = ScanKernargFootprint(
+                            it->second.pid, r.kernarg_address, scan_bytes,
+                            &mr.mapped_vram_bytes, &mr.ptr_count);
+                    }
+                    // else: the queue was never registered, so there is no pid
+                    // to read from — footprint_valid stays false.
+                }
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+                if (prom_exporter) {
+                    prom_exporter->Add(mr);
+                } else
+#endif
+                {
+                    // LDS and scratch come straight from the AQL packet and
+                    // are always valid; only the kernarg-derived fields can be
+                    // unmeasurable, and they are reported as such rather than
+                    // as a zero measurement.
+                    char footprint[64];
+                    if (mr.footprint_valid)
+                        snprintf(footprint, sizeof(footprint),
+                                 "mapped_vram=%luB ptrs=%u",
+                                 mr.mapped_vram_bytes, mr.ptr_count);
+                    else
+                        snprintf(footprint, sizeof(footprint),
+                                 "mapped_vram=unavailable ptrs=unavailable");
+                    fprintf(stderr,
+                            "[mem] kernel=%s gpu=%u grid=%lu "
+                            "lds=%uB scratch=%uB %s\n",
+                            mr.kernel_name.c_str(), mr.gpu_id, mr.grid_size,
+                            mr.group_seg_bytes, mr.private_seg_bytes,
+                            footprint);
+                }
+            }
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
             if (prom_exporter) {
                 prom_exporter->Add(r);
@@ -453,6 +549,10 @@ int main(int argc, char** argv) {
             return; // AQL compute or SDMA copy queues only
         const char* kind = q.is_sdma() ? "sdma" : "aql";
         q.ring_phys = VirtToPhys(q.pid, q.ring_base);
+        if (mem_mode && q.is_aql()) {
+            std::lock_guard<std::mutex> lk(queue_ids_mu);
+            queue_ids[q.uid] = {q.gpu_id, q.pid};
+        }
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
         if (prom_exporter) {
             prom_exporter->RegisterQueue(q);

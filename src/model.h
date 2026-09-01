@@ -171,4 +171,36 @@ struct AisRecord {
     bool is_error() const { return error != 0; }
 };
 
+// Static memory footprint for a single kernel dispatch, derived by scanning
+// the kernarg buffer for GPU virtual address arguments and cross-referencing
+// them against the process's /proc/<pid>/maps to estimate mapped region sizes.
+//
+// All three segment sizes are from the AQL packet (group_seg, private_seg) or
+// from ELF code-object metadata (kernarg_size). The pointer scan gives an
+// upper-bound on addressable VRAM: it counts entire allocation regions, not
+// just the bytes the kernel touches.
+struct MemRecord {
+    uint64_t queue_uid = 0;
+    uint64_t dispatch_id = 0;
+    std::string kernel_name;
+    uint32_t gpu_id = 0;
+
+    // From the AQL KernelDispatchPacket (already in PacketRecord).
+    uint32_t group_seg_bytes = 0;   // LDS / shared memory per workgroup
+    uint32_t private_seg_bytes = 0; // scratch memory per work-item
+    uint64_t grid_size = 0;         // total work-items (x*y*z)
+
+    // From the kernarg buffer scan. `footprint_valid` is false when the scan
+    // could not run at all (kernarg buffer unreadable, VM map unreadable, or
+    // the owning queue was not registered). In that case mapped_vram_bytes and
+    // ptr_count are meaningless and must not be reported as measurements —
+    // "could not measure" is not the same claim as "uses no memory".
+    bool footprint_valid = false;
+    uint32_t kernarg_size_bytes = 0; // size of the packed argument block
+    uint64_t mapped_vram_bytes = 0;  // sum of regions backing argument pointers
+    uint32_t ptr_count = 0; // number of distinct pointer-sized args found
+
+    double submit_ts = 0;
+};
+
 } // namespace hsasnoop
