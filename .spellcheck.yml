@@ -6,7 +6,15 @@ matrix:
     wordlists:
     - .wordlist.txt
   pipeline:
+  # fenced_code is required, not cosmetic: without it Python-Markdown leaves ```
+  # blocks as ordinary paragraphs, so the html filter's ':matches(code, pre)'
+  # ignore never sees them and every fenced block is spell-checked as prose. A
+  # "# comment" line inside a shell example even parses as an <h1>. The config
+  # has always intended to skip code; this makes it actually do so.
   - pyspelling.filters.markdown:
+      markdown_extensions:
+      - markdown.extensions.fenced_code:
+      - markdown.extensions.tables:
   - pyspelling.filters.html:
       comments: false
       attributes:
@@ -15,5 +23,12 @@ matrix:
       ignores:
       - ':matches(code, pre)'
   sources:
-  - '**/*.md'
+  # Exclude the build trees. CMake FetchContent unpacks prometheus-cpp,
+  # civetweb, googletest and their vendored dependencies there, and each ships
+  # its own Markdown -- over a thousand spurious "misspellings". CI never sees
+  # them because it works from a clean checkout, which meant running this
+  # linter locally, the way you would before pushing, gave a completely
+  # different answer from CI. results/ is excluded for the same reason: it holds
+  # generated run reports and is gitignored.
+  - '**/*.md|!build*/**|!results/**|!.obs-scratch/**'
   default_encoding: utf-8
