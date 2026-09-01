@@ -1,14 +1,14 @@
 # Reproducers
 
-Standalone programs used to root-cause the findings recorded in
-[../../../overnight.md](../../../overnight.md). Neither is part of the build;
-compile them by hand on an allocated node.
+Standalone programs used to root-cause the `--mem-snoop` findings described in the
+commit messages on this branch. Neither is part of the build; compile them by
+hand on an allocated node.
 
 ## `probe-cross-process-read.c`
 
 Walks a live process's `/proc/<pid>/maps` and, for every readable region of at
 least 3 MiB, attempts the same read two ways: `process_vm_readv` (what
-`ReadProcMem` in [../../../src/proc_mem.cpp](../../../src/proc_mem.cpp) uses)
+[`ReadProcMem`](../../../src/proc_mem.cpp) uses)
 and `pread` on `/proc/<pid>/mem` (what `ReadU64ViaMem` uses). Prints a table of
 which mappings each method can read.
 
