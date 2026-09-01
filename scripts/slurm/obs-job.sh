@@ -70,16 +70,51 @@ export HSA_SNOOP_EXTRA_MOUNTS="-v /var/tmp:/var/tmp"
 # with no explanation is the most confusing possible outcome. Write the verdict
 # next to the capture.
 mkdir -p "$AIS_DIR" 2>/dev/null || true
+# No '$' anchor: /proc/kallsyms lines are "<addr> t kfd_ioctl_ais\t[amdgpu]", so
+# anchoring the symbol name to end-of-line never matches and reported 0 on a node
+# that plainly had the symbol. And `grep -c ... || echo 0` prints TWICE when
+# there are no matches -- grep -c emits "0" and still exits 1 -- so the field
+# came out as two lines. `|| true` is what was meant.
 {
-    echo "kfd_ioctl_ais_symbol=$(grep -c ' kfd_ioctl_ais$' /proc/kallsyms 2>/dev/null || echo 0)"
+    echo "kfd_ioctl_ais_symbol=$(grep -c 'kfd_ioctl_ais' /proc/kallsyms 2>/dev/null || true)"
     echo "amdgpu_version=$(modinfo amdgpu 2>/dev/null | awk '/^version:/{print $2; exit}')"
-    echo "nvme_devices=$(lsblk -d -o NAME,TRAN 2>/dev/null | grep -c nvme || echo 0)"
+    echo "nvme_devices=$(lsblk -d -o NAME,TRAN 2>/dev/null | grep -c nvme || true)"
     echo "ais_dir=$AIS_DIR"
     echo "ais_dir_backing=$(df --output=source "$AIS_DIR" 2>/dev/null | tail -1)"
     echo "ais_dir_on_nvme=$(df --output=source "$AIS_DIR" 2>/dev/null | tail -1 | grep -qi nvme && echo yes || echo no)"
 } >"$OUT/ais-support.txt"
 log "AIS support probe:"
 sed 's/^/    /' "$OUT/ais-support.txt"
+
+###############################################################################
+# Stage 0b — preflight the ROCm install
+###############################################################################
+# Several nodes advertise a ROCM feature but carry an incomplete /opt/rocm. On
+# ctr-cx63-mi300x-12 hipcc is present but lib/cmake/hip/ is not, so
+# find_package(hip) fails, CMake silently skips examples/ and the only clue is
+# one line of "ROCm HIP not found" buried in a 60-second build log. Check the
+# file CMake actually looks for, up front, and say which node and which path.
+ROCM_REAL="$(readlink -f /opt/rocm 2>/dev/null)"
+[[ -d ${ROCM_REAL:-} ]] || ROCM_REAL=/opt/rocm
+HIP_CONFIG=""
+for c in "$ROCM_REAL/lib/cmake/hip/hip-config.cmake" \
+         "$ROCM_REAL/lib/cmake/hip/hip-config-version.cmake"; do
+    [[ -f $c ]] && { HIP_CONFIG="$c"; break; }
+done
+if [[ -z $HIP_CONFIG ]]; then
+    log "FATAL: $NODE has an incomplete ROCm: no hip-config.cmake under"
+    log "       $ROCM_REAL/lib/cmake/hip/ (hipcc present: $([[ -x $ROCM_REAL/bin/hipcc ]] && echo yes || echo no))"
+    log "       find_package(hip) would fail and examples/ would be skipped."
+    {
+        echo "node=$NODE"
+        echo "rocm_real=$ROCM_REAL"
+        echo "hipcc=$([[ -x $ROCM_REAL/bin/hipcc ]] && echo present || echo missing)"
+        echo "hip_cmake_dir=missing"
+    } >"$OUT/ABORTED"
+    touch "$OUT/DONE"
+    exit 0
+fi
+log "ROCm preflight ok: $HIP_CONFIG"
 
 timeout 120 bash -c 'docker ps -aq --filter "name=hsasnoop-obs-" | xargs -r docker rm -f' >/dev/null 2>&1
 timeout 120 bash -c 'docker ps -aq --filter "name=promobs-" | xargs -r docker rm -f' >/dev/null 2>&1

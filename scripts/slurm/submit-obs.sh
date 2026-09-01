@@ -4,6 +4,12 @@
 #
 #   scripts/slurm/submit-obs.sh [run-id] [constraint] [nodelist]
 #
+# Set HSA_SNOOP_OBS_PARTITION to submit somewhere other than defq. The `storage`
+# partition is the better AIS target when defq is saturated: its two GPU nodes
+# carry 8 and 16 NVMe drives against the 3-4 on a defq MI300X, and its queue is
+# far shorter. Its third node (ctr-smc-strg-cx68-3) is CPUONLY, which the
+# GFX942 half of the constraint filters out.
+#
 # Default constraint: GFX942&MARKHAM&NVME.
 #
 #   MARKHAM — AUSTIN nodes do not mount this /home, and jobs landing there die
@@ -34,13 +40,20 @@ RESULTS_DIR="$REPO_ROOT/results/$RUN_ID"
 mkdir -p "$RESULTS_DIR"
 
 args=(
-    --partition=defq
+    --partition="${HSA_SNOOP_OBS_PARTITION:-defq}"
     --gres=gpu:1
     --time=45
     --job-name="hsasnoop-obs"
     --constraint="$CONSTRAINT"
 )
 [[ -n $NODELIST ]] && args+=(--nodelist="$NODELIST")
+# Known-bad nodes: they advertise a ROCM feature but carry an incomplete
+# /opt/rocm (hipcc present, lib/cmake/hip absent), so find_package(hip) fails
+# and the capture comes back with no workload binaries. obs-job.sh now detects
+# this in its preflight and aborts in seconds, but there is no point landing
+# there at all. Override with HSA_SNOOP_OBS_EXCLUDE.
+EXCLUDE="${HSA_SNOOP_OBS_EXCLUDE-ctr-cx63-mi300x-12,ctr2-mlse-hpe-alola-s94-13}"
+[[ -n $EXCLUDE ]] && args+=(--exclude="$EXCLUDE")
 
 jobid=$(sbatch --parsable \
     "${args[@]}" \
@@ -48,7 +61,7 @@ jobid=$(sbatch --parsable \
     --export="ALL,RESULTS_DIR=$RESULTS_DIR,HSA_SNOOP_REPO=$REPO_ROOT" \
     "$REPO_ROOT/scripts/slurm/obs-job.sh")
 
-log "submitted job $jobid (constraint=$CONSTRAINT nodelist=${NODELIST:-any})"
+log "submitted job $jobid (partition=${HSA_SNOOP_OBS_PARTITION:-defq} constraint=$CONSTRAINT nodelist=${NODELIST:-any})"
 log "results  : $RESULTS_DIR"
 log "watch    : squeue -j $jobid"
 log "then run : scripts/observability/stack.sh up $RESULTS_DIR"
