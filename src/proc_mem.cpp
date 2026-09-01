@@ -61,6 +61,31 @@ bool ReadProcMemViaMem(int pid, uint64_t va, void* out, size_t len) {
            static_cast<ssize_t>(len);
 }
 
+// AMDGPU kernel descriptor (code object v3 and later). Only the leading fields
+// matter here:
+//   offset 0  u32 group_segment_fixed_size
+//   offset 4  u32 private_segment_fixed_size
+//   offset 8  u32 kernarg_size          <-- added in the v3 descriptor
+//   offset 12 u8[4] reserved
+// In v2 and earlier, offset 8 is reserved and reads as zero, which the caller
+// treats as "unavailable".
+constexpr uint32_t kKdKernargSizeOffset = 8;
+
+uint32_t ReadKernargSize(int pid, uint64_t kernel_object) {
+    if (!kernel_object)
+        return 0;
+    uint32_t size = 0;
+    const uint64_t va = kernel_object + kKdKernargSizeOffset;
+    if (!ReadProcMem(pid, va, &size, sizeof(size)) &&
+        !ReadProcMemViaMem(pid, va, &size, sizeof(size)))
+        return 0;
+    // Reject implausible values: a corrupt or pre-v3 descriptor must not be
+    // able to widen the scan window.
+    if (size == 0 || size > kMaxKernargScanBytes)
+        return 0;
+    return size;
+}
+
 uint64_t VirtToPhys(int pid, uint64_t va) {
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d/pagemap", pid);
@@ -136,9 +161,9 @@ bool ScanKernargFootprint(int pid, uint64_t kernarg_va, uint32_t kernarg_bytes,
     if (!kernarg_va || kernarg_bytes < 8)
         return true; // nothing to scan; not an error
 
-    // Cap at 4 KB to bound cost; real kernarg blocks are almost always < 256 B.
-    const uint32_t kMaxScan = 4096;
-    uint32_t scan_bytes = (kernarg_bytes < kMaxScan) ? kernarg_bytes : kMaxScan;
+    uint32_t scan_bytes = (kernarg_bytes < kMaxKernargScanBytes)
+                              ? kernarg_bytes
+                              : kMaxKernargScanBytes;
     // Align down to 8.
     scan_bytes &= ~7u;
     if (scan_bytes < 8)
@@ -171,8 +196,32 @@ bool ScanKernargFootprint(int pid, uint64_t kernarg_va, uint32_t kernarg_bytes,
         if (candidate < (1ULL << 32) || candidate >= (1ULL << 48))
             continue;
 
+        // Only count a region when a candidate points at its BASE.
+        //
+        // Two distinct failure modes make "points anywhere inside a mapping"
+        // untenable, both measured on gfx908:
+        //
+        //  1. An 8-byte window can straddle two adjacent arguments. vadd's
+        //     `int n` sits at offset 24 followed by padding, so the read there
+        //     fabricated 0x7c6400100000 -- low half n=0x100000, high half the
+        //     top bits of the next field. It is page aligned by luck and lands
+        //     1.6 GB inside a 3.9 GB anonymous mapping, inflating one
+        //     dispatch's footprint from 12 MiB to 3.9 GiB.
+        //  2. The implicit-argument area HIP appends holds non-pointer words
+        //     that land in unrelated mappings (e.g. 0x7c901cfb95f1 -> a 45 MB
+        //     library region).
+        //
+        // Every genuine device buffer observed pointed at its VMA base exactly,
+        // and every false positive pointed into the middle. Since the estimate
+        // adds up whole regions, requiring the base is also the self-consistent
+        // rule: crediting an entire VMA to a word aimed at its interior is the
+        // over-count this is meant to bound.
+        //
+        // The cost is that a buffer referenced only by an interior pointer is
+        // missed. That is deliberate, and it is why mapped_vram is documented
+        // as an estimate rather than an exact figure.
         const VmaRegion* v = FindVma(vmas, candidate);
-        if (!v)
+        if (!v || v->start != candidate)
             continue;
 
         (*ptr_count)++;

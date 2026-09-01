@@ -370,12 +370,21 @@ int main(int argc, char** argv) {
                     auto it = queue_ids.find(r.queue_uid);
                     if (it != queue_ids.end()) {
                         mr.gpu_id = it->second.gpu_id;
-                        // kernarg_size is not in the AQL packet; use a fixed
-                        // window here — recovering the real size would need
-                        // ELF code-object metadata.
+                        // Prefer the kernarg size declared by the kernel
+                        // descriptor. The old fixed 256-byte window was wrong
+                        // in both directions: it truncated large blocks, and
+                        // for small ones it ran past the end into the next
+                        // kernel's arguments in the kernarg pool, attributing
+                        // their buffers to this dispatch. Measured on gfx908,
+                        // __amd_rocclr_fillBufferAligned declares 40 bytes, so
+                        // 216 bytes of every scan were a neighbour's data.
+                        mr.kernarg_size_bytes =
+                            ReadKernargSize(it->second.pid, r.kernel_object);
+                        uint32_t scan_bytes = mr.kernarg_size_bytes
+                                                  ? mr.kernarg_size_bytes
+                                                  : 256; // pre-v3 descriptor
                         mr.footprint_valid = ScanKernargFootprint(
-                            it->second.pid, r.kernarg_address,
-                            256, // conservative scan window
+                            it->second.pid, r.kernarg_address, scan_bytes,
                             &mr.mapped_vram_bytes, &mr.ptr_count);
                     }
                     // else: the queue was never registered, so there is no pid

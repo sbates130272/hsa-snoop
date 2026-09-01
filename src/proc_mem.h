@@ -6,6 +6,10 @@
 
 namespace hsasnoop {
 
+// Upper bound on how much of a kernarg block is ever scanned, and the ceiling
+// used to sanity-check a kernel descriptor's declared kernarg size.
+constexpr uint32_t kMaxKernargScanBytes = 4096;
+
 // Read `len` bytes from virtual address `va` in process `pid` into `out`.
 // Returns true on full read. Cheap enough to call in a tight poll loop.
 bool ReadProcMem(int pid, uint64_t va, void* out, size_t len);
@@ -24,6 +28,13 @@ bool ReadProcMemViaMem(int pid, uint64_t va, void* out, size_t len);
 inline bool ReadU64ViaMem(int pid, uint64_t va, uint64_t* out) {
     return ReadProcMemViaMem(pid, va, out, sizeof(*out));
 }
+
+// Read the kernarg segment size from the AMDGPU kernel descriptor at
+// `kernel_object` (the KD address carried in every AQL dispatch packet).
+// Returns 0 when unavailable: the KD is unreadable, or the code object predates
+// the v3 descriptor that introduced this field. Callers should fall back to a
+// conservative fixed window in that case.
+uint32_t ReadKernargSize(int pid, uint64_t kernel_object);
 
 // Resolve the physical address backing user VA `va` in `pid` via pagemap.
 // Returns 0 if not present/swapped or if the page is device memory (no PFN).

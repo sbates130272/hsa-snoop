@@ -12,10 +12,12 @@
 
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -35,6 +37,53 @@ void Check(bool ok, const char* what) {
 // An address that is virtually certain not to be mapped, used to provoke the
 // read-failure paths. Above the 47-bit user VA ceiling on x86-64.
 constexpr uint64_t kUnmappedVa = 0x7ff0000000000000ULL;
+
+
+// Allocate a region that is genuinely the start of its own VMA. posix_memalign
+// is not enough: glibc offsets the returned pointer from the mmap base, so it
+// lands inside the mapping rather than at its start. Returns nullptr if the
+// kernel merged our mapping into a neighbouring VMA, in which case the caller
+// skips rather than reports a false failure.
+void* MapOwnVma(size_t len) {
+    // Map one extra page and revoke access to it. Without that guard the
+    // kernel coalesces successive anonymous mappings with identical flags into
+    // a single VMA, so only the lowest allocation would still be a VMA start
+    // by the time the scan runs.
+    const size_t kGuard = 4096;
+    void* p = mmap(nullptr, len + kGuard, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED)
+        return nullptr;
+    if (mprotect(static_cast<char*>(p) + len, kGuard, PROT_NONE) != 0) {
+        munmap(p, len + kGuard);
+        return nullptr;
+    }
+    std::memset(p, 0, len);
+
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/maps", getpid());
+    FILE* f = fopen(path, "r");
+    if (!f) {
+        munmap(p, len + kGuard);
+        return nullptr;
+    }
+    char line[512];
+    bool is_start = false;
+    while (fgets(line, sizeof(line), f)) {
+        uint64_t s = 0, e = 0;
+        if (sscanf(line, "%lx-%lx", &s, &e) == 2 &&
+            s == reinterpret_cast<uint64_t>(p)) {
+            is_start = true;
+            break;
+        }
+    }
+    fclose(f);
+    if (!is_start) {
+        munmap(p, len + kGuard);
+        return nullptr;
+    }
+    return p;
+}
 
 void TestReadProcMem() {
     const int pid = getpid();
@@ -94,16 +143,24 @@ void TestScanKernargFootprint() {
     uint64_t mapped = 0;
     uint32_t ptrs = 0;
 
-    // A synthetic kernarg block holding pointers to three distinct heap
-    // allocations, in the same shape a real dispatch would have.
-    std::vector<uint8_t> bufs[3];
-    for (auto& b : bufs)
-        b.resize(1 << 20);
+    // A synthetic kernarg block holding pointers to three distinct allocations,
+    // in the same shape a real dispatch would have. They must be PAGE ALIGNED
+    // to model real GPU buffer objects: the scan deliberately ignores
+    // unaligned candidates, so plain std::vector heap pointers would (rightly)
+    // be rejected and would not exercise the counting path at all.
+    void* bufs[3] = {};
+    for (auto& b : bufs) {
+        b = MapOwnVma(1 << 20);
+        if (!b) {
+            std::fprintf(stderr, "SKIP: could not map a standalone VMA\n");
+            return;
+        }
+    }
 
     uint64_t kernarg[8] = {};
-    kernarg[0] = reinterpret_cast<uint64_t>(bufs[0].data());
-    kernarg[1] = reinterpret_cast<uint64_t>(bufs[1].data());
-    kernarg[2] = reinterpret_cast<uint64_t>(bufs[2].data());
+    kernarg[0] = reinterpret_cast<uint64_t>(bufs[0]);
+    kernarg[1] = reinterpret_cast<uint64_t>(bufs[1]);
+    kernarg[2] = reinterpret_cast<uint64_t>(bufs[2]);
     kernarg[3] = 4096; // a plain integer argument, must not count
     kernarg[4] = 0;    // a null pointer, must not count
 
@@ -133,6 +190,81 @@ void TestScanKernargFootprint() {
           "ScanKernargFootprint should treat a null kernarg VA as success");
     Check(mapped == 0 && ptrs == 0,
           "ScanKernargFootprint null-VA case should report zero");
+
+    // Mappings are left in place; the test process exits immediately after.
+}
+
+// The scan counts a region only when a candidate points at its BASE. Words
+// aiming into the middle of a mapping are rejected: that is what an 8-byte
+// window straddling two arguments produces, and it is how one dispatch came to
+// report 3.9 GiB instead of 12 MiB.
+void TestInteriorPointersIgnored() {
+    const int pid = getpid();
+    const size_t kLen = 4u << 20;
+    void* region = MapOwnVma(kLen);
+    if (!region) {
+        std::fprintf(stderr, "SKIP: could not map a standalone VMA\n");
+        return;
+    }
+    const uint64_t base = reinterpret_cast<uint64_t>(region);
+
+    uint64_t at_base[4] = {base, 0, 0, 0};
+    uint64_t mapped_base = 0, mapped_mid = 0, mapped_odd = 0;
+    uint32_t ptrs_base = 0, ptrs_mid = 0, ptrs_odd = 0;
+    Check(ScanKernargFootprint(pid, reinterpret_cast<uint64_t>(at_base),
+                               sizeof(at_base), &mapped_base, &ptrs_base),
+          "scan of a base pointer should succeed");
+
+    // Page-aligned, same mapping, but not the base -- this is the shape of the
+    // straddled-argument false positive.
+    uint64_t interior[4] = {base + 4096, 0, 0, 0};
+    Check(ScanKernargFootprint(pid, reinterpret_cast<uint64_t>(interior),
+                               sizeof(interior), &mapped_mid, &ptrs_mid),
+          "scan of an interior pointer should succeed");
+
+    uint64_t unaligned[4] = {base + 0x11, 0, 0, 0};
+    Check(ScanKernargFootprint(pid, reinterpret_cast<uint64_t>(unaligned),
+                               sizeof(unaligned), &mapped_odd, &ptrs_odd),
+          "scan of an unaligned candidate should succeed");
+
+    Check(ptrs_base == 1 && mapped_base >= kLen,
+          "a pointer to the region base must be counted");
+    Check(ptrs_mid == 0 && mapped_mid == 0,
+          "a page-aligned INTERIOR pointer must not be counted");
+    Check(ptrs_odd == 0 && mapped_odd == 0,
+          "an unaligned candidate must not be counted");
+}
+
+// The scan must never read past the declared kernarg size. Kernarg blocks are
+// packed into a shared pool, so over-reading attributes the NEXT kernel's
+// buffers to this dispatch.
+void TestScanRespectsDeclaredSize() {
+    const int pid = getpid();
+    void* victim = MapOwnVma(1 << 20);
+    if (!victim) {
+        std::fprintf(stderr, "SKIP: could not map a standalone VMA\n");
+        return;
+    }
+
+    // The same region-base pointer twice: once inside the declared window,
+    // once past it.
+    uint64_t block[8] = {};
+    block[0] = reinterpret_cast<uint64_t>(victim);
+    block[4] = block[0]; // at byte offset 32
+
+    uint64_t mapped_small = 0, mapped_big = 0;
+    uint32_t ptrs_small = 0, ptrs_big = 0;
+    Check(ScanKernargFootprint(pid, reinterpret_cast<uint64_t>(block), 16,
+                               &mapped_small, &ptrs_small),
+          "bounded scan should succeed");
+    Check(ScanKernargFootprint(pid, reinterpret_cast<uint64_t>(block),
+                               sizeof(block), &mapped_big, &ptrs_big),
+          "full scan should succeed");
+    Check(ptrs_small == 1,
+          "a 16-byte window must see only the first pointer");
+    // Both refer to the same region, so only the first is a fresh count; the
+    // pointer COUNT still distinguishes the two window sizes.
+    Check(ptrs_big == 2, "the full window should see both pointers");
 }
 
 void TestDeadProcess() {
@@ -217,6 +349,8 @@ int main() {
     TestReadProcMem();
     TestReadProcMemViaMem();
     TestScanKernargFootprint();
+    TestInteriorPointersIgnored();
+    TestScanRespectsDeclaredSize();
     TestDeadProcess();
     TestOpenFailureIsNotCached();
 
