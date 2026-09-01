@@ -347,12 +347,68 @@ Metrics exposed (all carry constant labels `host`, `platform`, `rocm_version`,
 | `hsa_sdma_bytes_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `direction` | Bytes moved by SDMA copies, by direction |
 | `hsa_sdma_packets_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `opcode` | SDMA packets, by opcode (`copy`/`fence`/`timestamp`/...) |
 | `hsa_active_sdma_queues` | Gauge | `gpu_id`, `gpu_type` | Currently tracked SDMA queues |
+| `hsa_sdma_present` | Gauge | — | Latches at 1 when the first SDMA queue is seen; stays 0 on APU/unified-memory nodes with no discrete DMA engine |
+| `hsa_triggered` | Gauge | `gpu_id`, `gpu_type` | Latches at 1 on the first kernel dispatch seen on this GPU |
 | `hsa_errors_total` | Counter | `gpu_id`, `pid` | Packets arriving before queue registration |
 | `hsa_xnack_total` | Counter | `pasid`, `comm` | GPU page-fault retry (XNACK) events observed via `kprobe:kfd_process_vm_fault`; requires `--xnack-snoop` |
+
+AIS (AMD Infinity Storage) metrics, all requiring `--ais-snoop`. Reads
+(file→VRAM) and writes (VRAM→file) are separate metric families rather than a
+label, so a dashboard can select them independently. All carry `gpu_id`,
+`gpu_type`, `pcie_id`, `device_type` and `vendor`:
+
+| Metric | Type | Description |
+| --- | --- | --- |
+| `ais_snoop_armed` | Gauge | 1 if the AIS kprobe monitor started, 0 if `--ais-snoop` was passed but it failed. **Absent** when the flag was not passed |
+| `ais_active` | Gauge | Latches at 1 on the first AIS operation observed |
+| `ais_rx_ops_total` / `ais_tx_ops_total` | Counter | AIS ioctls completed |
+| `ais_rx_bytes_total` / `ais_tx_bytes_total` | Counter | Bytes transferred by P2P DMA |
+| `ais_rx_errors_total` / `ais_tx_errors_total` | Counter | Failed operations; extra `errno` label |
+| `ais_rx_latency_seconds` / `ais_tx_latency_seconds` | Histogram | ioctl entry-to-return latency |
+| `ais_rx_io_size_bytes` / `ais_tx_io_size_bytes` | Histogram | Requested transfer size |
+| `ais_pcie_device_info` | Gauge | Info metric (value 1) per PCIe device; extra `vendor_id`, `device_id`, `class_code` labels |
+
+`ais_snoop_armed` exists to separate the three reasons an AIS panel can be
+empty — the flag was never passed (metric absent), the monitor could not start
+(0), or AIS is genuinely being watched and no P2P IO happened (1, with
+`ais_active` still 0). `ais_active` alone cannot tell them apart.
 
 Prometheus mode and trace-file mode are **independent** — both can run
 simultaneously using separate hsa-snoop instances (or via the two systemd
 units below). They do not share state or interfere with each other.
+
+### Dispatch event log (`--log-dispatches`)
+
+Prometheus is an aggregating store sampled at the scrape interval. At the
+~2700 kernel launches/s a tight HIP loop reaches, a 1 s scrape collapses
+thousands of distinct dispatches into a single counter delta, and no dashboard
+built on it can show *which kernel ran when*. `--log-dispatches` is the other
+half: one NDJSON line per event, with a wall-clock RFC3339 timestamp, written
+independently of both the trace files and the exporter.
+
+```
+sudo ./hsa-snoop --all --prometheus --log-dispatches /var/log/hsa-snoop/events.ndjson
+sudo ./hsa-snoop -- ./my_hip_app --log-dispatches -      # '-' means stderr
+```
+
+```json
+{"ts":"2026-09-01T22:04:28.106365Z","ev":"queue","kind":"aql","gpu_id":10976,"pid":1795691,"comm":"gfx-test","queue_uid":1,"qtype":2,"ring_size":4096,"ring_va":"0x7097172a9000","ring_phys":"0x63f49cc000"}
+{"ts":"2026-09-01T22:04:28.392511Z","ev":"dispatch","gpu_id":10976,"pid":1795691,"comm":"gfx-test","queue_uid":2,"dispatch_id":0,"kernel":"vadd(float const*, float const*, float*, int)","grid":[26624,1,1],"wg":[256,1,1],"lds":0,"scratch":0,"dur_us":812.500}
+```
+
+`ev` is one of `queue`, `dispatch` or `sdma`. `dur_us` is present only when the
+queue was observed to retire the packet; 64-bit addresses are hex **strings**,
+because JSON numbers are IEEE doubles in most consumers and would silently lose
+the low bits. Available in every build — it does not require
+`-DHSA_SNOOP_PROMETHEUS=ON`.
+
+This is the stream the Grafana kernel-launch timeline is built from; ship it
+into Loki with the Alloy config under `scripts/observability/`.
+
+> [!NOTE]
+> The log is written unbuffered-per-line from the parser sink thread. At a
+> sustained few thousand dispatches/s it produces on the order of 15 MB/minute,
+> so point it at local storage rather than NFS for long runs.
 
 ### Quick discovery-only check (no build)
 
@@ -443,6 +499,51 @@ EOF
 sudo systemctl daemon-reload && sudo systemctl restart hsa-snoop-prometheus
 ```
 
+## Grafana dashboard
+
+`grafana/hsa-snoop-dashboard.json` is the reference dashboard. It reads from
+two datasources:
+
+* **Prometheus** — everything under Overview, Throughput, Duration, Queue,
+  SDMA and AIS. Requires `--prometheus`.
+* **Loki** — the *Kernel Launch Timeline* and *hsa-snoop Logs* rows. Requires
+  `--log-dispatches` shipped into Loki (see `scripts/observability/`).
+
+The Prometheus rows work on their own; the Loki rows simply stay empty without
+a log pipeline. The two datasource template variables (`$ds_prom`, `$ds_loki`)
+make the file usable both through Grafana's import wizard and through file
+provisioning.
+
+### Developing the dashboard against real data
+
+Iterating on a dashboard means many minutes of clicking, and holding a
+`--gres=gpu:1` Slurm allocation open for that is wasteful. The workflow is
+therefore capture-then-replay:
+
+```
+# 1. On a GPU node under Slurm: run a phased workload with the exporter and the
+#    dispatch log on, then freeze a Prometheus TSDB snapshot plus the logs.
+scripts/slurm/submit-obs.sh my-run
+
+# 2. On the login node, with no allocation: replay them into a local
+#    Grafana + Prometheus + Loki stack.
+scripts/observability/stack.sh up results/my-run
+
+# 3. Edit grafana/hsa-snoop-dashboard.json, then re-provision without
+#    re-ingesting anything.
+scripts/observability/stack.sh reload
+
+# 4. Assert that every panel actually returns data.
+scripts/observability/check-dashboard.py
+scripts/observability/stack.sh down
+```
+
+`check-dashboard.py` walks the dashboard JSON, expands Grafana's template and
+interval variables, and runs every target against the replayed datasources.
+Loading a dashboard in a browser tells you it renders; this tells you which
+panels are silently empty because a label was renamed or a metric is only
+created after the first error.
+
 ## Layout
 
 ```
@@ -455,8 +556,13 @@ src/ksym.{h,cpp}                   kernel_object -> demangled name via code-obje
 src/parser.{h,cpp}                 per-queue ring poller / AQL + SDMA decoder / timing
 src/trace_writer.{h,cpp}           Perfetto protobuf + Chrome JSON writers
 src/prometheus_exporter.{h,cpp}    Prometheus metrics exporter (optional)
+src/dispatch_log.{h,cpp}           NDJSON per-event log (--log-dispatches)
 src/main.cpp                       CLI / orchestration
 scripts/hsa-snoop.bt               zero-build discovery via bpftrace
+scripts/slurm/                     multi-GFX Slurm validation + capture harness
+scripts/slurm/obs-job.sh           capture a replayable Prometheus+log dataset
+scripts/observability/             offline Grafana/Prometheus/Loki replay stack
+grafana/hsa-snoop-dashboard.json   reference Grafana dashboard
 systemd/hsa-snoop.service          systemd unit (trace-file daemon / --all mode)
 systemd/hsa-snoop-prometheus.service  systemd unit (Prometheus exporter daemon)
 systemd/hsa-snoop.conf             runtime configuration (ExecStart arguments)
@@ -478,6 +584,16 @@ systemd/hsa-snoop.logrotate        logrotate policy (512 MiB rotation, 8 kept)
   or counters are read; this is best used for structure and relative timing.
 * **Attach mode only sees queues created after attach**, since the kprobe fires
   on `create_queue`. Use launch mode to guarantee capture from process start.
+* **`hsa_kernel_duration_seconds` is a coarse histogram by nature.** Its buckets
+  run 50 µs to 5 s on a 1-2.5-5 ladder, chosen against 96,749 measured
+  dispatches so the fullest bucket holds ~42% of samples rather than the 72% the
+  original decade ladder produced. `histogram_quantile` still interpolates
+  inside a bucket, so a p99 is accurate to roughly the bucket width. When an
+  exact percentile matters, take it from the `--log-dispatches` stream
+  (`quantile_over_time(... | unwrap dur_us ...)`), which quantiles the individual
+  measurements. The 50 µs floor is deliberate: durations come from polling the
+  ring at `--poll-us` (default 20 µs), so anything below a couple of poll
+  intervals is quantisation noise.
 * **WSL2 PID mapping is heuristic.** bpftrace reports host-kernel PIDs, which
   differ from WSL2 namespace PIDs by a fixed offset. In `--all` mode without a
   known target PID, hsa-snoop scans `/proc` by comm name to resolve the

@@ -1,0 +1,110 @@
+# Offline replay stack for an hsa-snoop capture produced by
+# scripts/slurm/obs-job.sh. Driven by stack.sh, which sets the variables below.
+#
+#   HSA_SNOOP_CAPTURE   host path to <results>/<node>-<arch>/obs
+#   HSA_SNOOP_TSDB      host path to the Prometheus snapshot inside that capture
+#   HSA_SNOOP_CAPTURE_ID  a label value identifying the capture
+#   HSA_SNOOP_PORT_*    host ports
+#
+# Nothing here touches a GPU or the KFD: it is pure replay, so it runs on the
+# login node with no allocation.
+
+name: hsa-snoop-obs
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    container_name: hsasnoop-prometheus
+    # The image runs as nobody(65534); the staged snapshot is owned by whoever
+    # ran stack.sh, so Prometheus cannot create queries.active and exits.
+    user: root
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # The capture is historical. Without an effectively infinite retention
+      # Prometheus deletes the blocks it was just handed, on startup, and the
+      # dashboard comes up empty.
+      - --storage.tsdb.retention.time=10y
+      - --web.enable-admin-api
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus-replay.yml:/etc/prometheus/prometheus.yml:ro
+      # Writable, not :ro — Prometheus must create its own WAL and lock file
+      # next to the replayed blocks or it refuses to start. stack.sh copies the
+      # snapshot into a scratch directory first so the capture stays pristine.
+      - ${HSA_SNOOP_TSDB}:/prometheus
+    ports:
+      - "127.0.0.1:${HSA_SNOOP_PORT_PROM:-9490}:9090"
+
+  loki:
+    image: grafana/loki:3.5.7
+    container_name: hsasnoop-loki
+    command: ["-config.file=/etc/loki/config.yaml"]
+    user: root
+    environment:
+      # This login node reports 384 CPUs. Loki sizes several worker pools and
+      # its flush concurrency from GOMAXPROCS, and at 384 it spends startup
+      # thrashing instead of joining its own single-node ring — the symptom is
+      # a process that logs "empty ring" and then never answers a query.
+      GOMAXPROCS: "8"
+    volumes:
+      - ./loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "127.0.0.1:${HSA_SNOOP_PORT_LOKI:-3100}:3100"
+
+  alloy:
+    image: grafana/alloy:v1.13.0
+    container_name: hsasnoop-alloy
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    environment:
+      HSA_SNOOP_CAPTURE_ID: ${HSA_SNOOP_CAPTURE_ID:-unknown}
+    volumes:
+      - ./alloy-config.alloy:/etc/alloy/config.alloy:ro
+      - ${HSA_SNOOP_CAPTURE}:/capture:ro
+      - alloy-data:/var/lib/alloy/data
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:12.3.0
+    container_name: hsasnoop-grafana
+    environment:
+      # Anonymous admin: this is a throwaway localhost-bound replay instance and
+      # a login prompt between the user and the dashboard they are iterating on
+      # is pure friction.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      # Admin while on loopback; stack.sh downgrades this to Viewer and turns the
+      # login form back on whenever the bind address is not 127.0.0.1. An
+      # anonymous-admin Grafana reachable from the corporate network is a
+      # different proposition from one only the local user can hit.
+      GF_AUTH_ANONYMOUS_ORG_ROLE: ${HSA_SNOOP_GF_ANON_ROLE:-Admin}
+      GF_AUTH_DISABLE_LOGIN_FORM: ${HSA_SNOOP_GF_DISABLE_LOGIN:-true}
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${HSA_SNOOP_GF_ADMIN_PASSWORD:-admin}
+      GF_USERS_DEFAULT_THEME: dark
+      GF_FEATURE_TOGGLES_ENABLE: lokiLogsDataplane
+      # The bundled dashboard is provisioned read-only by default, which blocks
+      # the edit-and-export loop this whole stack exists to support.
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 1s
+    volumes:
+      - ./provisioning:/etc/grafana/provisioning:ro
+      # Staged by stack.sh, not grafana/ directly: the checked-in dashboard is a
+      # grafana.com export whose ${DS_PROMETHEUS} placeholders file provisioning
+      # cannot resolve.
+      - ${HSA_SNOOP_DASHBOARDS}:/var/lib/grafana-dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "${HSA_SNOOP_BIND:-127.0.0.1}:${HSA_SNOOP_PORT_GRAFANA:-3000}:3000"
+    depends_on:
+      - prometheus
+      - loki
+
+volumes:
+  loki-data:
+  alloy-data:
+  grafana-data:

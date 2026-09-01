@@ -6,3 +6,4 @@ examples/vecwork
 examples/square
 build**/
 results/
+.obs-scratch/

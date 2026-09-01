@@ -19,6 +19,7 @@
 
 #include "ais_monitor.h"
 #include "discovery.h"
+#include "dispatch_log.h"
 #include "parser.h"
 #include "proc_mem.h"
 #include "trace_writer.h"
@@ -98,7 +99,19 @@ void Usage(const char* p) {
         "                     counts full backing regions, not accessed "
         "bytes,\n"
         "                     and cannot follow nested (pointer-chasing) "
-        "args.\n",
+        "args.\n"
+        "  --log-dispatches <path>\n"
+        "                     Append one NDJSON line per queue, kernel "
+        "dispatch\n"
+        "                     and SDMA packet to <path> ('-' for stderr), with "
+        "a\n"
+        "                     wall-clock RFC3339 timestamp. Independent of "
+        "--prometheus\n"
+        "                     and of trace output; intended for shipping into "
+        "Loki,\n"
+        "                     which can render a per-launch kernel timeline "
+        "that\n"
+        "                     scrape-interval metrics cannot.\n",
         p, p, p);
 }
 } // namespace
@@ -114,7 +127,7 @@ int main(int argc, char** argv) {
     uint16_t prometheus_port = 9488;
 #endif
     std::string out, out_dir, tracefs = "/sys/kernel/tracing";
-    std::string mode_str, librocdxg_path;
+    std::string mode_str, librocdxg_path, dispatch_log_path;
     Format fmt = Format::kPerfetto;
     std::vector<char*> child_cmd;
 
@@ -146,6 +159,8 @@ int main(int argc, char** argv) {
             xnack_mode = true;
         else if (a == "--mem-snoop")
             mem_mode = true;
+        else if (a == "--log-dispatches" && i + 1 < argc)
+            dispatch_log_path = argv[++i];
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
         else if (a == "--prometheus-port" && i + 1 < argc)
             prometheus_port = static_cast<uint16_t>(atoi(argv[++i]));
@@ -239,6 +254,19 @@ int main(int argc, char** argv) {
     signal(SIGINT, OnSignal);
     signal(SIGTERM, OnSignal);
 
+    // Opened before the exporter and the writers so the sink lambdas below can
+    // capture it by reference. Failing to open is fatal rather than a warning:
+    // it is always passed explicitly, so a silently missing log would look like
+    // a workload that dispatched nothing.
+    std::unique_ptr<DispatchLog> dispatch_log;
+    if (!dispatch_log_path.empty()) {
+        dispatch_log.reset(DispatchLog::Open(dispatch_log_path));
+        if (!dispatch_log)
+            return 1;
+        fprintf(stderr, "hsa-snoop: dispatch log → %s\n",
+                dispatch_log_path.c_str());
+    }
+
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
     std::unique_ptr<PrometheusExporter> prom_exporter;
     if (prometheus_mode) {
@@ -314,6 +342,13 @@ int main(int argc, char** argv) {
             // if it exists, otherwise they are silently dropped in --all mode
             // unless prometheus is active.)
         });
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+        // Publish the outcome, not just log it. With --ais-snoop enabled by
+        // default in the capture harness, "the AIS panels are empty" has three
+        // very different causes and only a metric can tell them apart.
+        if (prom_exporter)
+            prom_exporter->SetAisArmed(ais_ok);
+#endif
         if (!ais_ok) {
             fprintf(stderr, "hsa-snoop: failed to start AIS monitor "
                             "(is bpftrace installed and are you root?)\n");
@@ -351,14 +386,32 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Maps queue uid -> {gpu_id, pid} for mem-snoop enrichment. Written under
-    // writers_mu when a queue is registered; read from the parser sink thread.
+    // Maps queue uid -> {gpu_id, pid, comm} for mem-snoop enrichment and for
+    // the dispatch log. Written under queue_ids_mu when a queue is registered;
+    // read from the parser sink thread.
     struct QueueIds {
         uint32_t gpu_id;
         int pid;
+        std::string comm;
     };
     std::unordered_map<uint64_t, QueueIds> queue_ids;
     std::mutex queue_ids_mu;
+
+    // Resolves a queue uid to the identity labels the dispatch log carries.
+    // A packet can legitimately arrive before its queue is registered (the
+    // create_queue kprobe and the ring poller race), so a miss is expected and
+    // is reported as an empty identity rather than dropping the event.
+    auto queue_ctx = [&](uint64_t uid) {
+        DispatchLog::Ctx c;
+        std::lock_guard<std::mutex> lk(queue_ids_mu);
+        auto it = queue_ids.find(uid);
+        if (it != queue_ids.end()) {
+            c.gpu_id = it->second.gpu_id;
+            c.pid = it->second.pid;
+            c.comm = it->second.comm.c_str();
+        }
+        return c;
+    };
 
     RingParser parser(
         [&](const PacketRecord& r) {
@@ -426,6 +479,11 @@ int main(int argc, char** argv) {
                             footprint);
                 }
             }
+            // Before the prometheus early-return: the dispatch log is an
+            // additional sink, not an alternative one, so it must fire in every
+            // mode.
+            if (dispatch_log && r.type == aql::PacketType::KernelDispatch)
+                dispatch_log->LogDispatch(r, queue_ctx(r.queue_uid));
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
             if (prom_exporter) {
                 prom_exporter->Add(r);
@@ -443,6 +501,8 @@ int main(int argc, char** argv) {
         },
         // SDMA copy/DMA records follow the same routing as AQL packets.
         [&](const SdmaRecord& r) {
+            if (dispatch_log)
+                dispatch_log->LogSdma(r, queue_ctx(r.queue_uid));
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
             if (prom_exporter) {
                 prom_exporter->Add(r);
@@ -561,10 +621,20 @@ int main(int argc, char** argv) {
         const char* sdma_version =
             q.is_sdma() ? sdma::VersionName(q.sdma_version) : "n/a";
         q.ring_phys = VirtToPhys(q.pid, q.ring_base);
-        if (mem_mode && q.is_aql()) {
+        // Registered for every traced queue, not just AQL under --mem-snoop:
+        // the dispatch log needs the same lookup for SDMA records, and the map
+        // is one small entry per queue.
+        {
             std::lock_guard<std::mutex> lk(queue_ids_mu);
-            queue_ids[q.uid] = {q.gpu_id, q.pid};
+            // emplace, not operator[]: queue_ctx() below hands out a
+            // const char* into the stored comm and uses it after releasing the
+            // lock. That is only safe while entries are insert-once, so never
+            // overwrite one. uids are unique per run, so a collision would be a
+            // bug rather than a legitimate update.
+            queue_ids.emplace(q.uid, QueueIds{q.gpu_id, q.pid, q.comm});
         }
+        if (dispatch_log)
+            dispatch_log->LogQueue(q, kind);
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
         if (prom_exporter) {
             prom_exporter->RegisterQueue(q);

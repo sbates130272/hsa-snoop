@@ -1,0 +1,9 @@
+# Replay Prometheus: no scrape targets at all.
+#
+# Deliberately empty scrape_configs. This instance exists only to serve blocks
+# captured on a GPU node; giving it a target would append live, empty series to
+# the replayed ones and make `up` and the "last kernel" gauges lie.
+global:
+  scrape_interval: 1s
+  evaluation_interval: 1s
+scrape_configs: []

@@ -1,0 +1,28 @@
+apiVersion: 1
+
+datasources:
+  # uid is pinned: the bundled dashboard references datasources by uid, so an
+  # auto-generated one would provision a dashboard whose every panel says
+  # "Datasource not found".
+  - name: Prometheus
+    type: prometheus
+    uid: hsa-snoop-prom
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+      timeInterval: 1s
+      # The capture uses a 1s scrape; leaving Grafana's default 15s here makes
+      # every $__rate_interval four buckets too wide and flattens the phase
+      # transitions the capture was designed to show.
+      exemplarTraceIdDestinations: []
+
+  - name: Loki
+    type: loki
+    uid: hsa-snoop-loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      maxLines: 5000
+      derivedFields: []

@@ -1,0 +1,66 @@
+# Loki, single-binary, filesystem-backed, for replaying a captured hsa-snoop log.
+#
+# This is a THROWAWAY REPLAY STORE, not a production config. Everything here is
+# tuned for one property: ingesting a log file whose timestamps are in the past.
+auth_enabled: false
+
+server:
+  http_listen_address: 0.0.0.0
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: info
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # The whole point. A captured log is by definition old by the time it is
+  # replayed; with the default reject_old_samples Loki drops every line and the
+  # log panels come back empty with no error anywhere Grafana surfaces.
+  reject_old_samples: false
+  reject_old_samples_max_age: 8760h
+  # Likewise: without this, replaying a capture more than a week old is refused
+  # at query time even though the chunks ingested fine.
+  max_query_lookback: 0s
+  max_query_length: 0s
+  allow_structured_metadata: true
+  volume_enabled: true
+  # A burst-mode hsa-snoop capture arrives as one big file all at once, which
+  # trips the default 4 MB/s per-stream rate limit and silently truncates.
+  ingestion_rate_mb: 64
+  ingestion_burst_size_mb: 128
+  per_stream_rate_limit: 64MB
+  per_stream_rate_limit_burst: 128MB
+
+# Never delete: the replay data is the artefact.
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: false
+
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
+
+analytics:
+  reporting_enabled: false
