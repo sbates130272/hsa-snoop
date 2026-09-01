@@ -369,24 +369,28 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
       mem_lds_family_(
           prometheus::BuildGauge()
               .Name("hsa_kernel_lds_bytes")
-              .Help("LDS (group segment / shared memory) bytes per workgroup for "
-                    "the most recent dispatch of this kernel")
+              .Help(
+                  "LDS (group segment / shared memory) bytes per workgroup for "
+                  "the most recent dispatch of this kernel")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
       mem_scratch_family_(
           prometheus::BuildGauge()
               .Name("hsa_kernel_scratch_bytes_total")
-              .Help("Total private (scratch) memory bytes for the entire dispatch "
-                    "grid (private_segment_size * grid_size) of the most recent "
-                    "dispatch")
+              .Help(
+                  "Total private (scratch) memory bytes for the entire "
+                  "dispatch "
+                  "grid (private_segment_size * grid_size) of the most recent "
+                  "dispatch")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
       mem_mapped_vram_family_(
           prometheus::BuildGauge()
               .Name("hsa_kernel_mapped_vram_bytes")
-              .Help("Upper-bound VRAM mapped by the most recent dispatch: sum of "
-                    "backing region sizes for pointer-sized arguments found in "
-                    "the kernarg buffer (heuristic; may over-count)")
+              .Help(
+                  "Upper-bound VRAM mapped by the most recent dispatch: sum of "
+                  "backing region sizes for pointer-sized arguments found in "
+                  "the kernarg buffer (heuristic; may over-count)")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
       mem_mapped_vram_total_family_(

@@ -82,16 +82,23 @@ void Usage(const char* p) {
         "                     hsa_xnack_total per pasid. In trace mode,\n"
         "                     prints fault events to stderr.\n"
         "  --mem-snoop        Enable memory footprint mode: for each kernel\n"
-        "                     dispatch, scan the kernarg buffer for GPU virtual\n"
-        "                     address arguments and estimate total mapped VRAM\n"
-        "                     via /proc/<pid>/maps. In Prometheus mode, exposes\n"
-        "                     hsa_kernel_lds_bytes, hsa_kernel_scratch_bytes_total\n"
+        "                     dispatch, scan the kernarg buffer for GPU "
+        "virtual\n"
+        "                     address arguments and estimate total mapped "
+        "VRAM\n"
+        "                     via /proc/<pid>/maps. In Prometheus mode, "
+        "exposes\n"
+        "                     hsa_kernel_lds_bytes, "
+        "hsa_kernel_scratch_bytes_total\n"
         "                     hsa_kernel_mapped_vram_bytes, and\n"
-        "                     hsa_kernel_mapped_vram_bytes_total. In trace mode,\n"
+        "                     hsa_kernel_mapped_vram_bytes_total. In trace "
+        "mode,\n"
         "                     prints per-dispatch footprint lines to stderr.\n"
         "                     The mapped_vram estimate is an upper bound: it\n"
-        "                     counts full backing regions, not accessed bytes,\n"
-        "                     and cannot follow nested (pointer-chasing) args.\n",
+        "                     counts full backing regions, not accessed "
+        "bytes,\n"
+        "                     and cannot follow nested (pointer-chasing) "
+        "args.\n",
         p, p, p);
 }
 } // namespace
@@ -346,7 +353,10 @@ int main(int argc, char** argv) {
 
     // Maps queue uid -> {gpu_id, pid} for mem-snoop enrichment. Written under
     // writers_mu when a queue is registered; read from the parser sink thread.
-    struct QueueIds { uint32_t gpu_id; int pid; };
+    struct QueueIds {
+        uint32_t gpu_id;
+        int pid;
+    };
     std::unordered_map<uint64_t, QueueIds> queue_ids;
     std::mutex queue_ids_mu;
 
@@ -362,8 +372,8 @@ int main(int argc, char** argv) {
                 mr.kernel_name = r.kernel_name;
                 mr.group_seg_bytes = r.group_seg;
                 mr.private_seg_bytes = r.private_seg;
-                mr.grid_size = static_cast<uint64_t>(r.grid[0]) * r.grid[1] *
-                               r.grid[2];
+                mr.grid_size =
+                    static_cast<uint64_t>(r.grid[0]) * r.grid[1] * r.grid[2];
                 mr.submit_ts = r.submit_ts;
                 {
                     std::lock_guard<std::mutex> lk(queue_ids_mu);

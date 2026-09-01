@@ -23,6 +23,8 @@ dir
 DKMS
 DHSA
 DXG
+DRM
+EFAULT
 ELF
 ELFs
 exec'd

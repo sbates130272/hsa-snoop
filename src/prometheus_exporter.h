@@ -58,7 +58,8 @@ class PrometheusExporter {
     // Called for each XnackRecord from XnackMonitor. Thread-safe.
     void Add(const XnackRecord& rec);
 
-    // Called for each MemRecord from the mem-snoop enrichment path. Thread-safe.
+    // Called for each MemRecord from the mem-snoop enrichment path.
+    // Thread-safe.
     void Add(const MemRecord& rec);
 
     PrometheusExporter(const PrometheusExporter&) = delete;

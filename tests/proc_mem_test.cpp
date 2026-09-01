@@ -10,9 +10,9 @@
 
 #include "proc_mem.h"
 
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/time.h>
-#include <sys/mman.h>
 #include <unistd.h>
 
 #include <cstdint>
@@ -37,7 +37,6 @@ void Check(bool ok, const char* what) {
 // An address that is virtually certain not to be mapped, used to provoke the
 // read-failure paths. Above the 47-bit user VA ceiling on x86-64.
 constexpr uint64_t kUnmappedVa = 0x7ff0000000000000ULL;
-
 
 // Allocate a region that is genuinely the start of its own VMA. posix_memalign
 // is not enough: glibc offsets the returned pointer from the mmap base, so it
@@ -171,7 +170,8 @@ void TestScanKernargFootprint() {
     // may share one VMA, so assert on the pointer count and on a non-zero
     // footprint rather than on an exact byte total.
     Check(ptrs >= 3, "ScanKernargFootprint should find at least 3 pointers");
-    Check(mapped > 0, "ScanKernargFootprint should report a non-zero footprint");
+    Check(mapped > 0,
+          "ScanKernargFootprint should report a non-zero footprint");
 
     // Failure contract: an unreadable kernarg address must return false, not a
     // successful measurement of zero.
@@ -260,8 +260,7 @@ void TestScanRespectsDeclaredSize() {
     Check(ScanKernargFootprint(pid, reinterpret_cast<uint64_t>(block),
                                sizeof(block), &mapped_big, &ptrs_big),
           "full scan should succeed");
-    Check(ptrs_small == 1,
-          "a 16-byte window must see only the first pointer");
+    Check(ptrs_small == 1, "a 16-byte window must see only the first pointer");
     // Both refer to the same region, so only the first is a fresh count; the
     // pointer COUNT still distinguishes the two window sizes.
     Check(ptrs_big == 2, "the full window should see both pointers");
@@ -319,9 +318,8 @@ void TestOpenFailureIsNotCached() {
         return;
     }
 
-    const bool failed_as_expected =
-        !ReadProcMemViaMem(pid, reinterpret_cast<uint64_t>(&src), &dst,
-                           sizeof(dst));
+    const bool failed_as_expected = !ReadProcMemViaMem(
+        pid, reinterpret_cast<uint64_t>(&src), &dst, sizeof(dst));
 
     // Restore the limit; open() can succeed again from here on.
     if (setrlimit(RLIMIT_NOFILE, &saved) != 0) {
@@ -332,7 +330,8 @@ void TestOpenFailureIsNotCached() {
 
     if (!failed_as_expected) {
         // The environment kept an fd available, so the failure path never ran.
-        std::fprintf(stderr, "SKIP: open() unexpectedly succeeded under EMFILE\n");
+        std::fprintf(stderr,
+                     "SKIP: open() unexpectedly succeeded under EMFILE\n");
         return;
     }
 

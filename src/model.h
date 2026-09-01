@@ -186,7 +186,7 @@ struct MemRecord {
     uint32_t gpu_id = 0;
 
     // From the AQL KernelDispatchPacket (already in PacketRecord).
-    uint32_t group_seg_bytes = 0;    // LDS / shared memory per workgroup
+    uint32_t group_seg_bytes = 0;   // LDS / shared memory per workgroup
     uint32_t private_seg_bytes = 0; // scratch memory per work-item
     uint64_t grid_size = 0;         // total work-items (x*y*z)
 
@@ -198,7 +198,7 @@ struct MemRecord {
     bool footprint_valid = false;
     uint32_t kernarg_size_bytes = 0; // size of the packed argument block
     uint64_t mapped_vram_bytes = 0;  // sum of regions backing argument pointers
-    uint32_t ptr_count = 0;         // number of distinct pointer-sized args found
+    uint32_t ptr_count = 0; // number of distinct pointer-sized args found
 
     double submit_ts = 0;
 };
