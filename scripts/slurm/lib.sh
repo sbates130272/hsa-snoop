@@ -56,7 +56,29 @@ detect_arch() {
 # Run a command as root in a privileged container with the KFD, the DRI render
 # nodes, tracefs and the host ROCm install mapped through. Compute nodes have
 # neither passwordless sudo nor cmake, so this is the default execution context.
+#
+# Mount set follows the known-good hsa-snoop container recipe in the rocm-aic
+# repo (monitoring/docker-compose.monitoring.yml, service `hsa-snoop`): both
+# /sys/kernel/tracing and /sys/kernel/debug, /dev/kfd + /dev/dri, privileged,
+# and host PID.
+#
+# On some nodes /opt/rocm is a symlink into /etc/alternatives (e.g.
+# /opt/rocm -> /etc/alternatives/rocm), so bind-mounting only /opt leaves it
+# dangling in the container and CMake reports "ROCm HIP not found -- skipping
+# examples/". Mounting /etc/alternatives is NOT the answer:
+#   - read-only breaks every apt-get install, because dpkg runs
+#     update-alternatives when configuring g++ and cannot write its .dpkg-tmp
+#     file ("Read-only file system", dpkg error code 1);
+#   - read-write would let container dpkg mutate the HOST's alternatives on a
+#     shared cluster node, which could repoint the host's own /opt/rocm.
+# Instead resolve the symlink host-side and mount the real versioned directory
+# over /opt/rocm. /opt stays mounted too so absolute /opt/rocm-X.Y.Z paths still
+# resolve, and the container keeps its own writable /etc/alternatives.
 run_priv() {
+    local rocm_real
+    rocm_real="$(readlink -f /opt/rocm 2>/dev/null)"
+    [[ -d $rocm_real ]] || rocm_real=/opt/rocm
+
     # --pid host is required, not cosmetic: hsa-snoop matches queues to its
     # child by PID, but ftrace reports PIDs in the init namespace. In a private
     # PID namespace the two never match and every run reports 0 queues even
@@ -65,8 +87,9 @@ run_priv() {
         --device /dev/kfd --device /dev/dri \
         --network host --ipc host --pid host \
         -v /sys/kernel/tracing:/sys/kernel/tracing \
+        -v /sys/kernel/debug:/sys/kernel/debug \
         -v /opt:/opt:ro \
-        -v /etc/alternatives:/etc/alternatives:ro \
+        -v "$rocm_real:/opt/rocm:ro" \
         -v "$REPO_ROOT:$REPO_ROOT" \
         -v "$RESULTS_DIR:$RESULTS_DIR" \
         -w "$REPO_ROOT" \
@@ -74,6 +97,19 @@ run_priv() {
         -e PATH=/opt/rocm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
         -e LD_LIBRARY_PATH=/opt/rocm/lib \
         "$BASE_IMAGE" bash -c "$*"
+}
+
+# Emit the apt install block that every generated container script must start
+# with. Each run_priv() call is a FRESH container, so packages installed by one
+# script are gone in the next: a build script that installs libelf and a run
+# script that does not will build a binary it then cannot exec
+# ("error while loading shared libraries: libelf.so.1").
+apt_prelude() {
+    cat <<EOF
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null 2>&1
+apt-get install -y -qq $CONTAINER_PKGS ca-certificates curl >/dev/null 2>&1
+EOF
 }
 
 log() { printf '[%s] %s\n' "$(date -Is)" "$*"; }
