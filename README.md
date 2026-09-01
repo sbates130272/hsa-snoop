@@ -147,12 +147,13 @@ SDMA rings differ from AQL rings in three ways the parser handles separately
   device (VRAM) page has none. src=host,dst=device → `h2d`, and so on. Results
   are cached per page.
 
-> **Calibration note.** KFD/ROCR publish SDMA ring pointers as byte offsets;
-> hsa-snoop normalises them to dword indices before walking packets. The
-> linear-copy `COUNT` field width remains hardware-revision sensitive. The
-> current decoder targets the CDNA SDMA v4.x family (gfx90a / gfx942,
-> MI2xx/MI3xx); confirm packet layouts on new hardware with
-> `HSA_SNOOP_SDMA_DUMP=1`.
+> **Generation note.** KFD/ROCR publish SDMA ring pointers as byte offsets;
+> hsa-snoop normalises them to dword indices before walking packets. It detects
+> the SDMA generation from the KFD `gfx_target_version` property and uses
+> separate packet
+> tables for CDNA SDMA v4.x (gfx9) and RDNA3 SDMA v6.x (gfx11). Other
+> generations are ignored rather than decoded with the wrong layout. Use
+> `HSA_SNOOP_SDMA_DUMP=1` when calibrating a newly supported generation.
 
 ## Do we need to touch the driver?
 
@@ -201,6 +202,10 @@ Enable the SDMA integration test explicitly when building on an AMD GPU host
 with ROCm. The test launches `sdma-test` through hsa-snoop and checks the real
 trace for COPY_LINEAR count/address decoding and false NOP packets. Queue
 discovery and cross-process memory access require the test to run as root.
+The default `HSA_SNOOP_HARDWARE_SDMA_VERSION=AUTO` uses the generation detected
+from the installed GPU, so the same test works on supported CDNA SDMA v4 and
+RDNA3 SDMA v6 hosts. CI or developers targeting one generation can set the
+expected version explicitly; the test fails if the hardware does not match.
 
 ```
 cmake -B build-hw \
@@ -209,6 +214,10 @@ cmake -B build-hw \
 cmake --build build-hw --parallel $(nproc)
 sudo ctest --test-dir build-hw -L hardware --output-on-failure
 ```
+
+For an explicitly targeted build, add either
+`-DHSA_SNOOP_HARDWARE_SDMA_VERSION=4` or
+`-DHSA_SNOOP_HARDWARE_SDMA_VERSION=6` to the CMake configure command.
 
 ### Prometheus exporter build
 
@@ -477,17 +486,18 @@ systemd/hsa-snoop.logrotate        logrotate policy (512 MiB rotation, 8 kept)
   child PID.
 * **Physical addresses** resolve for host/GTT-backed rings (the norm for AQL
   host↔GPU queues). VRAM-resident pages have no pagemap PFN and report `0`.
-* **SDMA decode is calibrated for CDNA SDMA v4.x** (gfx90a / gfx942). The ring
-  pointer unit and linear-copy `COUNT` width are hardware-revision sensitive; on
-  a new platform confirm them with `HSA_SNOOP_DEBUG=1` (see
-  [SDMA capture](#sdma-capture)). Non-linear copy layouts (tiled, sub-window) are
-  counted and stepped over but do not yet contribute a byte total.
+* **SDMA decode supports v4.x and v6.x packet layouts.** This covers gfx9 CDNA
+  (gfx90a / gfx942) and gfx11 RDNA3 (including gfx1101). SDMA v5/v7 and unknown
+  generations are ignored to avoid losing ring synchronization. Non-linear copy
+  layouts (tiled, sub-window) are counted and stepped over but do not yet
+  contribute a byte total.
 * **SDMA copy direction is a pagemap heuristic.** A src/dst page with no PFN is
   treated as device (VRAM) memory; this also matches a not-present/swapped host
   page, so a copy touching a paged-out host buffer can be misclassified. For
   live, pinned copy buffers (the common case) it is accurate.
 * Verified on: gfx90a (MI2xx / Aldebaran), ROCm 7.1.0, amdgpu 6.16 DKMS,
-  kernel 6.8, x86-64. SDMA capture calibration in progress on gfx942 (MI3xx).
+  kernel 6.8, x86-64, and gfx1101 SDMA v6 COPY_LINEAR. SDMA capture calibration
+  is in progress on gfx942 (MI3xx).
 
 ## Verifying the AQL layouts
 

@@ -24,10 +24,18 @@ include(CTest)
 option(HSA_SNOOP_PROMETHEUS "Build Prometheus exporter support" OFF)
 option(HSA_SNOOP_HARDWARE_TESTS
   "Enable tests that require an AMD GPU, ROCm, and root privileges" OFF)
+set(HSA_SNOOP_HARDWARE_SDMA_VERSION "AUTO" CACHE STRING
+  "Expected SDMA generation for hardware tests (AUTO, 4, or 6)")
+set_property(CACHE HSA_SNOOP_HARDWARE_SDMA_VERSION PROPERTY STRINGS AUTO 4 6)
 
 if(HSA_SNOOP_HARDWARE_TESTS AND NOT BUILD_TESTING)
   message(FATAL_ERROR
     "HSA_SNOOP_HARDWARE_TESTS requires BUILD_TESTING=ON")
+endif()
+
+if(NOT HSA_SNOOP_HARDWARE_SDMA_VERSION MATCHES "^(AUTO|4|6)$")
+  message(FATAL_ERROR
+    "HSA_SNOOP_HARDWARE_SDMA_VERSION must be AUTO, 4, or 6")
 endif()
 
 if(HSA_SNOOP_PROMETHEUS)
@@ -49,6 +57,13 @@ target_compile_features(hsa-snoop PRIVATE cxx_std_17)
 target_link_libraries(hsa-snoop PRIVATE Threads::Threads)
 
 if(BUILD_TESTING)
+  add_executable(sdma-packet-test
+    tests/sdma_packet_test.cpp
+    src/sdma.cpp
+  )
+  target_include_directories(sdma-packet-test PRIVATE src)
+  add_test(NAME sdma-packet-test COMMAND sdma-packet-test)
+
   add_executable(sdma-ring-test
     tests/sdma_ring_test.cpp
     src/aql.cpp
@@ -111,6 +126,7 @@ if(HSA_SNOOP_HARDWARE_TESTS)
       -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
       -DSDMA_TEST=$<TARGET_FILE:sdma-test>
       -DTRACE_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/sdma-hardware-test.json
+      -DEXPECTED_SDMA_VERSION=${HSA_SNOOP_HARDWARE_SDMA_VERSION}
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/sdma_hardware_test.cmake)
   set_tests_properties(sdma-hardware-test PROPERTIES
     LABELS "hardware;sdma"
