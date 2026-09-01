@@ -25,28 +25,40 @@ bool ReadProcMem(int pid, uint64_t va, void* out, size_t len) {
     return n == static_cast<ssize_t>(len);
 }
 
-// On some platforms (e.g. RDNA4/gfx1201) the write/read queue pointers live
-// in /dev/dri/renderD128 DRM shared mappings that process_vm_readv refuses
-// with EFAULT. /proc/<pid>/mem pread() goes through the VMA directly and
-// succeeds on those pages. We keep a small fd cache so the hot poll path
-// doesn't open/close on every call.
-bool ReadU64ViaMem(int pid, uint64_t va, uint64_t* out) {
-    // Simple thread-local fd cache: we're called from a single polling thread.
+// On some platforms the KFD maps memory inside /dev/dri/renderD* DRM shared
+// mappings that process_vm_readv refuses with EFAULT: the write/read queue
+// pointers on RDNA4 (gfx1201), and device allocations plus the kernarg pool on
+// CDNA3 (gfx942) and CDNA4 (gfx950). /proc/<pid>/mem pread() goes through the
+// VMA directly and succeeds on those pages. We keep a small fd cache so the
+// hot poll path doesn't open/close on every call.
+bool ReadProcMemViaMem(int pid, uint64_t va, void* out, size_t len) {
+    // Thread-local fd cache, so no locking is needed. In --all mode the cache
+    // thrashes when consecutive reads target different pids; that is a
+    // throughput concern only, never a correctness one.
     static __thread int cached_pid = -1;
     static __thread int cached_fd = -1;
 
-    if (cached_pid != pid) {
+    // Reopen when the pid changed OR the previous open failed. Caching a
+    // failed open would be permanent: cached_pid would match on every later
+    // call and short-circuit to `return false` forever. That was survivable
+    // when this path was only an RDNA4 fallback for queue pointers, but it is
+    // now the ONLY path that can read the kernarg buffer on gfx942/gfx950, so
+    // one transient EMFILE would silently disable --mem-snoop for the rest of
+    // the run. Retrying costs an open() per call only while the pid is
+    // genuinely unreadable, which the caller bounds by evicting the queue.
+    if (cached_pid != pid || cached_fd < 0) {
         if (cached_fd >= 0)
             close(cached_fd);
         char path[64];
         snprintf(path, sizeof(path), "/proc/%d/mem", pid);
         cached_fd = open(path, O_RDONLY);
-        cached_pid = pid;
+        // Only remember the pid if we actually hold an fd for it.
+        cached_pid = (cached_fd >= 0) ? pid : -1;
     }
     if (cached_fd < 0)
         return false;
-    return pread(cached_fd, out, sizeof(*out), static_cast<off_t>(va)) ==
-           static_cast<ssize_t>(sizeof(*out));
+    return pread(cached_fd, out, len, static_cast<off_t>(va)) ==
+           static_cast<ssize_t>(len);
 }
 
 uint64_t VirtToPhys(int pid, uint64_t va) {
@@ -132,8 +144,13 @@ bool ScanKernargFootprint(int pid, uint64_t kernarg_va, uint32_t kernarg_bytes,
     if (scan_bytes < 8)
         return true;
 
+    // Same try-then-fall-back shape as ReadQueuePtr() in parser.cpp. On gfx942
+    // and gfx950 the kernarg pool lives in a renderD-backed mapping, so the
+    // process_vm_readv path fails for every dispatch and only the pread path
+    // works; on gfx90a and gfx908 the first call succeeds.
     std::vector<uint8_t> buf(scan_bytes);
-    if (!ReadProcMem(pid, kernarg_va, buf.data(), scan_bytes))
+    if (!ReadProcMem(pid, kernarg_va, buf.data(), scan_bytes) &&
+        !ReadProcMemViaMem(pid, kernarg_va, buf.data(), scan_bytes))
         return false;
 
     std::vector<VmaRegion> vmas = ReadVmas(pid);

@@ -60,6 +60,16 @@ if(BUILD_TESTING)
   target_include_directories(sdma-ring-test PRIVATE src)
   target_link_libraries(sdma-ring-test PRIVATE Threads::Threads)
   add_test(NAME sdma-ring-test COMMAND sdma-ring-test)
+
+  # Cross-process read helpers and the kernarg footprint scan, exercised
+  # against the test process's own address space. No GPU, ROCm or root needed.
+  add_executable(proc-mem-test
+    tests/proc_mem_test.cpp
+    src/proc_mem.cpp
+  )
+  target_include_directories(proc-mem-test PRIVATE src)
+  target_link_libraries(proc-mem-test PRIVATE Threads::Threads)
+  add_test(NAME proc-mem-test COMMAND proc-mem-test)
 endif()
 
 if(HSA_SNOOP_PROMETHEUS)

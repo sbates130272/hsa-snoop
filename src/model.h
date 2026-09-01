@@ -190,7 +190,12 @@ struct MemRecord {
     uint32_t private_seg_bytes = 0; // scratch memory per work-item
     uint64_t grid_size = 0;         // total work-items (x*y*z)
 
-    // From the kernarg buffer scan.
+    // From the kernarg buffer scan. `footprint_valid` is false when the scan
+    // could not run at all (kernarg buffer unreadable, VM map unreadable, or
+    // the owning queue was not registered). In that case mapped_vram_bytes and
+    // ptr_count are meaningless and must not be reported as measurements —
+    // "could not measure" is not the same claim as "uses no memory".
+    bool footprint_valid = false;
     uint32_t kernarg_size_bytes = 0; // size of the packed argument block
     uint64_t mapped_vram_bytes = 0;  // sum of regions backing argument pointers
     uint32_t ptr_count = 0;         // number of distinct pointer-sized args found

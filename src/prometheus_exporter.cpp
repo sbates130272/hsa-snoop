@@ -758,6 +758,15 @@ void PrometheusExporter::Add(const MemRecord& rec) {
               {"gpu_type", gpu_type}})
         .Set(static_cast<double>(total_scratch));
 
+    // The kernarg-derived footprint is the only part that can fail to be
+    // measured (the kernarg buffer or the VM map may be unreadable). Export
+    // nothing in that case: an absent series is honest, whereas Set(0) asserts
+    // the kernel touches no memory, and Increment(0) would silently flatten the
+    // cumulative counter. LDS and scratch above come from the AQL packet and
+    // are always valid, so they are still exported.
+    if (!rec.footprint_valid)
+        return;
+
     mem_mapped_vram_family_
         .Add({{"kernel_name", rec.kernel_name},
               {"gpu_id", gpu_str},

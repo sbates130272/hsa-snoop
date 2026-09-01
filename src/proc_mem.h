@@ -14,11 +14,16 @@ inline bool ReadU64(int pid, uint64_t va, uint64_t* out) {
     return ReadProcMem(pid, va, out, sizeof(*out));
 }
 
-// Read a u64 via /proc/<pid>/mem pread(). Slower than ReadProcMem but can
-// access DRM-backed shared mappings that process_vm_readv cannot reach (e.g.
-// the write/read pointer pages on RDNA4 / gfx1201 which live in
-// /dev/dri/renderD128 mmap'd regions). Use for pointer addresses only.
-bool ReadU64ViaMem(int pid, uint64_t va, uint64_t* out);
+// Read `len` bytes via /proc/<pid>/mem pread(). Slower than ReadProcMem but
+// can access DRM-backed shared mappings that process_vm_readv cannot reach:
+// the KFD maps both queue pointer pages (RDNA4 / gfx1201) and device
+// allocations (CDNA3 / gfx942, CDNA4 / gfx950) inside /dev/dri/renderD* VMAs,
+// and process_vm_readv refuses those with EFAULT.
+bool ReadProcMemViaMem(int pid, uint64_t va, void* out, size_t len);
+
+inline bool ReadU64ViaMem(int pid, uint64_t va, uint64_t* out) {
+    return ReadProcMemViaMem(pid, va, out, sizeof(*out));
+}
 
 // Resolve the physical address backing user VA `va` in `pid` via pagemap.
 // Returns 0 if not present/swapped or if the page is device memory (no PFN).
@@ -33,7 +38,11 @@ bool ProcAlive(int pid);
 // map. For each such pointer, accumulate the size of its backing /proc/maps
 // region as an upper-bound VRAM footprint estimate.
 //
-// Returns false if the kernarg buffer cannot be read. On success:
+// Returns false if the footprint could not be determined — the kernarg buffer
+// was unreadable, or the process's VM map could not be read. Callers MUST
+// check: on failure both out-params are zeroed, so a discarded return value
+// turns "could not measure" into an indistinguishable and wrong "uses no
+// memory". On success:
 //   *mapped_vram_bytes  — sum of unique region sizes whose start address a
 //                         candidate pointer falls within
 //   *ptr_count          — number of candidate pointers found

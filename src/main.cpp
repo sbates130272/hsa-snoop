@@ -370,13 +370,16 @@ int main(int argc, char** argv) {
                     auto it = queue_ids.find(r.queue_uid);
                     if (it != queue_ids.end()) {
                         mr.gpu_id = it->second.gpu_id;
-                        // kernarg_size is not in the AQL packet; use 0 here —
-                        // it would require ELF code-object metadata to recover.
-                        ScanKernargFootprint(it->second.pid, r.kernarg_address,
-                                            256, // conservative scan window
-                                            &mr.mapped_vram_bytes,
-                                            &mr.ptr_count);
+                        // kernarg_size is not in the AQL packet; use a fixed
+                        // window here — recovering the real size would need
+                        // ELF code-object metadata.
+                        mr.footprint_valid = ScanKernargFootprint(
+                            it->second.pid, r.kernarg_address,
+                            256, // conservative scan window
+                            &mr.mapped_vram_bytes, &mr.ptr_count);
                     }
+                    // else: the queue was never registered, so there is no pid
+                    // to read from — footprint_valid stays false.
                 }
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
                 if (prom_exporter) {
@@ -384,12 +387,24 @@ int main(int argc, char** argv) {
                 } else
 #endif
                 {
+                    // LDS and scratch come straight from the AQL packet and
+                    // are always valid; only the kernarg-derived fields can be
+                    // unmeasurable, and they are reported as such rather than
+                    // as a zero measurement.
+                    char footprint[64];
+                    if (mr.footprint_valid)
+                        snprintf(footprint, sizeof(footprint),
+                                 "mapped_vram=%luB ptrs=%u",
+                                 mr.mapped_vram_bytes, mr.ptr_count);
+                    else
+                        snprintf(footprint, sizeof(footprint),
+                                 "mapped_vram=unavailable ptrs=unavailable");
                     fprintf(stderr,
                             "[mem] kernel=%s gpu=%u grid=%lu "
-                            "lds=%uB scratch=%uB mapped_vram=%luB ptrs=%u\n",
+                            "lds=%uB scratch=%uB %s\n",
                             mr.kernel_name.c_str(), mr.gpu_id, mr.grid_size,
                             mr.group_seg_bytes, mr.private_seg_bytes,
-                            mr.mapped_vram_bytes, mr.ptr_count);
+                            footprint);
                 }
             }
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
