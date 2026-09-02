@@ -27,7 +27,7 @@ jobs:
       LD_LIBRARY_PATH: /opt/rocm/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Install dependencies
       run: |
@@ -65,7 +65,7 @@ jobs:
       LD_LIBRARY_PATH: /opt/rocm/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
     steps:
     - name: Check out code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
 
     - name: Install dependencies
       run: |
