@@ -353,8 +353,13 @@ run_phase ais \
      dd if=/dev/urandom of=$AIS_FILE bs=1M count=512 status=none || true
      ls -l $AIS_FILE || true
      df -hT $AIS_DIR || true
-     timeout 100 $BUILD_DIR/examples/ais-test -b -s 0 -D 75 $AIS_FILE
-     echo \"ais_test_rc=\$?\""
+     # tr: ais-test redraws a rolling stats line with \r, so without a TTY the
+     # whole run lands as ONE line -- 12 MB in practice, past Loki's per-entry
+     # limit and past what any log viewer will render.
+     timeout 100 $BUILD_DIR/examples/ais-test -b -s 0 -D 75 $AIS_FILE | tr '\r' '\n'
+     # PIPESTATUS[0], not \$?: with the tr pipe added, \$? is tr's status and
+     # would report success for an ais-test that failed outright.
+     echo \"ais_test_rc=\${PIPESTATUS[0]}\""
 
 sleep 20
 

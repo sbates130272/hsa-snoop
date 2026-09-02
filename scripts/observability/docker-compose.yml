@@ -74,18 +74,12 @@ services:
     image: grafana/grafana:12.3.0
     container_name: hsasnoop-grafana
     environment:
-      # Anonymous admin: this is a throwaway localhost-bound replay instance and
-      # a login prompt between the user and the dashboard they are iterating on
-      # is pure friction.
+      # Anonymous admin, no login. This is a throwaway replay instance holding
+      # nothing but captured GPU telemetry, and a login prompt between the user
+      # and the dashboard they are iterating on is pure friction.
       GF_AUTH_ANONYMOUS_ENABLED: "true"
-      # Admin while on loopback; stack.sh downgrades this to Viewer and turns the
-      # login form back on whenever the bind address is not 127.0.0.1. An
-      # anonymous-admin Grafana reachable from the corporate network is a
-      # different proposition from one only the local user can hit.
-      GF_AUTH_ANONYMOUS_ORG_ROLE: ${HSA_SNOOP_GF_ANON_ROLE:-Admin}
-      GF_AUTH_DISABLE_LOGIN_FORM: ${HSA_SNOOP_GF_DISABLE_LOGIN:-true}
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: ${HSA_SNOOP_GF_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
       GF_USERS_DEFAULT_THEME: dark
       GF_FEATURE_TOGGLES_ENABLE: lokiLogsDataplane
       # The bundled dashboard is provisioned read-only by default, which blocks

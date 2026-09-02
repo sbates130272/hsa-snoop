@@ -11,9 +11,9 @@
 #
 # Prometheus and Loki always bind 127.0.0.1 (Grafana reaches them over the
 # compose network; nothing off-host needs them). Grafana binds 127.0.0.1 too by
-# default -- set HSA_SNOOP_BIND=0.0.0.0 to reach it from another machine, which
-# also switches anonymous access from Admin to Viewer and enables the admin
-# login. Override ports with HSA_SNOOP_PORT_GRAFANA / _PROM / _LOKI.
+# default -- set HSA_SNOOP_BIND=0.0.0.0 to reach it from another machine.
+# Grafana runs with anonymous admin and no login in every case. Override ports
+# with HSA_SNOOP_PORT_GRAFANA / _PROM / _LOKI.
 
 set -euo pipefail
 
@@ -31,20 +31,6 @@ export HSA_SNOOP_DASHBOARDS="${HSA_SNOOP_DASHBOARDS:-$SCRATCH/dashboards}"
 export HSA_SNOOP_CAPTURE_ID="${HSA_SNOOP_CAPTURE_ID:-unknown}"
 export HSA_SNOOP_BIND="${HSA_SNOOP_BIND:-127.0.0.1}"
 mkdir -p "$SCRATCH/tsdb" "$SCRATCH/dashboards"
-
-# Anonymous Admin is fine when only the local user can connect. Once the port is
-# reachable from the network it is not: anyone who can route here would be able
-# to edit dashboards and query the datasources. Downgrade to Viewer and put the
-# admin login back so the person running the stack can still edit.
-if [[ $HSA_SNOOP_BIND != "127.0.0.1" && $HSA_SNOOP_BIND != "localhost" ]]; then
-    export HSA_SNOOP_GF_ANON_ROLE="${HSA_SNOOP_GF_ANON_ROLE:-Viewer}"
-    export HSA_SNOOP_GF_DISABLE_LOGIN="${HSA_SNOOP_GF_DISABLE_LOGIN:-false}"
-    if [[ -z ${HSA_SNOOP_GF_ADMIN_PASSWORD:-} ]]; then
-        HSA_SNOOP_GF_ADMIN_PASSWORD="$(head -c 12 /dev/urandom | base64 | tr -d '/+=')"
-        GENERATED_PASSWORD=1
-    fi
-    export HSA_SNOOP_GF_ADMIN_PASSWORD
-fi
 
 log() { printf '[%s] %s\n' "$(date -Is)" "$*"; }
 die() {
@@ -257,11 +243,6 @@ cmd_up() {
         host="${host:-$(hostname -f)}"
     fi
     log "Grafana    http://$host:$gport  (dashboard: hsa-snoop folder)"
-    if [[ ${GENERATED_PASSWORD:-0} == 1 ]]; then
-        log "           anonymous access is Viewer; log in as admin to edit"
-        log "           admin password: $HSA_SNOOP_GF_ADMIN_PASSWORD"
-        log "           (set HSA_SNOOP_GF_ADMIN_PASSWORD to pin it across restarts)"
-    fi
     log "Prometheus http://127.0.0.1:$pport  (loopback only)"
     log "Loki       http://127.0.0.1:$lport  (loopback only)"
     log ""
