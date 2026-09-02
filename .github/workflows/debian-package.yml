@@ -83,7 +83,7 @@ jobs:
       run: dpkg-deb --info "$DEB_FILE"
 
     - name: Upload artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: hsa-snoop-deb
         path: hsa-snoop_*_amd64.deb
