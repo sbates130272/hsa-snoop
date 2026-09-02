@@ -350,6 +350,17 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                     "since startup, 0 otherwise; latches at 1")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
+      ais_snoop_armed_family_(
+          prometheus::BuildGauge()
+              .Name("ais_snoop_armed")
+              .Help("1 if the AIS kprobe monitor started successfully, 0 if "
+                    "--ais-snoop was requested but the monitor failed to "
+                    "start. Absent when --ais-snoop was not passed. Read "
+                    "together with ais_active, which latches on the first "
+                    "observed operation: armed=1,active=0 means AIS is being "
+                    "watched and no AIS IO happened.")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
       ais_pcie_info_family_(
           prometheus::BuildGauge()
               .Name("ais_pcie_device_info")
@@ -497,8 +508,29 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
 
         // hsa_kernel_duration_seconds
         if (rec.completed && rec.complete_ts > rec.submit_ts) {
+            // A 1-2.5-5 ladder from 50 µs to 5 s.
+            //
+            // The previous decade ladder {1e-5 .. 10} was measured against
+            // 96,749 real dispatches (gfx90a, gfx-test + sdma-test) and had
+            // three dead buckets and 72% of all samples in the single
+            // 1 ms–10 ms bucket. p50 (1.9 ms), p75 (2.8 ms), p90 (3.5 ms) and
+            // p95 (4.4 ms) ALL fell inside that one bucket, so
+            // histogram_quantile interpolated the same near-meaningless answer
+            // for every one of them. This ladder puts the fullest bucket at
+            // 42% and keeps the adjacent-bucket ratio at 2–2.5x across the
+            // populated range, bounding the interpolation error accordingly.
+            //
+            // 50 µs is the floor on purpose: durations come from polling the
+            // ring at --poll-us (default 20 µs), so anything below a couple of
+            // poll intervals is quantisation noise, not a measurement. The
+            // ceiling stops at 5 s because a dispatch resident that long is an
+            // outlier whose exact value does not matter — only that it exists.
+            //
+            // Cost: 16 buckets instead of 8, so the series count for this
+            // metric doubles (buckets x kernel_name x gpu_id x gpu_type).
             static const prometheus::Histogram::BucketBoundaries kBuckets{
-                1e-5, 1e-4, 1e-3, 1e-2, 0.1, 1.0, 10.0};
+                50e-6, 100e-6, 250e-6, 500e-6, 1e-3,   2.5e-3, 5e-3, 10e-3,
+                25e-3, 50e-3,  100e-3, 250e-3, 500e-3, 1.0,    5.0};
             double dur = rec.complete_ts - rec.submit_ts;
             duration_family_
                 .Add({{"kernel_name", rec.kernel_name},
@@ -827,6 +859,15 @@ void PrometheusExporter::UpdateRateGauges() {
         }
         g->Set(static_cast<double>(count) / rate_window_sec_);
     }
+}
+
+void PrometheusExporter::SetAisArmed(bool armed) {
+    // Deliberately created only when called, so the metric is ABSENT rather
+    // than 0 when --ais-snoop was never passed. A dashboard can then tell
+    // "not asked for" from "asked for and broken", which a 0 alone cannot.
+    if (!ais_snoop_armed_gauge_)
+        ais_snoop_armed_gauge_ = &ais_snoop_armed_family_.Add({});
+    ais_snoop_armed_gauge_->Set(armed ? 1.0 : 0.0);
 }
 
 } // namespace hsasnoop

@@ -1,0 +1,18 @@
+apiVersion: 1
+
+providers:
+  - name: hsa-snoop
+    orgId: 1
+    folder: hsa-snoop
+    type: file
+    # false: the point of this stack is to edit the dashboard in the UI and
+    # export the result back to grafana/. allowUiUpdates=false would make every
+    # panel read-only.
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 10
+    options:
+      # NOT under /var/lib/grafana: the grafana-data volume is mounted there and a
+      # bind nested inside another mount is order-dependent.
+      path: /var/lib/grafana-dashboards
+      foldersFromFilesStructure: false

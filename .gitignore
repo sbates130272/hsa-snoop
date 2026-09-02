@@ -6,3 +6,7 @@ examples/vecwork
 examples/square
 build**/
 results/
+.obs-scratch/
+# aspell writes its compiled dictionary into the working directory when
+# pyspelling runs, so anyone linting locally produces one.
+dictionary.dic

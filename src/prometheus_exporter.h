@@ -62,6 +62,11 @@ class PrometheusExporter {
     // Thread-safe.
     void Add(const MemRecord& rec);
 
+    // Reports whether the AIS kprobe monitor came up. Call once, only when
+    // --ais-snoop was requested: the metric's absence is what tells a dashboard
+    // the flag was never passed.
+    void SetAisArmed(bool armed);
+
     PrometheusExporter(const PrometheusExporter&) = delete;
     PrometheusExporter& operator=(const PrometheusExporter&) = delete;
 
@@ -123,6 +128,7 @@ class PrometheusExporter {
     prometheus::Family<prometheus::Histogram>& ais_rx_io_size_family_;
     prometheus::Family<prometheus::Histogram>& ais_tx_io_size_family_;
     prometheus::Family<prometheus::Gauge>& ais_active_family_;
+    prometheus::Family<prometheus::Gauge>& ais_snoop_armed_family_;
     // Info metric: one time-series per unique PCIe device, value=1, all labels.
     prometheus::Family<prometheus::Gauge>& ais_pcie_info_family_;
     // XNACK (GPU page-fault retry) event counter.
@@ -152,6 +158,8 @@ class PrometheusExporter {
         nullptr}; // latches at 1 on first SDMA queue
     prometheus::Gauge* ais_active_gauge_{
         nullptr}; // latches at 1 on first AIS op
+    prometheus::Gauge* ais_snoop_armed_gauge_{
+        nullptr}; // created only when --ais-snoop was requested
 
     // Guards the launch-event deque used for rate computation.
     std::mutex rate_mu_;

@@ -1,0 +1,2 @@
+# Grafana logs an ERROR on every start for each missing provisioning
+# subdirectory. Keep them present and empty so the log only shows real problems.

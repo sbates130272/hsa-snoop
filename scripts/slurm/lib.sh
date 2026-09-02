@@ -79,6 +79,16 @@ run_priv() {
     rocm_real="$(readlink -f /opt/rocm 2>/dev/null)"
     [[ -d $rocm_real ]] || rocm_real=/opt/rocm
 
+    # Extra `-v src:dst` pairs for callers with a job-specific mount need.
+    # obs-job.sh uses it for /var/tmp: AIS resolves the target file back to a
+    # PCIe device through the VFS mount chain, so the file has to sit on a real
+    # NVMe filesystem -- not the container's overlay, and definitely not the
+    # NFS-mounted results directory.
+    local -a extra=()
+    if [[ -n ${HSA_SNOOP_EXTRA_MOUNTS:-} ]]; then
+        read -r -a extra <<<"$HSA_SNOOP_EXTRA_MOUNTS"
+    fi
+
     # --pid host is required, not cosmetic: hsa-snoop matches queues to its
     # child by PID, but ftrace reports PIDs in the init namespace. In a private
     # PID namespace the two never match and every run reports 0 queues even
@@ -92,6 +102,7 @@ run_priv() {
         -v "$rocm_real:/opt/rocm:ro" \
         -v "$REPO_ROOT:$REPO_ROOT" \
         -v "$RESULTS_DIR:$RESULTS_DIR" \
+        "${extra[@]}" \
         -w "$REPO_ROOT" \
         -e HOME=/tmp \
         -e PATH=/opt/rocm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \

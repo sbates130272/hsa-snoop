@@ -1,0 +1,154 @@
+// Grafana Alloy: load a captured hsa-snoop log into the replay Loki.
+//
+// The capture is produced by `docker logs -t` in obs-job.sh, so every line is
+// "<RFC3339Nano> <original line>". Parsing that prefix back out as the Loki
+// timestamp is what puts the log panel on the same time axis as the metrics —
+// otherwise every line lands at replay time and the correlation, which is the
+// entire reason to have logs next to the dashboard, is lost.
+
+logging {
+  level = "warn"
+}
+
+local.file_match "hsasnoop" {
+  path_targets = [{
+    __path__ = "/capture/hsa-snoop.log",
+    job      = "hsa-snoop",
+    source   = "hsa-snoop",
+  }]
+}
+
+local.file_match "workload" {
+  path_targets = [{
+    __path__ = "/capture/phase-*.log",
+    job      = "hsa-snoop",
+    source   = "workload",
+  }]
+}
+
+// hsa-snoop --log-dispatches output: one NDJSON object per kernel dispatch,
+// SDMA packet and queue registration. This is the stream the kernel-launch
+// timeline is built from.
+local.file_match "dispatches" {
+  path_targets = [{
+    __path__ = "/capture/dispatches.ndjson",
+    job      = "hsa-snoop",
+    source   = "dispatches",
+  }]
+}
+
+loki.source.file "dispatches" {
+  targets       = local.file_match.dispatches.targets
+  forward_to    = [loki.process.dispatches.receiver]
+  tail_from_end = false
+}
+
+loki.process "dispatches" {
+  // Pull out only what is needed for labelling and timestamping. The full JSON
+  // stays in the line, so LogQL's `| json` can reach every other field at query
+  // time without any of them becoming index terms.
+  stage.json {
+    expressions = {
+      ts = "ts",
+      ev = "ev",
+    }
+  }
+  stage.timestamp {
+    source = "ts"
+    format = "RFC3339"
+  }
+  // ev has exactly three values (queue|dispatch|sdma), so it is safe as a
+  // label. gpu_id, pid, comm and kernel are NOT: kernel alone is unbounded
+  // across real workloads and would multiply the stream count without bound.
+  stage.labels {
+    values = {
+      ev = "ev",
+    }
+  }
+  // gpu_id and pid as structured metadata: filterable in Grafana and in LogQL
+  // without the index cost of a label.
+  stage.json {
+    expressions = {
+      gpu_id = "gpu_id",
+      pid    = "pid",
+      comm   = "comm",
+    }
+  }
+  stage.structured_metadata {
+    values = {
+      gpu_id = "gpu_id",
+      pid    = "pid",
+      comm   = "comm",
+    }
+  }
+  forward_to = [loki.write.replay.receiver]
+}
+
+loki.source.file "hsasnoop" {
+  targets       = local.file_match.hsasnoop.targets
+  forward_to    = [loki.process.hsasnoop.receiver]
+  // The capture is a finished file, not a live tail: start at byte 0 or the
+  // whole history is skipped.
+  tail_from_end = false
+}
+
+loki.source.file "workload" {
+  targets       = local.file_match.workload.targets
+  forward_to    = [loki.process.workload.receiver]
+  tail_from_end = false
+}
+
+loki.process "hsasnoop" {
+  // Strip and reuse the docker -t timestamp prefix.
+  stage.regex {
+    expression = "^(?P<ts>\\S+) (?P<content>.*)$"
+  }
+  stage.timestamp {
+    source = "ts"
+    format = "RFC3339Nano"
+  }
+  stage.output {
+    source = "content"
+  }
+
+  // Classify the line so Grafana can colour and filter it. hsa-snoop tags its
+  // structured stderr lines with a "[word]" prefix; the capture group excludes
+  // the brackets so the label value is a bare word. Untagged status lines
+  // ("hsa-snoop: ...") simply get no kind label, which is still selectable via
+  // {source="hsa-snoop"}.
+  //
+  // Only a handful of distinct values, so this is safe as a real label.
+  // Anything derived from a kernel name stays in the line body and is parsed at
+  // query time instead: those are unbounded and would shred Loki's index.
+  stage.regex {
+    expression = "^\\[(?P<kind>[a-z]+)\\]"
+  }
+  stage.labels {
+    values = {
+      kind = "kind",
+    }
+  }
+
+  forward_to = [loki.write.replay.receiver]
+}
+
+loki.process "workload" {
+  // Phase logs are plain program stdout with no timestamp prefix; Alloy's
+  // ingest time is wrong for them, but they are short and exist mainly to
+  // explain what the workload was doing, so file mtime ordering is enough.
+  stage.static_labels {
+    values = {
+      kind = "workload",
+    }
+  }
+  forward_to = [loki.write.replay.receiver]
+}
+
+loki.write "replay" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+  external_labels = {
+    capture = env("HSA_SNOOP_CAPTURE_ID"),
+  }
+}
