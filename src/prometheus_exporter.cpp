@@ -377,6 +377,22 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                     "(pasid) which uniquely identifies the GPU context")
               .Labels(MakeConstLabels(discovery_mode))
               .Register(*registry_)),
+      xnack_snoop_armed_family_(
+          prometheus::BuildGauge()
+              .Name("hsa_xnack_snoop_armed")
+              .Help("1 if the XNACK kprobe monitor started successfully, 0 if "
+                    "--xnack-snoop was requested but the monitor failed to "
+                    "start. Absent when --xnack-snoop was not passed.")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
+      queue_info_family_(
+          prometheus::BuildGauge()
+              .Name("hsa_queue_info")
+              .Help("Static metadata per discovered AQL/SDMA queue; value is "
+                    "always 1. Labels: gpu_id, gpu_type, pid, comm, ring_base, "
+                    "ring_phys (0 for VRAM-backed rings), ring_size.")
+              .Labels(MakeConstLabels(discovery_mode))
+              .Register(*registry_)),
       mem_lds_family_(
           prometheus::BuildGauge()
               .Name("hsa_kernel_lds_bytes")
@@ -457,6 +473,21 @@ void PrometheusExporter::RegisterQueue(const QueueInfo& q) {
 
     std::lock_guard<std::mutex> lk(meta_mu_);
     queue_meta_[q.uid] = {q.gpu_id, q.pid, q.comm, gpu_type};
+
+    // Emit one hsa_queue_info series per queue with ring metadata as labels.
+    // ring_phys=0x0 indicates a VRAM-backed ring (no host-side PFN resolved).
+    char ring_base_buf[20], ring_phys_buf[20];
+    snprintf(ring_base_buf, sizeof(ring_base_buf), "0x%lx", q.ring_base);
+    snprintf(ring_phys_buf, sizeof(ring_phys_buf), "0x%lx", q.ring_phys);
+    queue_info_family_
+        .Add({{"gpu_id", gpu_str},
+              {"gpu_type", gpu_type},
+              {"pid", std::to_string(q.pid)},
+              {"comm", q.comm},
+              {"ring_base", ring_base_buf},
+              {"ring_phys", ring_phys_buf},
+              {"ring_size", std::to_string(q.ring_size)}})
+        .Set(1.0);
 
     // SDMA and AQL queues are counted separately.
     if (q.is_sdma()) {
@@ -868,6 +899,12 @@ void PrometheusExporter::SetAisArmed(bool armed) {
     if (!ais_snoop_armed_gauge_)
         ais_snoop_armed_gauge_ = &ais_snoop_armed_family_.Add({});
     ais_snoop_armed_gauge_->Set(armed ? 1.0 : 0.0);
+}
+
+void PrometheusExporter::SetXnackArmed(bool armed) {
+    if (!xnack_snoop_armed_gauge_)
+        xnack_snoop_armed_gauge_ = &xnack_snoop_armed_family_.Add({});
+    xnack_snoop_armed_gauge_->Set(armed ? 1.0 : 0.0);
 }
 
 } // namespace hsasnoop
