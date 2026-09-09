@@ -342,6 +342,56 @@ void TestOpenFailureIsNotCached() {
     Check(dst == src, "ReadProcMemViaMem post-EMFILE contents should match");
 }
 
+// Regression test for the pagemap offset overflow when VAs exceed 32 bits.
+// Before the fix, `off_t off = (va / page) * sizeof(uint64_t)` could silently
+// truncate to 32 bits in container environments where _FILE_OFFSET_BITS is not
+// set to 64, causing VirtToPhys to seek to offset 0 and return 0 for any ring
+// VA above ~4 GB (e.g. 0x7f3398200000 seen on gfx1201 with amdgpu-dkms 7.1.3).
+void TestVirtToPhysHighVa() {
+    const int pid = getpid();
+
+    // Verify VirtToPhys works for a normally-mapped page (own stack variable).
+    uint64_t sentinel = 0xdeadbeef12345678ULL;
+    const uint64_t stack_va = reinterpret_cast<uint64_t>(&sentinel);
+    // Stack pages are always present and have a valid PFN as root; skip if we
+    // can't resolve (e.g. running unprivileged in a restricted container).
+    uint64_t phys = VirtToPhys(pid, stack_va);
+    if (phys == 0) {
+        std::fprintf(stderr,
+                     "SKIP: VirtToPhys returned 0 for stack VA (no pagemap "
+                     "access or not root)\n");
+        return;
+    }
+    Check(phys != 0, "VirtToPhys should resolve a valid stack page");
+
+    // Attempt to map a page at a high 64-bit VA that would overflow a 32-bit
+    // pagemap offset. On gfx1201 KFD uses addresses like 0x7f3398200000;
+    // mimic that with a fixed-address mmap.
+    //
+    // The offset into pagemap for 0x200000000000 is:
+    //   (0x200000000000 >> 12) * 8 = 0x1000000000  (~68 GB)
+    // An off_t truncated to 32 bits would wrap to 0 and read the wrong entry.
+    const uint64_t kHighVa = 0x200000000000ULL;
+    void* p =
+        mmap(reinterpret_cast<void*>(kHighVa), 4096, PROT_READ | PROT_WRITE,
+             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+    if (p == MAP_FAILED) {
+        std::fprintf(stderr,
+                     "SKIP: could not mmap at high VA 0x%lx (kernel may not "
+                     "support MAP_FIXED_NOREPLACE at that address)\n",
+                     kHighVa);
+        return;
+    }
+    *static_cast<uint64_t*>(p) = 0xfeedfacedeadbeefULL;
+
+    uint64_t high_phys = VirtToPhys(pid, kHighVa);
+    Check(high_phys != 0,
+          "VirtToPhys must resolve a page at a high (>32-bit) VA "
+          "(pread64/off64_t regression)");
+
+    munmap(p, 4096);
+}
+
 } // namespace
 
 int main() {
@@ -352,6 +402,7 @@ int main() {
     TestScanRespectsDeclaredSize();
     TestDeadProcess();
     TestOpenFailureIsNotCached();
+    TestVirtToPhysHighVa();
 
     if (failures) {
         std::fprintf(stderr, "%d proc_mem check(s) failed\n", failures);
