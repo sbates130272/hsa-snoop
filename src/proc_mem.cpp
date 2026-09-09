@@ -1,3 +1,4 @@
+#define _LARGEFILE64_SOURCE
 #include "proc_mem.h"
 
 #include <errno.h>
@@ -95,9 +96,11 @@ uint64_t VirtToPhys(int pid, uint64_t va) {
 
     const uint64_t page = sysconf(_SC_PAGESIZE);
     uint64_t entry = 0;
-    off_t off = (va / page) * sizeof(uint64_t);
+    // Use off64_t and pread64 so the pagemap offset doesn't truncate for high
+    // 64-bit VAs (e.g. 0x7f3398200000 -> ~273 GB into the file).
+    off64_t off = static_cast<off64_t>(va / page) * sizeof(uint64_t);
     uint64_t phys = 0;
-    if (pread(fd, &entry, sizeof(entry), off) == sizeof(entry)) {
+    if (pread64(fd, &entry, sizeof(entry), off) == sizeof(entry)) {
         const uint64_t kPresent = 1ULL << 63;
         const uint64_t kPfnMask = (1ULL << 55) - 1;
         if (entry & kPresent) {
