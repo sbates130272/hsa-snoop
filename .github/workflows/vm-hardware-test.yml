@@ -1,0 +1,205 @@
+name: vm-hardware-test
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.cpp'
+      - '**.h'
+      - '**.hip'
+      - 'CMakeLists.txt'
+      - 'examples/**'
+      - 'src/**'
+      - 'tests/**'
+      - '.github/workflows/vm-hardware-test.yml'
+
+env:
+  VM_IMAGES_DIR: /var/lib/qemu-tool/images
+  QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:latest
+
+jobs:
+  vm-hardware-test:
+    name: hardware tests in rocjitsu VM (gfx1250)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
+      options: --device /dev/kvm -v /var/run/docker.sock:/var/run/docker.sock
+
+    steps:
+    - name: Check out hsa-snoop
+      uses: actions/checkout@v7
+      with:
+        path: hsa-snoop
+
+    - name: Check out qemu-minimal
+      uses: actions/checkout@v7
+      with:
+        repository: sbates130272/qemu-minimal
+        path: qemu-minimal
+
+    - name: Install dependencies
+      run: |
+        apt-get update -qq
+        apt-get install -y -qq ansible python3-pip openssh-client
+
+    - name: Install jmespath for Ansible json_query filter
+      run: |
+        py=$(sed -n '1s/^#! *//p' "$(command -v ansible-playbook)" | awk '{print $1}')
+        "${py}" -m pip install --break-system-packages jmespath
+
+    - name: Cache pip
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/pip
+        key: pip-qemu-tool-${{ hashFiles('qemu-minimal/qemu/pyproject.toml') }}
+
+    - name: Install qemu-tool
+      run: pip install --break-system-packages -e ./qemu-minimal/qemu
+
+    - name: Generate SSH key-pair
+      run: mkdir -p "$HOME/.ssh" && ssh-keygen -t rsa -q -f "$HOME/.ssh/id_rsa" -N ""
+
+    - name: Prepare GnuPG directory for git_setup
+      run: mkdir -p "$HOME/.gnupg"
+
+    - name: Cache Ansible collections
+      uses: actions/cache@v4
+      with:
+        path: ~/.ansible/collections
+        key: ansible-collections-${{ hashFiles('qemu-minimal/ansible/requirements.yml') }}
+
+    - name: Install Ansible collections
+      run: ansible-galaxy collection install --pre -r qemu-minimal/ansible/requirements.yml
+
+    - name: Cache cloud image
+      uses: actions/cache@v4
+      with:
+        path: ${{ env.VM_IMAGES_DIR }}/*-server-cloudimg-*.img
+        key: cloud-img-amd64-resolute-hsa-snoop-rocjitsu
+
+    - name: Ensure images directory exists
+      run: mkdir -p "$VM_IMAGES_DIR" && chmod 777 "$VM_IMAGES_DIR"
+
+    - name: Pull CI images
+      run: |
+        docker pull "$ROCJITSU_IMAGE"
+        docker pull "$QEMU_IMAGE"
+
+    - name: Generate VM with vm-rocjitsu playbook
+      run: |
+        qemu-tool gen-vm \
+          --vm-name hsa-snoop-test \
+          --release resolute \
+          --username ubuntu \
+          --password password \
+          --packages none \
+          --size 20 \
+          --ansible-playbook qemu-minimal/ansible/playbooks/vm-rocjitsu.yml
+
+    - name: Bring up rocjitsu compose stack
+      working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
+      env:
+        VM_NAME: hsa-snoop-test
+        QEMU_TOOL_SRC: ${{ github.workspace }}/qemu-minimal
+      run: |
+        docker compose up --detach
+
+    - name: Wait for rocjitsu server healthy
+      working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
+      run: |
+        for i in $(seq 1 30); do
+          health=$(docker compose ps --format json rocjitsu \
+            | python3 -c "import sys,json; s=json.load(sys.stdin); print(s.get('Health',''))" \
+            2>/dev/null || true)
+          [ "$health" = "healthy" ] && break
+          sleep 2
+        done
+        [ "$health" = "healthy" ] || (docker compose logs rocjitsu && exit 1)
+
+    - name: Wait for VM SSH
+      run: |
+        elapsed=0
+        while [ $elapsed -lt 180 ]; do
+          if ssh -o ConnectTimeout=1 \
+                 -o NoHostAuthenticationForLocalhost=yes \
+                 -o StrictHostKeyChecking=no \
+                 -p 2222 ubuntu@localhost true 2>/dev/null; then
+            echo "VM ready after ${elapsed}s"
+            exit 0
+          fi
+          sleep 2; elapsed=$((elapsed + 2))
+        done
+        echo "VM failed to boot in time"
+        exit 1
+
+    - name: Load amdgpu via amdgpu-probe
+      run: |
+        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 ubuntu@localhost "sudo /usr/local/bin/amdgpu-probe"
+
+    - name: Verify amdgpu loaded and KFD present
+      run: |
+        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 ubuntu@localhost "lsmod | grep -q amdgpu && ls /dev/kfd"
+
+    - name: Copy hsa-snoop source into VM
+      run: |
+        scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -P 2222 -r hsa-snoop ubuntu@localhost:/tmp/hsa-snoop
+
+    - name: Build hsa-snoop in VM
+      run: |
+        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 ubuntu@localhost bash -s <<'EOF'
+        cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DGPU_TARGETS=gfx1250 \
+          -DHSA_SNOOP_HARDWARE_TESTS=ON
+        cmake --build /tmp/hsa-snoop/build --parallel $(nproc)
+        EOF
+
+    - name: Run unit tests in VM
+      run: |
+        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 ubuntu@localhost bash -s <<'EOF'
+        cd /tmp/hsa-snoop/build
+        ctest --exclude-regex sdma-hardware-test -V
+        EOF
+
+    - name: Run hardware test in VM
+      run: |
+        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 ubuntu@localhost bash -s <<'EOF'
+        cd /tmp/hsa-snoop/build
+        sudo ctest -R sdma-hardware-test -V
+        EOF
+
+    - name: Collect test results
+      if: always()
+      run: |
+        scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -P 2222 -r ubuntu@localhost:/tmp/hsa-snoop/build/Testing ./test-results || true
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: vm-hardware-test-results
+        path: test-results/
+        retention-days: 7
+
+    - name: Show compose logs on failure
+      if: failure()
+      working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
+      run: docker compose logs
+
+    - name: Tear down compose stack
+      if: always()
+      working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
+      env:
+        VM_NAME: hsa-snoop-test
+      run: docker compose down
