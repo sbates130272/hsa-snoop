@@ -67,6 +67,10 @@ class PrometheusExporter {
     // the flag was never passed.
     void SetAisArmed(bool armed);
 
+    // Reports whether the XNACK kprobe monitor came up. Call once, only when
+    // --xnack-snoop was requested.
+    void SetXnackArmed(bool armed);
+
     PrometheusExporter(const PrometheusExporter&) = delete;
     PrometheusExporter& operator=(const PrometheusExporter&) = delete;
 
@@ -131,8 +135,12 @@ class PrometheusExporter {
     prometheus::Family<prometheus::Gauge>& ais_snoop_armed_family_;
     // Info metric: one time-series per unique PCIe device, value=1, all labels.
     prometheus::Family<prometheus::Gauge>& ais_pcie_info_family_;
-    // XNACK (GPU page-fault retry) event counter.
+    // XNACK (GPU page-fault retry) event counter and armed sentinel.
     prometheus::Family<prometheus::Counter>& xnack_total_family_;
+    prometheus::Family<prometheus::Gauge>& xnack_snoop_armed_family_;
+    // Queue info gauge: one time-series per discovered queue, value=1, all
+    // ring metadata (ring_base, ring_phys, ring_size) as labels.
+    prometheus::Family<prometheus::Gauge>& queue_info_family_;
     // Memory footprint metrics (--mem-snoop).
     // Each metric is observed once per kernel dispatch.
     prometheus::Family<prometheus::Gauge>& mem_lds_family_;
@@ -160,6 +168,8 @@ class PrometheusExporter {
         nullptr}; // latches at 1 on first AIS op
     prometheus::Gauge* ais_snoop_armed_gauge_{
         nullptr}; // created only when --ais-snoop was requested
+    prometheus::Gauge* xnack_snoop_armed_gauge_{
+        nullptr}; // created only when --xnack-snoop was requested
 
     // Guards the launch-event deque used for rate computation.
     std::mutex rate_mu_;

@@ -3,8 +3,8 @@ set -e
 
 case "$1" in
     remove|upgrade|deconfigure)
-        systemctl stop hsa-snoop-prometheus.service || true
-        systemctl disable hsa-snoop-prometheus.service || true
+        systemctl stop hsa-snoop.service || true
+        systemctl disable hsa-snoop.service || true
         ;;
 esac
 

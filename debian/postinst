@@ -3,9 +3,36 @@ set -e
 
 case "$1" in
     configure)
+        # Install /etc/default/hsa-snoop only on a fresh install (not upgrade),
+        # so that admin edits survive package upgrades. dpkg protects conffiles
+        # listed in debian/conffiles automatically; this guard handles the case
+        # where the file is missing entirely (e.g. first install on a clean node).
+        if [ ! -f /etc/default/hsa-snoop ]; then
+            install -m 0644 \
+                /usr/local/share/hsa-snoop/hsa-snoop.conf \
+                /etc/default/hsa-snoop
+
+            # Auto-detect the primary GPU-capable console user's UID/GID so
+            # that DetectGpuType() can call rocminfo under the right identity
+            # (needed on WSL2/DXG). Falls back to 1000/1000 if loginctl is
+            # unavailable or no session is active.
+            _USER=$(loginctl list-users --no-legend 2>/dev/null \
+                    | awk 'NR==1{print $2}')
+            if [ -n "$_USER" ]; then
+                _UID=$(id -u "$_USER" 2>/dev/null || echo 1000)
+                _GID=$(id -g "$_USER" 2>/dev/null || echo 1000)
+                sed -i \
+                    "s/^SUDO_UID=.*/SUDO_UID=${_UID}/" \
+                    /etc/default/hsa-snoop
+                sed -i \
+                    "s/^SUDO_GID=.*/SUDO_GID=${_GID}/" \
+                    /etc/default/hsa-snoop
+            fi
+        fi
+
         systemctl daemon-reload
-        systemctl enable hsa-snoop-prometheus.service
-        systemctl start hsa-snoop-prometheus.service || true
+        systemctl enable hsa-snoop.service
+        systemctl start hsa-snoop.service || true
         ;;
 esac
 

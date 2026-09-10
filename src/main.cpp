@@ -384,6 +384,10 @@ int main(int argc, char** argv) {
             fprintf(stderr, "hsa-snoop: XNACK monitor armed "
                             "(kprobe:kfd_process_vm_fault via bpftrace)\n");
         }
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+        if (prom_exporter)
+            prom_exporter->SetXnackArmed(xnack_ok);
+#endif
     }
 
     // Maps queue uid -> {gpu_id, pid, comm} for mem-snoop enrichment and for
