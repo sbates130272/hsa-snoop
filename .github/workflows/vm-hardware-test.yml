@@ -52,7 +52,7 @@ jobs:
         "${py}" -m pip install --break-system-packages jmespath
 
     - name: Cache pip
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cache/pip
         key: pip-qemu-tool-${{ hashFiles('qemu-minimal/qemu/pyproject.toml') }}
@@ -67,7 +67,7 @@ jobs:
       run: mkdir -p "$HOME/.gnupg"
 
     - name: Cache Ansible collections
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.ansible/collections
         key: ansible-collections-${{ hashFiles('qemu-minimal/ansible/requirements.yml') }}
@@ -76,7 +76,7 @@ jobs:
       run: ansible-galaxy collection install --pre -r qemu-minimal/ansible/requirements.yml
 
     - name: Cache cloud image
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ${{ env.VM_IMAGES_DIR }}/*-server-cloudimg-*.img
         key: cloud-img-amd64-resolute-hsa-snoop-rocjitsu
