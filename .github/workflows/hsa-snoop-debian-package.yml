@@ -1,32 +1,39 @@
-name: debian-publish
+name: hsa-snoop - debian-package
 
 on:
   workflow_dispatch:
-  push:
+  pull_request:
     branches:
       - main
-    tags:
-      - 'v[0-9]*.[0-9]*.[0-9]*'
+    paths:
+      - '**.cpp'
+      - '**.h'
+      - '**.hip'
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'systemd/**'
+      - 'debian/**'
+      - 'grafana/**'
+      - '.github/workflows/hsa-snoop-debian-package.yml'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  publish-deb:
-    name: Publish Debian package to GitHub Releases
+  build-deb:
+    name: Build Debian package (Prometheus)
     runs-on: ubuntu-latest
     container:
       image: rocm/dev-ubuntu-24.04:7.2
       options: --user root
     env:
       LD_LIBRARY_PATH: /opt/rocm/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-      GH_TOKEN: ${{ github.token }}
 
     steps:
-    - name: Install git and gh
+    - name: Install git
       run: |
         apt-get update
-        apt-get install -y git gh
+        apt-get install -y git
 
     - name: Check out code
       uses: actions/checkout@v7
@@ -36,26 +43,20 @@ jobs:
     - name: Mark repo as safe for git
       run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-    - name: Install build dependencies
-      run: apt-get install -y cmake dpkg-dev
+    - name: Install dependencies
+      run: apt-get install -y cmake dpkg-dev bpftrace
 
     - name: Determine version
       id: version
       shell: bash
       run: |
-        # Use the git tag if this run was triggered by one, otherwise fall back
-        # to the short commit SHA prefixed with 0~ (pre-release ordering).
         TAG=$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
         if [[ -n "$TAG" ]]; then
-          VERSION="${TAG#v}"        # strip leading 'v'
-          PRERELEASE=false
+          VERSION="${TAG#v}"
         else
           VERSION="0~${GITHUB_SHA::8}"
-          PRERELEASE=true
         fi
-        echo "VERSION=${VERSION}"    >> "$GITHUB_ENV"
-        echo "PRERELEASE=${PRERELEASE}" >> "$GITHUB_ENV"
-        echo "TAG=${TAG}"            >> "$GITHUB_ENV"
+        echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
 
     - name: Configure with CMake (Prometheus enabled)
       run: |
@@ -84,21 +85,9 @@ jobs:
     - name: Verify .deb metadata
       run: dpkg-deb --info "$DEB_FILE"
 
-    - name: Publish to GitHub Releases
-      shell: bash
-      run: |
-        if [[ "${PRERELEASE}" == "false" ]]; then
-          # Named semver release — create once, do not overwrite
-          gh release create "${TAG}" \
-            --title "hsa-snoop ${TAG}" \
-            --notes "Release ${TAG}." \
-            "${DEB_FILE}"
-        else
-          # Rolling latest pre-release for every main push
-          gh release delete latest --yes || true
-          gh release create latest \
-            --title "Latest build (${VERSION})" \
-            --notes "Automatically published from main at commit ${GITHUB_SHA}." \
-            --prerelease \
-            "${DEB_FILE}"
-        fi
+    - name: Upload artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: hsa-snoop-deb
+        path: hsa-snoop_*_amd64.deb
+        retention-days: 7

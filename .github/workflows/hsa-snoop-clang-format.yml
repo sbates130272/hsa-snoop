@@ -1,4 +1,4 @@
-name: clang-format
+name: hsa-snoop - clang-format
 
 on:
   workflow_dispatch:
@@ -11,7 +11,10 @@ on:
       - '**.h'
       - '**.hip'
       - '.clang-format'
-      - '.github/workflows/clang-format.yml'
+      - '.github/workflows/hsa-snoop-clang-format.yml'
+
+permissions:
+  contents: read
 
 jobs:
   clang-format:

@@ -1,4 +1,4 @@
-name: build-check
+name: hsa-snoop - build-check
 
 on:
   workflow_dispatch:
@@ -14,7 +14,10 @@ on:
       - 'examples/**'
       - 'src/**'
       - 'systemd/**'
-      - '.github/workflows/build-check.yml'
+      - '.github/workflows/hsa-snoop-build-check.yml'
+
+permissions:
+  contents: read
 
 jobs:
   build-check:
