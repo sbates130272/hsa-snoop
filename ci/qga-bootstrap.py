@@ -60,7 +60,7 @@ for _ in range(60):
 for label, cmd in [
     ("assign IP", "ip addr add 10.0.2.15/24 dev enp0s3 2>/dev/null || true"),
     ("add route", "ip route add default via 10.0.2.2 dev enp0s3 2>/dev/null || true"),
-    ("start sshd", "systemctl start ssh.service"),
+    ("start sshd", "systemctl start ssh.service && sleep 3"),
 ]:
     resp = send_recv(
         {
