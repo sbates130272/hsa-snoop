@@ -58,8 +58,8 @@ for _ in range(60):
     time.sleep(2)
 
 for label, cmd in [
-    ("assign IP", "ip addr add 172.16.223.100/24 dev enp0s3 2>/dev/null || true"),
-    ("add route", "ip route add default via 172.16.223.1 dev enp0s3 2>/dev/null || true"),
+    ("assign IP", "ip addr add 10.0.2.15/24 dev enp0s3 2>/dev/null || true"),
+    ("add route", "ip route add default via 10.0.2.2 dev enp0s3 2>/dev/null || true"),
     ("start sshd", "systemctl start ssh.service"),
 ]:
     resp = send_recv(
