@@ -198,8 +198,11 @@ jobs:
         # shared volume so the qemu container can execute it.  Using a file
         # avoids Compose variable interpolation eating shell variables like
         # $socks that are assigned inside the script itself.
-        cp ../../../../hsa-snoop/ci/qemu-entrypoint.sh /var/lib/qemu-tool/qemu-entrypoint.sh
-        chmod +x /var/lib/qemu-tool/qemu-entrypoint.sh
+        # images/ is chmod 777 by the "Ensure images directory exists" step;
+        # the parent /var/lib/qemu-tool/ is root-owned and not writable.
+        cp ../../../../hsa-snoop/ci/qemu-entrypoint.sh \
+          "$VM_IMAGES_DIR/qemu-entrypoint.sh"
+        chmod +x "$VM_IMAGES_DIR/qemu-entrypoint.sh"
         printf '%s\n' \
           'services:' \
           '  qemu:' \
@@ -210,7 +213,7 @@ jobs:
           '    devices:' \
           '      - /dev/kvm' \
           '      - /dev/net/tun' \
-          '    entrypoint: ["/var/lib/qemu-tool/qemu-entrypoint.sh"]' \
+          '    entrypoint: ["${VM_IMAGES_DIR}/qemu-entrypoint.sh"]' \
           > docker-compose.override.yml
 
     - name: Bring up rocjitsu compose stack
