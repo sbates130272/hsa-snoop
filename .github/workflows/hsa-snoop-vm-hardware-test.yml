@@ -18,6 +18,11 @@ on:
 permissions:
   contents: read
 
+# Publish step needs write access to push to gh-pages.  Only on-push jobs
+# (default branch) reach that step; pull_request jobs do not.
+# The job overrides this to write only when the event is a push to main.
+
+
 env:
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
   QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
@@ -28,6 +33,8 @@ jobs:
     name: hardware tests in rocjitsu VM (gfx1250)
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    permissions:
+      contents: write
     container:
       image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
       options: --device /dev/kvm -v /var/run/docker.sock:/var/run/docker.sock
@@ -194,6 +201,21 @@ jobs:
         name: vm-hardware-test-results
         path: test-results/
         retention-days: 7
+
+    - name: Collect Prometheus snapshot for perf history
+      if: success()
+      run: |
+        mkdir -p ./artifacts
+        scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -P 2222 ubuntu@localhost:/tmp/hsa-snoop-prometheus.txt \
+          ./artifacts/prometheus.txt 2>/dev/null || true
+
+    - name: Publish performance trends to gh-pages
+      if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: ./.github/actions/publish-perf
+      with:
+        prometheus-file: ./artifacts/prometheus.txt
+        token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Show compose logs on failure
       if: failure()
