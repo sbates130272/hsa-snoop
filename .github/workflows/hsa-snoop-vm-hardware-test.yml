@@ -43,7 +43,7 @@ env:
   FIO_COMMIT: 6bc57a931f04fa3f50348d8c8f087187f050c6e1
   FIO_REPO: https://github.com/axboe/fio.git
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
-  VM_SSH_PORT: "13398"
+  VM_SSH_PORT: "2222"
   ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260921.gb3399b3-rocjitsu.8e01a5a
   ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260921.g584b3f9-vm.resolute-rocjitsu-qm.5d68689-qcow2
   QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260919.g359579e-qemu11.1.1-vfu.8039244
