@@ -224,7 +224,7 @@ def render_html(history: list[dict], out_path: Path) -> None:
         )
     else:
         recent_runs = ""
-    html = f"""\
+    html_doc = f"""\
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -277,7 +277,7 @@ new Chart(document.getElementById('perf'), {{
 </body>
 </html>
 """
-    out_path.write_text(html)
+    out_path.write_text(html_doc)
 
 
 def main() -> None:
