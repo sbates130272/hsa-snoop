@@ -97,20 +97,41 @@ jobs:
         meta_dir=
         cd "$artifact_dir"
         oras manifest fetch "$ROCJITSU_VM_IMAGE" > manifest.json
+        oras discover --format json "$ROCJITSU_VM_IMAGE" > referrers.json
         oras pull "$ROCJITSU_VM_IMAGE"
-        for ref_digest in $(
-          oras discover --format json "$ROCJITSU_VM_IMAGE" \
-            | python3 -c 'import json,sys; refs=json.load(sys.stdin).get("referrers", []); assert refs, "no referrers found"; print("\n".join(ref["digest"] for ref in refs))'
-        ); do
-          candidate_dir=$(mktemp -d)
-          if oras pull --output "$candidate_dir" "${ROCJITSU_VM_IMAGE%:*}@${ref_digest}" >/dev/null 2>&1 \
-             && [ -f "$candidate_dir/vm-info.json" ]; then
-            meta_dir="$candidate_dir"
-            break
-          fi
-          rm -rf "$candidate_dir"
-        done
-        [ -n "$meta_dir" ] || { echo "failed to find vm-info.json referrer for $ROCJITSU_VM_IMAGE" >&2; exit 1; }
+        ref_digest=$(
+          MANIFEST_JSON="$artifact_dir/manifest.json" REFERRERS_JSON="$artifact_dir/referrers.json" \
+            python3 - <<'PY'
+        import json
+        import os
+
+        manifest = json.load(open(os.environ["MANIFEST_JSON"]))
+        discover = json.load(open(os.environ["REFERRERS_JSON"]))
+        annotations = manifest.get("annotations") or {}
+        expected = {
+            "org.opencontainers.image.description",
+            "org.opencontainers.image.revision",
+            "org.opencontainers.image.created",
+            "vm.flavour",
+            "vm.release",
+            "vm.kernel_release",
+            "io.batesste.ci-images.target",
+        }
+        matches = []
+        for ref in discover.get("referrers", []):
+            if ref.get("artifactType") != "application/vnd.batesste.vm-info.v1":
+                continue
+            ref_annotations = ref.get("annotations") or {}
+            if all(ref_annotations.get(key) == annotations.get(key) for key in expected if annotations.get(key)):
+                matches.append(ref["digest"])
+        if len(matches) != 1:
+            raise SystemExit(f"expected exactly one matching vm-info referrer, found {len(matches)}")
+        print(matches[0])
+        PY
+        )
+        meta_dir=$(mktemp -d)
+        oras pull --output "$meta_dir" "${ROCJITSU_VM_IMAGE%:*}@${ref_digest}"
+        [ -f "$meta_dir/vm-info.json" ] || { echo "vm-info.json missing from referrer $ref_digest" >&2; exit 1; }
         zstd -d --long=27 --rm ./*.qcow2.zst
         install -d -m 700 "$HOME/.ssh"
         META_DIR="$meta_dir" MANIFEST_JSON="$artifact_dir/manifest.json" python3 - <<'PY' > "$artifact_dir/vm-info.env"
@@ -132,15 +153,22 @@ jobs:
         keys = info.get("ssh_keys") or {}
         private_key = Path(keys.get("private_key_path", "/output/id_rsa")).name
         public_key = Path(keys.get("public_key_path", "/output/id_rsa.pub")).name
+        fingerprint = keys.get("fingerprint", "")
         print(f"VM_USERNAME={username}")
         print(f"VM_PASSWORD_B64={base64.b64encode(info['password'].encode()).decode()}")
         print(f"VM_PRIVATE_KEY_FILE={private_key}")
         print(f"VM_PUBLIC_KEY_FILE={public_key}")
+        print(f"VM_PUBLIC_KEY_FINGERPRINT={fingerprint}")
         PY
         cat "$artifact_dir/vm-info.env" >> "$GITHUB_ENV"
         set -a
         . "$artifact_dir/vm-info.env"
         set +a
+        if [ -n "${VM_PUBLIC_KEY_FINGERPRINT:-}" ]; then
+          actual_fingerprint=$(ssh-keygen -lf "$meta_dir/$VM_PUBLIC_KEY_FILE" | awk '{print $2}')
+          [ "$actual_fingerprint" = "$VM_PUBLIC_KEY_FINGERPRINT" ] \
+            || { echo "SSH public key fingerprint mismatch for $ROCJITSU_VM_IMAGE" >&2; exit 1; }
+        fi
         install -m 600 "$meta_dir/$VM_PRIVATE_KEY_FILE" "$HOME/.ssh/id_rsa"
         install -m 644 "$meta_dir/$VM_PUBLIC_KEY_FILE" "$HOME/.ssh/id_rsa.pub"
         rm -f "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2" \
