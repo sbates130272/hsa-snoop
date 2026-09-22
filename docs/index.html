@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hsa-snoop</title>
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<header class="hero">
+  <div class="hero__content">
+    <p class="eyebrow">AMD GPU queue observability</p>
+    <h1>hsa-snoop</h1>
+    <p class="lede">Capture AQL queues, SDMA traffic, and Prometheus metrics from real HIP/HSA workloads without rebuilding the amdgpu driver.</p>
+    <div class="actions">
+      <a class="button button--primary" href="https://github.com/sbates130272/hsa-snoop">View repository</a>
+      <a class="button" href="perf/">Open performance tracker</a>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="section grid grid--three">
+    <article class="card">
+      <h2>Trace queue activity</h2>
+      <p>Decode HSA AQL dispatch packets, barriers, agent dispatches, and SDMA copy traffic into Perfetto-ready traces.</p>
+    </article>
+    <article class="card">
+      <h2>Export live metrics</h2>
+      <p>Expose Prometheus counters for kernel launches, SDMA copies, and AIS storage traffic during the same capture.</p>
+    </article>
+    <article class="card">
+      <h2>Track regressions over time</h2>
+      <p>The GitHub Pages perf tracker publishes CI history to <code>gh-pages/perf/</code> and charts the key counters per run.</p>
+    </article>
+  </section>
+
+  <section class="section">
+    <div class="section__heading">
+      <h2>Current tracked metrics</h2>
+      <p>These badges are backed by the published JSON on the <code>gh-pages</code> branch.</p>
+    </div>
+    <div class="badges">
+      <img alt="Kernel launches badge" src="https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-kernel_launches.json">
+      <img alt="SDMA copies badge" src="https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-sdma_copies.json">
+      <img alt="AIS RX bytes badge" src="https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_rx_bytes.json">
+      <img alt="AIS TX bytes badge" src="https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_tx_bytes.json">
+    </div>
+    <p><a href="perf/">View the full trend charts and recent run history.</a></p>
+  </section>
+
+  <section class="section grid grid--two section--media">
+    <div>
+      <h2>Perfetto-native traces</h2>
+      <p><code>hsa-snoop</code> writes native Perfetto protobuf traces that separate each discovered AQL or SDMA queue onto its own timeline, making launches and DMA activity easy to correlate.</p>
+      <pre><code>sudo ./hsa-snoop -- ./my_hip_app
+sudo ./hsa-snoop --all
+# open traces at https://ui.perfetto.dev</code></pre>
+    </div>
+    <figure class="media-card">
+      <img src="images/perfetto-trace-overview.png" alt="Overview of an hsa-snoop trace in Perfetto">
+      <figcaption>Full trace showing packet activity across two AQL queues.</figcaption>
+    </figure>
+  </section>
+
+  <section class="section grid grid--two">
+    <article class="card">
+      <h2>Documentation in-repo</h2>
+      <p>The repository README remains the authoritative technical walkthrough for queue discovery, SDMA decoding, Prometheus support, and hardware-test setup.</p>
+      <p><a href="https://github.com/sbates130272/hsa-snoop/blob/main/README.md">Read the README</a></p>
+    </article>
+    <article class="card">
+      <h2>How the Pages site is published</h2>
+      <p>The docs deployment workflow updates the site root while preserving the separately published <code>perf/</code> subtree, matching the split-site pattern used by ROCm-ernic.</p>
+      <p><a href="https://github.com/sbates130272/hsa-snoop/blob/main/.github/workflows/docs-deploy.yml">See the workflow</a></p>
+    </article>
+  </section>
+</main>
+</body>
+</html>

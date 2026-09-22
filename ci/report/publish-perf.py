@@ -21,6 +21,7 @@ docs-deploy workflow to rebuild the site from the published history.
 
 import argparse
 import datetime
+import html
 import json
 import os
 import re
@@ -71,6 +72,7 @@ METRICS = [
 # Colour thresholds for shields.io badges (green / yellow / red).
 # We always use blue for counter metrics (no meaningful threshold).
 BADGE_COLOR = "blue"
+NO_DATA_BADGE_COLOR = "lightgrey"
 
 
 def parse_prometheus(text: str) -> dict[str, float]:
@@ -113,10 +115,37 @@ def badge_json(label: str, value: float, unit: str, decimals: int) -> dict:
     }
 
 
+def no_data_badge_json(label: str) -> dict:
+    return {
+        "schemaVersion": 1,
+        "label": label,
+        "message": "no data",
+        "color": NO_DATA_BADGE_COLOR,
+    }
+
+
+def write_badges(history: list[dict], out_dir: Path) -> None:
+    latest_metrics = history[-1].get("metrics", {}) if history else {}
+    for m in METRICS:
+        badge_path = out_dir / f"badge-{m['key']}.json"
+        val = latest_metrics.get(m["key"])
+        if val is None:
+            badge_path.write_text(json.dumps(no_data_badge_json(m["key"])))
+            continue
+        badge_path.write_text(json.dumps(
+            badge_json(m["key"], val, m["unit"], m["decimals"])))
+
+
 def render_html(history: list[dict], out_path: Path) -> None:
     """Write a minimal Chart.js trend page from the history records."""
     keys = [m["key"] for m in METRICS]
-    labels_js = json.dumps([r.get("meta", {}).get("sha", r.get("timestamp", ""))[:8] for r in history])
+    labels_js = json.dumps([
+        "{} · {}".format(
+            r.get("timestamp", "")[:10],
+            r.get("meta", {}).get("sha", "")[:8] or "unknown",
+        )
+        for r in history
+    ])
     datasets = []
     colors = ["#0071c5", "#e87a2d", "#43a047", "#e53935", "#8e24aa", "#00838f"]
     for i, m in enumerate(METRICS):
@@ -130,6 +159,71 @@ def render_html(history: list[dict], out_path: Path) -> None:
             "pointRadius": 3,
         })
     datasets_js = json.dumps(datasets)
+    metric_cards = []
+    if history:
+        latest = history[-1]
+        latest_metrics = latest.get("metrics", {})
+        latest_meta = latest.get("meta", {})
+        latest_details = (
+            f"<p class=\"lede\">Latest run: "
+            f"<code>{html.escape(latest_meta.get('sha', '')[:8] or 'unknown')}</code> "
+            f"on {html.escape(latest.get('timestamp', 'unknown'))}"
+            f" ({html.escape(latest_meta.get('runner', 'unknown'))})</p>"
+        )
+        for m in METRICS:
+            val = latest_metrics.get(m["key"])
+            if val is None:
+                display = "no data"
+            elif m["decimals"] == 0:
+                display = f"{int(val):,} {m['unit']}"
+            else:
+                display = f"{val:.{m['decimals']}f} {m['unit']}"
+            metric_cards.append(
+                "<article class=\"metric-card\">"
+                f"<h2>{html.escape(m['key'].replace('_', ' '))}</h2>"
+                f"<p class=\"value\">{html.escape(display)}</p>"
+                f"<p>{html.escape(m['description'])}</p>"
+                "</article>"
+            )
+    else:
+        latest_details = (
+            "<p class=\"lede\">No published history yet. The first successful "
+            "default-branch hardware run will append a record here.</p>"
+        )
+        for m in METRICS:
+            metric_cards.append(
+                "<article class=\"metric-card\">"
+                f"<h2>{html.escape(m['key'].replace('_', ' '))}</h2>"
+                "<p class=\"value\">no data</p>"
+                f"<p>{html.escape(m['description'])}</p>"
+                "</article>"
+            )
+    rows = []
+    for record in reversed(history[-10:]):
+        meta = record.get("meta", {})
+        cells = [
+            f"<td>{html.escape(record.get('timestamp', ''))}</td>",
+            f"<td><code>{html.escape(meta.get('sha', '')[:8] or 'unknown')}</code></td>",
+            f"<td>{html.escape(meta.get('runner', 'unknown'))}</td>",
+        ]
+        for m in METRICS:
+            val = record.get("metrics", {}).get(m["key"])
+            cells.append(
+                f"<td>{'' if val is None else html.escape(str(int(val) if m['decimals'] == 0 else round(val, m['decimals'])) )}</td>"
+            )
+        rows.append("<tr>{}</tr>".format("".join(cells)))
+    if rows:
+        recent_runs = (
+            "<h2>Recent runs</h2>"
+            "<div class=\"table-wrap\"><table><thead><tr>"
+            "<th>timestamp</th><th>sha</th><th>runner</th>"
+            + "".join(f"<th>{html.escape(m['key'])}</th>" for m in METRICS)
+            + "</tr></thead><tbody>"
+            + "".join(rows)
+            + "</tbody></table></div>"
+        )
+    else:
+        recent_runs = ""
     html = f"""\
 <!DOCTYPE html>
 <html lang="en">
@@ -138,15 +232,31 @@ def render_html(history: list[dict], out_path: Path) -> None:
 <title>hsa-snoop performance history</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
-  body {{ font-family: sans-serif; max-width: 900px; margin: 2em auto; padding: 0 1em; }}
-  h1 {{ font-size: 1.4em; }}
-  .chart-wrap {{ position: relative; height: 320px; margin: 2em 0; }}
+  :root {{ color-scheme: light dark; }}
+  body {{ font-family: sans-serif; max-width: 1100px; margin: 2em auto; padding: 0 1em 3em; line-height: 1.5; }}
+  h1 {{ font-size: 1.8em; margin-bottom: 0.3em; }}
+  h2 {{ font-size: 1.1em; }}
+  code {{ font-size: 0.95em; }}
+  a {{ color: #0b57d0; }}
+  .lede {{ margin-bottom: 1.5em; }}
+  .chart-wrap {{ position: relative; height: 360px; margin: 2em 0; }}
+  .metrics {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin: 1.5em 0 2em; }}
+  .metric-card {{ border: 1px solid #d0d7de; border-radius: 12px; padding: 1rem; background: rgba(127, 127, 127, 0.06); }}
+  .metric-card h2, .metric-card p {{ margin: 0; }}
+  .metric-card .value {{ font-size: 1.4em; font-weight: 700; margin: 0.35rem 0 0.5rem; }}
+  .table-wrap {{ overflow-x: auto; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  th, td {{ border-bottom: 1px solid #d0d7de; padding: 0.55rem 0.7rem; text-align: left; white-space: nowrap; }}
 </style>
 </head>
 <body>
 <h1>hsa-snoop performance history</h1>
 <p>Each point is one CI run on the default branch.  Counters are totals from
 a fixed workload duration; higher is more activity observed.</p>
+{latest_details}
+<section class="metrics">
+{"".join(metric_cards)}
+</section>
 <div class="chart-wrap"><canvas id="perf"></canvas></div>
 <script>
 const labels = {labels_js};
@@ -162,6 +272,7 @@ new Chart(document.getElementById('perf'), {{
   }},
 }});
 </script>
+{recent_runs}
 <p><small>Generated by <code>ci/report/publish-perf.py</code>. Source: <a href="https://github.com/sbates130272/hsa-snoop">sbates130272/hsa-snoop</a>.</small></p>
 </body>
 </html>
@@ -219,16 +330,11 @@ def main() -> None:
         with history_path.open("a") as fh:
             fh.write(json.dumps(record) + "\n")
 
-        # Write one badge per metric
-        for m in METRICS:
-            val = record["metrics"].get(m["key"], 0.0)
-            badge_path = history_path.parent / f"badge-{m['key']}.json"
-            badge_path.write_text(json.dumps(badge_json(m["key"], val, m["unit"], m["decimals"])))
-            print(f"badge: {badge_path} — {val}")
-
         print(f"appended record to {history_path} ({len(history)} total)")
 
+    write_badges(history, history_path.parent)
     render_html(history, html_path)
+    print(f"wrote badges to {history_path.parent}")
     print(f"rendered trend page to {html_path}")
 
 
