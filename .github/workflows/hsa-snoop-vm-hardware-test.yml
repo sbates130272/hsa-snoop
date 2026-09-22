@@ -191,31 +191,6 @@ jobs:
         docker pull "$ROCJITSU_IMAGE"
         docker pull "$QEMU_IMAGE"
 
-    - name: Create compose override for TAP networking
-      working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
-      run: |
-        # Copy the entrypoint script (which passes --mgmt-tap) into the
-        # shared volume so the qemu container can execute it.  Using a file
-        # avoids Compose variable interpolation eating shell variables like
-        # $socks that are assigned inside the script itself.
-        # images/ is chmod 777 by the "Ensure images directory exists" step;
-        # the parent /var/lib/qemu-tool/ is root-owned and not writable.
-        cp ../../../../hsa-snoop/ci/qemu-entrypoint.sh \
-          "$VM_IMAGES_DIR/qemu-entrypoint.sh"
-        chmod +x "$VM_IMAGES_DIR/qemu-entrypoint.sh"
-        printf '%s\n' \
-          'services:' \
-          '  qemu:' \
-          '    cap_add:' \
-          '      - NET_ADMIN' \
-          '      - NET_RAW' \
-          '      - SYS_ADMIN' \
-          '    devices:' \
-          '      - /dev/kvm' \
-          '      - /dev/net/tun' \
-          '    entrypoint: ["${VM_IMAGES_DIR}/qemu-entrypoint.sh"]' \
-          > docker-compose.override.yml
-
     - name: Bring up rocjitsu compose stack
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
       env:
@@ -253,18 +228,18 @@ jobs:
     - name: Bootstrap guest networking and sshd via QEMU Guest Agent
       # The VM image's netplan matches on a hardcoded MAC that differs from
       # qemu-tool's generated MAC, so the NIC (enp0s3) comes up with no DHCP.
-      # Use the QGA — which needs no networking — to assign the TAP bridge IP
-      # (172.16.223.100/24, gw 172.16.223.1) and start sshd, then install an
-      # SSH ProxyCommand that tunnels @qemu connections from the CI container
-      # through docker exec into the qemu container → guest directly over the
-      # bridge (no SLIRP relay).  Remove once the image uses
-      # `match: driver: virtio_net` in netplan.
+      # Use the QGA — which needs no networking — to assign the SLIRP static
+      # IP (10.0.2.15/24, gw 10.0.2.2) and start sshd.
+      # SLIRP hostfwd forwards the TCP connect but stalls the SSH key exchange
+      # from outside the container, so all subsequent guest commands run via
+      # ci/vm-ssh.sh which uses `docker exec` to ssh from inside the container
+      # where 127.0.0.1:$VM_SSH_PORT works reliably.
+      # Remove this step once the VM image uses `match: driver: virtio_net`.
       run: |
         set -euo pipefail
         qemu_container="vfio-user-rocjitsu-vm-qemu-1"
         qga_sock="/tmp/qga-hsa-snoop-test-2222.sock"
 
-        # Wait for the QEMU container to create the QGA socket
         elapsed=0
         while [ $elapsed -lt 120 ]; do
           docker exec "$qemu_container" test -S "$qga_sock" 2>/dev/null && break
@@ -275,19 +250,11 @@ jobs:
 
         docker cp hsa-snoop/ci/qga-bootstrap.py "$qemu_container":/tmp/qga-bootstrap.py
         docker exec "$qemu_container" python3 /tmp/qga-bootstrap.py "$qga_sock"
-        # Copy the SSH key into the qemu container for the wait step
-        docker cp "$HOME/.ssh/id_rsa" vfio-user-rocjitsu-vm-qemu-1:/tmp/vm-id_rsa
-        docker exec vfio-user-rocjitsu-vm-qemu-1 chmod 600 /tmp/vm-id_rsa
-        # Install an SSH ProxyCommand so all subsequent `ssh ... @qemu` calls
-        # from the CI container are transparently tunnelled through `docker exec`
-        # into the qemu container, where SLIRP hostfwd works reliably.
-        # This avoids rewriting every ssh/scp call in the workflow.
-        mkdir -p "$HOME/.ssh"
-        # ProxyCommand connects to the guest's TAP bridge IP directly (port 22),
-        # bypassing SLIRP entirely.  nc must exist in the qemu container.
-        docker exec vfio-user-rocjitsu-vm-qemu-1 sh -c \
-          "which nc || (apt-get update -qq && apt-get install -y -qq netcat-openbsd)" 2>/dev/null || true
-        printf 'Host qemu\n  ProxyCommand docker exec -i vfio-user-rocjitsu-vm-qemu-1 nc 172.16.223.100 22\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' >> "$HOME/.ssh/config"
+
+        docker cp "$HOME/.ssh/id_rsa" "$qemu_container":/tmp/vm-id_rsa
+        docker exec "$qemu_container" chmod 600 /tmp/vm-id_rsa
+
+        install -m 755 hsa-snoop/ci/vm-ssh.sh /usr/local/bin/vm-ssh
 
     - name: Wait for VM SSH
       run: |
@@ -307,9 +274,9 @@ jobs:
 
     - name: Prepare emulated NVMe filesystem in guest
       run: |
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
+        vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
@@ -335,18 +302,18 @@ jobs:
           -c 'python3 /usr/local/bin/vfio_guest_firmware.py --set gap --output /out && tar -cf - -C /out .' \
           | tar -xf - -C "$fw_dir"
         test -f "$fw_dir/gc_12_1_0_imu.bin"
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu \
+        vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
           "rm -rf /tmp/rocjitsu-firmware && mkdir -p /tmp/rocjitsu-firmware"
         tar -cf - -C "$fw_dir" . \
-          | ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-              -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-              -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu \
+          | vm-ssh \
+    
+              -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
               "tar -xf - -C /tmp/rocjitsu-firmware"
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
+        vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
@@ -358,19 +325,19 @@ jobs:
 
     - name: Verify amdgpu DKMS module installed
       run: |
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu \
+        vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
           "dkms status amdgpu | grep -q installed"
         echo "✓ amdgpu DKMS module installed"
 
     - name: Load amdgpu with rocjitsu parameters
       timeout-minutes: 5
       run: |
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+        vm-ssh \
+
           -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
@@ -390,10 +357,10 @@ jobs:
       if: failure()
       timeout-minutes: 2
       run: |
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+        vm-ssh \
+
           -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF' || true
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF' || true
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' dmesg | tail -200
@@ -401,19 +368,19 @@ jobs:
 
     - name: Verify amdgpu module loaded and a GPU KFD node present
       run: |
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu "lsmod | grep -q amdgpu"
+        vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "lsmod | grep -q amdgpu"
         echo "✓ amdgpu module loaded"
-        gpus=$(ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu \
+        gpus=$(vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
           "cat /sys/class/kfd/kfd/topology/nodes/*/name 2>/dev/null | grep -c .")
         if [ "$gpus" -lt 1 ]; then
           echo "no GPU KFD node: amdgpu loaded but never bound the device" >&2
-          ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-            -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-            -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF' >&2
+          vm-ssh \
+  
+            -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF' >&2
           set -euo pipefail
           VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
           printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' dmesg | grep -i amdgpu | tail -20
@@ -421,9 +388,9 @@ jobs:
           exit 1
         fi
         echo "✓ GPU KFD node present ($gpus)"
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu bash -s <<'EOF'
+        vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 bash -s <<'EOF'
         set -euo pipefail
         for card in /sys/class/drm/card*; do
           vram="$card/device/mem_info_vram_total"
@@ -444,15 +411,14 @@ jobs:
 
     - name: Copy hsa-snoop source into VM
       run: |
-        scp -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P "$VM_SSH_PORT" -r hsa-snoop "$VM_USERNAME"@qemu:/tmp/hsa-snoop
+        tar -cf - hsa-snoop \
+          | vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "tar -xf - -C /tmp"
 
     - name: Build hsa-snoop in VM
       run: |
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu bash -s <<'EOF'
+        vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 bash -s <<'EOF'
         cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
           -DBUILD_TESTING=ON \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -464,9 +430,9 @@ jobs:
 
     - name: Build and install hsa-snoop .deb in VM
       run: |
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
+        vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
@@ -494,9 +460,9 @@ jobs:
 
     - name: Build fio hipfile test tool in VM
       run: |
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 FIO_REPO=$FIO_REPO FIO_COMMIT=$FIO_COMMIT bash -s" <<'EOF'
+        vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 FIO_REPO=$FIO_REPO FIO_COMMIT=$FIO_COMMIT bash -s" <<'EOF'
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
@@ -524,18 +490,18 @@ jobs:
 
     - name: Run unit tests in VM
       run: |
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu bash -s <<'EOF'
+        vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 bash -s <<'EOF'
         cd /tmp/hsa-snoop/build
         ctest --exclude-regex sdma-hardware-test --output-on-failure
         EOF
 
     - name: Run hardware test in VM
       run: |
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
+        vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
@@ -545,9 +511,9 @@ jobs:
 
     - name: Run hsa-snoop mode, Prometheus, and AIS coverage in VM
       run: |
-        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
+        vm-ssh \
+
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
 
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
@@ -777,12 +743,12 @@ jobs:
       if: always()
       run: |
         mkdir -p ./artifacts
-        scp -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P "$VM_SSH_PORT" -r "$VM_USERNAME"@qemu:/tmp/hsa-snoop/build/Testing ./artifacts/test-results || true
-        scp -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P "$VM_SSH_PORT" -r "$VM_USERNAME"@qemu:/tmp/hsa-snoop-artifacts ./artifacts/hsa-snoop-artifacts || true
+        vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
+          "tar -cf - /tmp/hsa-snoop/build/Testing 2>/dev/null || true" \
+          | tar -xf - --strip-components=4 -C ./artifacts/test-results 2>/dev/null || true
+        vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
+          "tar -cf - /tmp/hsa-snoop-artifacts 2>/dev/null || true" \
+          | tar -xf - --strip-components=1 -C ./artifacts/hsa-snoop-artifacts 2>/dev/null || true
 
     - name: Upload test results
       if: always()
