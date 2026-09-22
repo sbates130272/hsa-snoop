@@ -45,10 +45,11 @@ case "$1" in
                 systemctl enable hsa-snoop-prometheus.service
                 systemctl start hsa-snoop-prometheus.service || true
             elif [ -f "$STATE_FILE" ]; then
+                systemctl enable hsa-snoop-prometheus.service
                 systemctl start hsa-snoop-prometheus.service || true
-                rm -f "$STATE_FILE"
             fi
         fi
+        rm -f "$STATE_FILE"
         ;;
 esac
 
