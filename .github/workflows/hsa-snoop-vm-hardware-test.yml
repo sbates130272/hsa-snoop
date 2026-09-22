@@ -210,10 +210,20 @@ jobs:
         cp ../../../../hsa-snoop/ci/qemu-entrypoint.sh \
           "$VM_IMAGES_DIR/qemu-entrypoint.sh"
         chmod +x "$VM_IMAGES_DIR/qemu-entrypoint.sh"
+        # Forward env vars into the container; the default entrypoint
+        # interpolated them via compose, but our script reads them at runtime.
         printf '%s\n' \
           'services:' \
           '  qemu:' \
-          '    entrypoint: ["${VM_IMAGES_DIR}/qemu-entrypoint.sh"]' \
+          '    entrypoint: ["'"$VM_IMAGES_DIR"'/qemu-entrypoint.sh"]' \
+          '    environment:' \
+          '      VM_NAME: "${VM_NAME}"' \
+          '      VM_NVME: "${VM_NVME}"' \
+          '      VM_VCPUS: "${VM_VCPUS}"' \
+          '      VM_VMEM: "${VM_VMEM}"' \
+          '      VM_SSH_PORT: "${VM_SSH_PORT}"' \
+          '      VM_MGMT_MAC: "${VM_MGMT_MAC}"' \
+          '      VM_IMAGES_DIR: "'"$VM_IMAGES_DIR"'"' \
           > docker-compose.override.yml
         docker compose up --detach
         echo "Compose stack started"
