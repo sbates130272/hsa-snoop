@@ -36,8 +36,10 @@ case "$1" in
         rm -f /usr/local/etc/logrotate.d/hsa-snoop
 
         systemctl daemon-reload
-        systemctl enable hsa-snoop-prometheus.service
-        systemctl start hsa-snoop-prometheus.service || true
+        if [ -f /usr/local/lib/systemd/system/hsa-snoop-prometheus.service ]; then
+            systemctl enable hsa-snoop-prometheus.service
+            systemctl start hsa-snoop-prometheus.service || true
+        fi
         ;;
 esac
 
