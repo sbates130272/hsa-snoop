@@ -191,6 +191,27 @@ jobs:
         docker pull "$ROCJITSU_IMAGE"
         docker pull "$QEMU_IMAGE"
 
+    - name: Create compose override for TAP networking
+      working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
+      run: |
+        # Switch the qemu service from SLIRP to TAP/bridge networking.
+        # qemu-tool creates qemu-br2222 (172.16.223.1/24) + dnsmasq inside the
+        # container; the guest gets 172.16.223.100 assigned via QGA bootstrap.
+        # This eliminates the SLIRP banner-stall that blocks SSH from outside.
+        printf '%s\n' \
+          'services:' \
+          '  qemu:' \
+          '    cap_add:' \
+          '      - NET_ADMIN' \
+          '      - NET_RAW' \
+          '      - SYS_ADMIN' \
+          '    devices:' \
+          '      - /dev/kvm' \
+          '      - /dev/net/tun' \
+          '    environment:' \
+          '      VM_MGMT_TAP: "true"' \
+          > docker-compose.override.yml
+
     - name: Bring up rocjitsu compose stack
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
       env:
@@ -226,13 +247,14 @@ jobs:
         echo "rocjitsu server healthy"
 
     - name: Bootstrap guest networking and sshd via QEMU Guest Agent
-      # The VM image's netplan matches on macaddress "52:54:00:12:34:56"
-      # (interface name enp0s2), but qemu-tool assigns a different MAC so
-      # the NIC comes up as enp0s3 with no DHCP — SLIRP hostfwd never
-      # forwards the SSH banner.  The QEMU Guest Agent socket lives inside
-      # the qemu compose container; exec into it to reach the socket without
-      # networking.  Remove this step once the VM image uses
-      # `match: driver: virtio_net` in its netplan config.
+      # The VM image's netplan matches on a hardcoded MAC that differs from
+      # qemu-tool's generated MAC, so the NIC (enp0s3) comes up with no DHCP.
+      # Use the QGA — which needs no networking — to assign the TAP bridge IP
+      # (172.16.223.100/24, gw 172.16.223.1) and start sshd, then install an
+      # SSH ProxyCommand that tunnels @qemu connections from the CI container
+      # through docker exec into the qemu container → guest directly over the
+      # bridge (no SLIRP relay).  Remove once the image uses
+      # `match: driver: virtio_net` in netplan.
       run: |
         set -euo pipefail
         qemu_container="vfio-user-rocjitsu-vm-qemu-1"
@@ -285,8 +307,8 @@ jobs:
             time.sleep(2)
 
         for label, cmd in [
-            ('assign IP',  'ip addr add 10.0.2.15/24 dev enp0s3 2>/dev/null || true'),
-            ('add route',  'ip route add default via 10.0.2.2 dev enp0s3 2>/dev/null || true'),
+            ('assign IP',  'ip addr add 172.16.223.100/24 dev enp0s3 2>/dev/null || true'),
+            ('add route',  'ip route add default via 172.16.223.1 dev enp0s3 2>/dev/null || true'),
             ('start sshd', 'systemctl start ssh.service'),
         ]:
             resp = send_recv({'execute': 'guest-exec', 'arguments': {
@@ -310,10 +332,11 @@ jobs:
         # into the qemu container, where SLIRP hostfwd works reliably.
         # This avoids rewriting every ssh/scp call in the workflow.
         mkdir -p "$HOME/.ssh"
-        printf 'Host qemu\n  ProxyCommand docker exec -i vfio-user-rocjitsu-vm-qemu-1 nc 127.0.0.1 2222\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' >> "$HOME/.ssh/config"
-        # nc may not be in the qemu container; install it if absent
+        # ProxyCommand connects to the guest's TAP bridge IP directly (port 22),
+        # bypassing SLIRP entirely.  nc must exist in the qemu container.
         docker exec vfio-user-rocjitsu-vm-qemu-1 sh -c \
           "which nc || (apt-get update -qq && apt-get install -y -qq netcat-openbsd)" 2>/dev/null || true
+        printf 'Host qemu\n  ProxyCommand docker exec -i vfio-user-rocjitsu-vm-qemu-1 nc 172.16.223.100 22\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' >> "$HOME/.ssh/config"
 
     - name: Wait for VM SSH
       # QEMU SLIRP hostfwd stalls SSH banner exchanges from outside the qemu
