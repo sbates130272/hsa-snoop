@@ -40,6 +40,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  FIO_COMMIT: 6bc57a931f04fa3f50348d8c8f087187f050c6e1
+  FIO_REPO: https://github.com/axboe/fio.git
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
   ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260921.gb3399b3-rocjitsu.8e01a5a
   ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260921.g584b3f9-vm.resolute-rocjitsu-qm.5d68689-qcow2
@@ -134,6 +136,7 @@ jobs:
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
       env:
         VM_NAME: hsa-snoop-test
+        VM_NVME: "1"
         QEMU_TOOL_SRC: /var/lib/qemu-tool/src
         VM_VCPUS: "2"
         VM_VMEM: "4096"
@@ -178,6 +181,28 @@ jobs:
         done
         echo "VM failed to boot in time"
         exit 1
+
+    - name: Prepare emulated NVMe filesystem in guest
+      run: |
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
+        set -euo pipefail
+        VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
+        sudo_cmd test -b /dev/nvme0n1
+        sudo_cmd mkdir -p /mnt/nvme
+        if ! sudo_cmd blkid /dev/nvme0n1 >/dev/null 2>&1; then
+          sudo_cmd mkfs.ext4 -F /dev/nvme0n1
+        fi
+        if ! grep -qs ' /mnt/nvme ' /proc/mounts; then
+          sudo_cmd mount /dev/nvme0n1 /mnt/nvme
+        fi
+        sudo_cmd chown "$USER":"$USER" /mnt/nvme
+        findmnt /mnt/nvme
+        df -hT /mnt/nvme
+        EOF
+        echo "✓ emulated NVMe SSD mounted in guest"
 
     - name: Install rocjitsu firmware gap set in guest
       run: |
@@ -234,7 +259,7 @@ jobs:
           ip_block_mask=0x7f \
           vm_update_mode=3 \
           gpu_recovery=0 \
-          vramlimit=1024
+          vramlimit=256
         EOF
         echo "✓ amdgpu probe completed"
 
@@ -273,6 +298,26 @@ jobs:
           exit 1
         fi
         echo "✓ GPU KFD node present ($gpus)"
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
+        set -euo pipefail
+        for card in /sys/class/drm/card*; do
+          vram="$card/device/mem_info_vram_total"
+          vis="$card/device/mem_info_vis_vram_total"
+          if [ -r "$vram" ] && [ -r "$vis" ]; then
+            total=$(cat "$vram")
+            visible=$(cat "$vis")
+            [ "$total" -gt 0 ]
+            [ "$visible" -eq "$total" ]
+            echo "VRAM matches BAR aperture on ${card##*/}: $visible bytes"
+            exit 0
+          fi
+        done
+        echo "failed to find amdgpu VRAM accounting sysfs nodes" >&2
+        exit 1
+        EOF
+        echo "✓ visible VRAM matches total VRAM"
 
     - name: Copy hsa-snoop source into VM
       run: |
@@ -292,6 +337,36 @@ jobs:
           -DHSA_SNOOP_HARDWARE_TESTS=ON \
           -DHSA_SNOOP_PROMETHEUS=ON
         cmake --build /tmp/hsa-snoop/build --parallel $(nproc)
+        EOF
+
+    - name: Build fio hipfile test tool in VM
+      run: |
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 FIO_REPO=$FIO_REPO FIO_COMMIT=$FIO_COMMIT bash -s" <<'EOF'
+        set -euo pipefail
+        VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
+        sudo_cmd apt-get update
+        sudo_cmd apt-get install -y --no-install-recommends \
+          amdrocm-hipfile-dev \
+          libaio-dev \
+          libnuma-dev \
+          pkg-config \
+          zlib1g-dev
+        rm -rf /tmp/fio
+        git init /tmp/fio
+        git -C /tmp/fio remote add origin "$FIO_REPO"
+        git -C /tmp/fio fetch --depth 1 origin "$FIO_COMMIT"
+        git -C /tmp/fio checkout FETCH_HEAD
+        cd /tmp/fio
+        ROCM_PATH=$(readlink -f /opt/rocm 2>/dev/null || true)
+        [ -n "$ROCM_PATH" ] || ROCM_PATH=/opt/rocm
+        export ROCM_PATH
+        ./configure --disable-native --enable-libhipfile
+        make -j"$(nproc)"
+        ./fio --enghelp | grep -qE '^[[:space:]]*libhipfile$'
+        test -f examples/libhipfile-hipfile.fio
         EOF
 
     - name: Run unit tests in VM
@@ -315,7 +390,7 @@ jobs:
         sudo_cmd ctest -R sdma-hardware-test --output-on-failure
         EOF
 
-    - name: Run hsa-snoop mode coverage in VM
+    - name: Run hsa-snoop mode, Prometheus, and AIS coverage in VM
       run: |
         ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
           -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
@@ -327,8 +402,12 @@ jobs:
 
         build_dir=/tmp/hsa-snoop/build
         artifact_dir=/tmp/hsa-snoop-artifacts
+        fio_dir=/tmp/fio
         binary="$build_dir/hsa-snoop"
+        ais="$build_dir/examples/ais-test"
+        fio="$fio_dir/fio"
         gfx="$build_dir/examples/gfx-test"
+        nvme_dir=/mnt/nvme
         sdma="$build_dir/examples/sdma-test"
 
         cleanup_prom() {
@@ -348,6 +427,9 @@ jobs:
 
         rm -rf "$artifact_dir"
         mkdir -p "$artifact_dir"/all
+        test -x "$ais"
+        test -x "$fio"
+        test -d "$nvme_dir"
 
         sudo_cmd "$binary" \
           --format json \
@@ -392,6 +474,8 @@ jobs:
 
         sudo_cmd "$binary" \
           --all \
+          --mem-snoop \
+          --ais-snoop \
           --prometheus \
           --prometheus-port 9488 \
           --duration 20 &
@@ -409,6 +493,37 @@ jobs:
         PY
         "$gfx" --loops 2 --batch 4 --sleep-ms 50
         "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0
+        "$fio" \
+          --name=hipfile-write \
+          --filename="$nvme_dir/hipfile.bin" \
+          --ioengine=libhipfile \
+          --gpu_dev_ids=0 \
+          --rocm_io=hipfile \
+          --rw=write \
+          --direct=1 \
+          --bs=1m \
+          --size=64m \
+          --iodepth=1 \
+          --numjobs=1 \
+          --thread=1 \
+          --output-format=json \
+          --output="$artifact_dir/hipfile-write.json"
+        "$fio" \
+          --name=hipfile-read \
+          --filename="$nvme_dir/hipfile.bin" \
+          --ioengine=libhipfile \
+          --gpu_dev_ids=0 \
+          --rocm_io=hipfile \
+          --rw=read \
+          --direct=1 \
+          --bs=1m \
+          --size=64m \
+          --iodepth=1 \
+          --numjobs=1 \
+          --thread=1 \
+          --output-format=json \
+          --output="$artifact_dir/hipfile-read.json"
+        sudo_cmd "$ais" -b -s 0 -D 20 "$nvme_dir/ais-test.bin" | tr '\r' '\n' > "$artifact_dir/ais-test.log"
         python3 - <<'PY' > "$artifact_dir/prometheus.txt"
         import sys, time, urllib.request
         for _ in range(30):
@@ -417,7 +532,7 @@ jobs:
             except Exception:
                 time.sleep(1)
                 continue
-            if "hsa_kernel_launches_total" in data and "hsa_sdma_copies_total" in data:
+            if "hsa_kernel_launches_total" in data and "hsa_sdma_copies_total" in data and "ais_snoop_armed" in data:
                 sys.stdout.write(data)
                 sys.exit(0)
             time.sleep(1)
@@ -429,6 +544,39 @@ jobs:
         grep -q '^hsa_snoop_up ' "$artifact_dir/prometheus.txt"
         grep -q 'hsa_kernel_launches_total' "$artifact_dir/prometheus.txt"
         grep -q 'hsa_sdma_copies_total' "$artifact_dir/prometheus.txt"
+        python3 - <<'PY' "$artifact_dir/prometheus.txt"
+        import sys
+
+        metrics = {}
+        with open(sys.argv[1], "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                name, value = line.rsplit(" ", 1)
+                metric = name.split("{", 1)[0]
+                metrics.setdefault(metric, []).append(float(value))
+
+        def require(metric, predicate, message):
+            values = metrics.get(metric, [])
+            if not values or not any(predicate(v) for v in values):
+                raise SystemExit(f"{metric}: {message}")
+
+        require("hsa_snoop_up", lambda v: v >= 1, "exporter never reported up")
+        require("hsa_kernel_launches_total", lambda v: v > 0, "kernel launches missing")
+        require("hsa_sdma_copies_total", lambda v: v > 0, "sdma copies missing")
+        require("ais_snoop_armed", lambda v: v == 1, "AIS snoop not armed")
+        require("ais_active", lambda v: v == 1, "AIS activity never observed")
+        require("ais_rx_ops_total", lambda v: v > 0, "hipfile/AIS reads missing")
+        require("ais_tx_ops_total", lambda v: v > 0, "hipfile/AIS writes missing")
+        require("ais_rx_bytes_total", lambda v: v > 0, "AIS read bytes missing")
+        require("ais_tx_bytes_total", lambda v: v > 0, "AIS write bytes missing")
+        require("ais_rx_latency_seconds_count", lambda v: v > 0, "AIS read latency histogram empty")
+        require("ais_tx_latency_seconds_count", lambda v: v > 0, "AIS write latency histogram empty")
+        require("ais_rx_io_size_bytes_count", lambda v: v > 0, "AIS read size histogram empty")
+        require("ais_tx_io_size_bytes_count", lambda v: v > 0, "AIS write size histogram empty")
+        require("ais_pcie_device_info", lambda v: v == 1, "AIS PCIe device info missing")
+        PY
         EOF
 
     - name: Collect test results
