@@ -1,4 +1,4 @@
-name: vm-hardware-test
+name: hsa-snoop - vm-hardware-test
 
 on:
   workflow_dispatch:

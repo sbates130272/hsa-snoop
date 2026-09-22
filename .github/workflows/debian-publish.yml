@@ -1,4 +1,4 @@
-name: debian-publish
+name: hsa-snoop - debian-publish
 
 on:
   workflow_dispatch:

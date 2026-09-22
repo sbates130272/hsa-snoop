@@ -1,4 +1,4 @@
-name: clang-format
+name: hsa-snoop - clang-format
 
 on:
   workflow_dispatch:

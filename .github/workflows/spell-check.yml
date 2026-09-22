@@ -1,4 +1,4 @@
-name: spell-check
+name: hsa-snoop - spell-check
 
 on:
   workflow_dispatch:
