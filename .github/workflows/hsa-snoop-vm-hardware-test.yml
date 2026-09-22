@@ -350,7 +350,7 @@ jobs:
         echo "✓ amdgpu DKMS module installed"
 
     - name: Patch amdgpu DKMS source and rebuild for rocjitsu
-      timeout-minutes: 10
+      timeout-minutes: 20
       run: |
         vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
           "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" \
