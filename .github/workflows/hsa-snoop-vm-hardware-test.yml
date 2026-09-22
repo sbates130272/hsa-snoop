@@ -96,6 +96,7 @@ jobs:
         artifact_dir=$(mktemp -d)
         meta_dir=
         cd "$artifact_dir"
+        oras manifest fetch "$ROCJITSU_VM_IMAGE" > manifest.json
         oras pull "$ROCJITSU_VM_IMAGE"
         for ref_digest in $(
           oras discover --format json "$ROCJITSU_VM_IMAGE" \
@@ -112,17 +113,26 @@ jobs:
         [ -n "$meta_dir" ] || { echo "failed to find vm-info.json referrer for $ROCJITSU_VM_IMAGE" >&2; exit 1; }
         zstd -d --long=27 --rm ./*.qcow2.zst
         install -d -m 700 "$HOME/.ssh"
-        META_DIR="$meta_dir" python3 - <<'PY' > "$artifact_dir/vm-info.env"
+        META_DIR="$meta_dir" MANIFEST_JSON="$artifact_dir/manifest.json" python3 - <<'PY' > "$artifact_dir/vm-info.env"
         import json
         import base64
         import os
         from pathlib import Path
 
+        manifest = json.loads(Path(os.environ["MANIFEST_JSON"]).read_text())
         info = json.loads(Path(os.environ["META_DIR"], "vm-info.json").read_text())
+        annotations = manifest.get("annotations") or {}
+        username = annotations.get("vm.username")
+        if not username:
+            raise SystemExit("manifest is missing vm.username")
+        if info.get("username") and info["username"] != username:
+            raise SystemExit(
+                f"manifest vm.username {username!r} does not match vm-info username {info['username']!r}"
+            )
         keys = info.get("ssh_keys") or {}
         private_key = Path(keys.get("private_key_path", "/output/id_rsa")).name
         public_key = Path(keys.get("public_key_path", "/output/id_rsa.pub")).name
-        print(f"VM_USERNAME={info['username']}")
+        print(f"VM_USERNAME={username}")
         print(f"VM_PASSWORD_B64={base64.b64encode(info['password'].encode()).decode()}")
         print(f"VM_PRIVATE_KEY_FILE={private_key}")
         print(f"VM_PUBLIC_KEY_FILE={public_key}")
