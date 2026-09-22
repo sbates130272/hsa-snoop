@@ -4,7 +4,11 @@ set -e
 STATE_DIR=/var/lib/hsa-snoop
 ENABLED_STATE_FILE=${STATE_DIR}/service-was-enabled
 ACTIVE_STATE_FILE=${STATE_DIR}/service-was-active
-FRESH_INSTALL=0
+FIRST_INSTALL=0
+
+if [ -z "${2:-}" ]; then
+    FIRST_INSTALL=1
+fi
 
 case "$1" in
     configure)
@@ -13,7 +17,6 @@ case "$1" in
         # listed in debian/conffiles automatically; this guard handles the case
         # where the file is missing entirely (e.g. first install on a clean node).
         if [ ! -f /etc/default/hsa-snoop ]; then
-            FRESH_INSTALL=1
             install -m 0644 \
                 /usr/share/hsa-snoop/hsa-snoop.conf \
                 /etc/default/hsa-snoop
@@ -42,7 +45,7 @@ case "$1" in
         systemctl daemon-reload
         if [ -f /lib/systemd/system/hsa-snoop-prometheus.service ] || \
            [ -f /usr/lib/systemd/system/hsa-snoop-prometheus.service ]; then
-            if [ "$FRESH_INSTALL" -eq 1 ]; then
+            if [ "$FIRST_INSTALL" -eq 1 ]; then
                 systemctl enable hsa-snoop-prometheus.service
                 systemctl start hsa-snoop-prometheus.service || true
             else

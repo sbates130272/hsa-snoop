@@ -425,8 +425,8 @@ Requires a build with `-DHSA_SNOOP_PROMETHEUS=ON`.
 cmake -B build -DHSA_SNOOP_PROMETHEUS=ON -DCMAKE_INSTALL_PREFIX=/usr/local
 cmake --build build --parallel
 
-# Install binary and unit files
-sudo cmake --install build --prefix /usr/local
+# Install binary and unit files to the prefix chosen above
+sudo cmake --install build
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now hsa-snoop-prometheus
