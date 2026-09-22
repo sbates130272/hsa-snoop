@@ -163,6 +163,8 @@ XNACK
 yml
 BW
 CSV
+JSONL
+KVM
 deref
 dkms
 env
