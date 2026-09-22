@@ -361,11 +361,11 @@ jobs:
         sed -i 's/^Version:.*/Version: 0~vmtest/' /tmp/hsa-snoop-pkg/DEBIAN/control
         dpkg-deb --build --root-owner-group /tmp/hsa-snoop-pkg /tmp/hsa-snoop_0~vmtest_amd64.deb
         sudo_cmd dpkg -i /tmp/hsa-snoop_0~vmtest_amd64.deb
-        sudo_cmd systemctl stop hsa-snoop.service || true
+        sudo_cmd systemctl stop hsa-snoop-prometheus.service || true
         sudo_cmd test -x /usr/local/bin/hsa-snoop
-        sudo_cmd systemctl cat hsa-snoop.service > /tmp/hsa-snoop-service.txt
+        sudo_cmd systemctl cat hsa-snoop-prometheus.service > /tmp/hsa-snoop-service.txt
         test -s /tmp/hsa-snoop_0~vmtest_amd64.deb
-        grep -q 'ExecStart=/usr/local/bin/hsa-snoop \$HSA_SNOOP_ARGS' /tmp/hsa-snoop-service.txt
+        grep -q "ExecStart=/bin/sh -lc 'exec /usr/local/bin/hsa-snoop --all --prometheus \$HSA_SNOOP_ARGS'" /tmp/hsa-snoop-service.txt
         grep -q '^HSA_SNOOP_ARGS=' /etc/default/hsa-snoop
         EOF
 
@@ -444,7 +444,7 @@ jobs:
         cleanup_prom() {
           status=$?
           if [ "${service_started:-0}" -eq 1 ]; then
-            sudo_cmd systemctl stop hsa-snoop.service || true
+            sudo_cmd systemctl stop hsa-snoop-prometheus.service || true
           fi
           exit "$status"
         }
@@ -543,11 +543,11 @@ jobs:
         esac
         printf '%s\n' "$repo_args" > "$service_artifact_dir/repo-hsa-snoop-args.txt"
         printf '%s\n' "$installed_args" > "$service_artifact_dir/installed-hsa-snoop-args.txt"
-        sudo_cmd systemctl cat hsa-snoop.service > "$service_artifact_dir/hsa-snoop.service"
+        sudo_cmd systemctl cat hsa-snoop-prometheus.service > "$service_artifact_dir/hsa-snoop-prometheus.service"
         cp /etc/default/hsa-snoop "$service_artifact_dir/hsa-snoop.default"
         cp /tmp/hsa-snoop_0~vmtest_amd64.deb "$service_artifact_dir/"
 
-        sudo_cmd systemctl restart hsa-snoop.service
+        sudo_cmd systemctl restart hsa-snoop-prometheus.service
         service_started=1
         trap cleanup_prom EXIT
         python3 - <<'PY'
@@ -560,7 +560,7 @@ jobs:
                 time.sleep(1)
         sys.exit(1)
         PY
-        sudo_cmd systemctl is-active --quiet hsa-snoop.service
+        sudo_cmd systemctl is-active --quiet hsa-snoop-prometheus.service
         "$gfx" --loops 2 --batch 4 --sleep-ms 50
         "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0
         "$fio" \
@@ -608,8 +608,8 @@ jobs:
             time.sleep(1)
         sys.exit(1)
         PY
-        sudo_cmd journalctl -u hsa-snoop.service --no-pager > "$service_artifact_dir/hsa-snoop.journal.txt"
-        sudo_cmd systemctl stop hsa-snoop.service
+        sudo_cmd journalctl -u hsa-snoop-prometheus.service --no-pager > "$service_artifact_dir/hsa-snoop-prometheus.journal.txt"
+        sudo_cmd systemctl stop hsa-snoop-prometheus.service
         service_started=0
         trap - EXIT
         grep -q '^hsa_snoop_up ' "$artifact_dir/prometheus.txt"
