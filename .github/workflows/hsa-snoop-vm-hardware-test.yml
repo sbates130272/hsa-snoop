@@ -6,9 +6,9 @@ on:
     branches:
       - main
     paths:
-      - '**.cpp'
-      - '**.h'
-      - '**.hip'
+      - '**/*.cpp'
+      - '**/*.h'
+      - '**/*.hip'
       - 'CMakeLists.txt'
       - 'examples/**'
       - 'src/**'
@@ -18,9 +18,9 @@ on:
     branches:
       - main
     paths:
-      - '**.cpp'
-      - '**.h'
-      - '**.hip'
+      - '**/*.cpp'
+      - '**/*.h'
+      - '**/*.hip'
       - 'CMakeLists.txt'
       - 'examples/**'
       - 'src/**'
