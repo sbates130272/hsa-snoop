@@ -94,12 +94,14 @@ if(HSA_SNOOP_PROMETHEUS)
 endif()
 
 install(TARGETS hsa-snoop RUNTIME DESTINATION bin)
-install(FILES systemd/hsa-snoop-prometheus.service
-        DESTINATION lib/systemd/system)
-# Install the config template to share/hsa-snoop/; postinst copies it to
-# /etc/default/hsa-snoop on first install with auto-detected UID/GID values.
-install(FILES systemd/hsa-snoop.conf
-        DESTINATION share/hsa-snoop)
+if(HSA_SNOOP_PROMETHEUS)
+  install(FILES systemd/hsa-snoop-prometheus.service
+          DESTINATION lib/systemd/system)
+  # Install the config template to share/hsa-snoop/; postinst copies it to
+  # /etc/default/hsa-snoop on first install with auto-detected UID/GID values.
+  install(FILES systemd/hsa-snoop.conf
+          DESTINATION share/hsa-snoop)
+endif()
 install(FILES grafana/hsa-snoop-dashboard.json
         DESTINATION share/hsa-snoop/grafana)
 
