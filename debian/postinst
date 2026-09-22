@@ -36,6 +36,10 @@ case "$1" in
 
         systemctl stop hsa-snoop.service || true
         systemctl disable hsa-snoop.service || true
+        rm -f /etc/systemd/system/hsa-snoop.service
+        rm -f /etc/systemd/system/multi-user.target.wants/hsa-snoop.service
+        rm -f /lib/systemd/system/hsa-snoop.service
+        rm -f /usr/lib/systemd/system/hsa-snoop.service
         rm -f /etc/logrotate.d/hsa-snoop
         rm -f /usr/local/etc/logrotate.d/hsa-snoop
 
@@ -47,8 +51,8 @@ case "$1" in
                 systemctl start hsa-snoop-prometheus.service || true
             elif [ -f "$ENABLED_STATE_FILE" ]; then
                 systemctl enable hsa-snoop-prometheus.service
-                systemctl start hsa-snoop-prometheus.service || true
-            elif [ -f "$ACTIVE_STATE_FILE" ]; then
+            fi
+            if [ -f "$ACTIVE_STATE_FILE" ]; then
                 systemctl start hsa-snoop-prometheus.service || true
             fi
         fi
