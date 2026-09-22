@@ -194,41 +194,24 @@ jobs:
     - name: Create compose override for TAP networking
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
       run: |
-        # Switch the qemu service from SLIRP to TAP/bridge networking.
-        # qemu-tool creates qemu-br2222 (172.16.223.1/24) + dnsmasq inside the
-        # container; the guest gets 172.16.223.100 assigned via QGA bootstrap.
-        # This eliminates the SLIRP banner-stall that blocks SSH from outside.
-        # Override the qemu service to add TAP networking capabilities and
-        # pass --mgmt-tap explicitly in the entrypoint (env var alone is not
-        # reliably picked up by qemu-tool from the container environment).
-        python3 - > docker-compose.override.yml <<'PY'
-        import json
-        cfg = {
-            "services": {
-                "qemu": {
-                    "cap_add": ["NET_ADMIN", "NET_RAW", "SYS_ADMIN"],
-                    "devices": ["/dev/kvm", "/dev/net/tun"],
-                    "entrypoint": [
-                        "/bin/sh", "-c",
-                        "cp -r /qemu-tool-src/qemu /tmp/qemu-tool-build && "
-                        "PIPX_BIN_DIR=/usr/local/bin pipx install --force /tmp/qemu-tool-build && "
-                        "socks=$(ls /run/vfu/*.sock 2>/dev/null | tr '\\n' ',' | sed 's/,$//') && "
-                        "[ -n \"$socks\" ] || { echo 'ERROR: no vfio-user sockets' >&2; exit 1; } && "
-                        'exec qemu-tool run-vm '
-                        '--images "${VM_IMAGES_DIR:-/var/lib/qemu-tool/images}" '
-                        '--vm-name "${VM_NAME:-qemu-minimal}" '
-                        '--vcpus "${VM_VCPUS:-4}" '
-                        '--vmem "${VM_VMEM:-8192}" '
-                        '--ssh-port 2222 '
-                        '--mgmt-tap '
-                        '--vfio-userdev "$socks" '
-                        '${VM_NVME:+--nvme "$VM_NVME"}'
-                    ],
-                }
-            }
-        }
-        print(json.dumps(cfg, indent=2))
-        PY
+        # Copy the entrypoint script (which passes --mgmt-tap) into the
+        # shared volume so the qemu container can execute it.  Using a file
+        # avoids Compose variable interpolation eating shell variables like
+        # $socks that are assigned inside the script itself.
+        cp ../../../../hsa-snoop/ci/qemu-entrypoint.sh /var/lib/qemu-tool/qemu-entrypoint.sh
+        chmod +x /var/lib/qemu-tool/qemu-entrypoint.sh
+        printf '%s\n' \
+          'services:' \
+          '  qemu:' \
+          '    cap_add:' \
+          '      - NET_ADMIN' \
+          '      - NET_RAW' \
+          '      - SYS_ADMIN' \
+          '    devices:' \
+          '      - /dev/kvm' \
+          '      - /dev/net/tun' \
+          '    entrypoint: ["/var/lib/qemu-tool/qemu-entrypoint.sh"]' \
+          > docker-compose.override.yml
 
     - name: Bring up rocjitsu compose stack
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
