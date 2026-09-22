@@ -442,7 +442,7 @@ curl http://localhost:9488/metrics
 The packaged/systemd-managed daemon is `hsa-snoop-prometheus.service`.
 Prometheus-enabled installs also stage `/etc/default/hsa-snoop`; edit it to tune
 the daemon (poll interval, optional snoops, etc.), then run
-`sudo systemctl restart hsa-snoop-prometheus`.
+`sudo systemctl restart hsa-snoop-prometheus.service`.
 
 To change the port, set it in `HSA_SNOOP_ARGS` or override `ExecStart` in a
 drop-in:
