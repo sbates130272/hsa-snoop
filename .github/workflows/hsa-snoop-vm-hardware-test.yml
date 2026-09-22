@@ -302,16 +302,22 @@ jobs:
         sock.close()
         print('Guest network and sshd bootstrapped')
         PY
+        # Copy the SSH key into the qemu container so the wait step can use it
+        docker cp "$HOME/.ssh/id_rsa" vfio-user-rocjitsu-vm-qemu-1:/tmp/vm-id_rsa
+        docker exec vfio-user-rocjitsu-vm-qemu-1 chmod 600 /tmp/vm-id_rsa
 
     - name: Wait for VM SSH
+      # SSH via the compose network hostname hits QEMU's SLIRP hostfwd, which
+      # accepts the TCP connection but stalls on the banner in this environment.
+      # Test reachability from inside the qemu container (127.0.0.1:$VM_SSH_PORT)
+      # where SLIRP hostfwd works reliably, then confirm with a real SSH command.
       run: |
         elapsed=0
         while [ $elapsed -lt 180 ]; do
-          if ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-                 -o ConnectTimeout=3 \
-                 -o NoHostAuthenticationForLocalhost=yes \
-                 -o StrictHostKeyChecking=no \
-                 -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu true 2>/dev/null; then
+          if docker exec vfio-user-rocjitsu-vm-qemu-1 \
+               ssh -i /tmp/vm-id_rsa -o IdentitiesOnly=yes \
+                   -o StrictHostKeyChecking=no -o ConnectTimeout=3 \
+                   -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 true 2>/dev/null; then
             echo "VM ready after ${elapsed}s"
             exit 0
           fi
