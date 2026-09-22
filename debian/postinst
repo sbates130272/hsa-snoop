@@ -9,7 +9,7 @@ case "$1" in
         # where the file is missing entirely (e.g. first install on a clean node).
         if [ ! -f /etc/default/hsa-snoop ]; then
             install -m 0644 \
-                /usr/local/share/hsa-snoop/hsa-snoop.conf \
+                /usr/share/hsa-snoop/hsa-snoop.conf \
                 /etc/default/hsa-snoop
 
             # Auto-detect the primary GPU-capable console user's UID/GID so

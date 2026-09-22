@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(GNUInstallDirs)
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING
       "Build type (Debug|Release|RelWithDebInfo|MinSizeRel)" FORCE)
@@ -88,22 +90,26 @@ if(BUILD_TESTING)
 endif()
 
 if(HSA_SNOOP_PROMETHEUS)
+  set(HSA_SNOOP_EXECUTABLE "${CMAKE_INSTALL_FULL_BINDIR}/hsa-snoop")
+  configure_file(systemd/hsa-snoop-prometheus.service
+                 "${CMAKE_CURRENT_BINARY_DIR}/hsa-snoop-prometheus.service"
+                 @ONLY)
   target_compile_definitions(hsa-snoop PRIVATE HSA_SNOOP_PROMETHEUS_ENABLED)
   target_link_libraries(hsa-snoop PRIVATE prometheus-cpp::core prometheus-cpp::pull)
   message(STATUS "Prometheus exporter enabled (default port: 9488)")
 endif()
 
-install(TARGETS hsa-snoop RUNTIME DESTINATION bin)
+install(TARGETS hsa-snoop RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 if(HSA_SNOOP_PROMETHEUS)
-  install(FILES systemd/hsa-snoop-prometheus.service
+  install(FILES "${CMAKE_CURRENT_BINARY_DIR}/hsa-snoop-prometheus.service"
           DESTINATION lib/systemd/system)
   # Install the config template to share/hsa-snoop/; postinst copies it to
   # /etc/default/hsa-snoop on first install with auto-detected UID/GID values.
   install(FILES systemd/hsa-snoop.conf
-          DESTINATION share/hsa-snoop)
+          DESTINATION ${CMAKE_INSTALL_DATADIR}/hsa-snoop)
 endif()
 install(FILES grafana/hsa-snoop-dashboard.json
-        DESTINATION share/hsa-snoop/grafana)
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/hsa-snoop/grafana)
 
 list(APPEND CMAKE_PREFIX_PATH /opt/rocm)
 find_package(hip QUIET)
