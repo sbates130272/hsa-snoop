@@ -225,12 +225,86 @@ jobs:
         [ "$health" = "healthy" ] || (docker compose logs rocjitsu && exit 1)
         echo "rocjitsu server healthy"
 
+    - name: Bootstrap guest networking and sshd via QEMU Guest Agent
+      # The VM image's netplan matches on macaddress "52:54:00:12:34:56"
+      # (interface name enp0s2), but qemu-tool assigns a different MAC so
+      # the NIC comes up as enp0s3 with no DHCP — SLIRP hostfwd never
+      # forwards the SSH banner.  The QEMU Guest Agent works without networking,
+      # so use it to assign the SLIRP static IP (10.0.2.15/24, gw 10.0.2.2)
+      # and start sshd before the SSH wait loop below.
+      # Remove this step once the VM image uses `match: driver: virtio_net`.
+      run: |
+        set -euo pipefail
+        qga_sock="/tmp/qga-hsa-snoop-test-2222.sock"
+        elapsed=0
+        while [ $elapsed -lt 120 ]; do
+          [ -S "$qga_sock" ] && break
+          sleep 2; elapsed=$((elapsed + 2))
+        done
+        [ -S "$qga_sock" ] || { echo "QGA socket never appeared"; exit 1; }
+
+        python3 - "$qga_sock" <<'PY'
+        import socket, json, base64, sys, time
+
+        qga_path = sys.argv[1]
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(qga_path)
+        sock.settimeout(5)
+
+        def send_recv(obj):
+            sock.send((json.dumps(obj) + '\n').encode())
+            buf = b''
+            for _ in range(40):
+                try:
+                    buf += sock.recv(4096)
+                    return json.loads(buf.decode())
+                except (json.JSONDecodeError, socket.timeout):
+                    pass
+            return None
+
+        send_recv({'execute': 'guest-sync', 'arguments': {'id': 1}})
+
+        # Wait for multi-user.target before touching the network
+        for _ in range(60):
+            resp = send_recv({'execute': 'guest-exec', 'arguments': {
+                'path': '/bin/systemctl',
+                'arg': ['is-active', 'multi-user.target'],
+                'capture-output': True,
+            }})
+            if resp and 'return' in resp:
+                time.sleep(1)
+                r2 = send_recv({'execute': 'guest-exec-status',
+                                'arguments': {'pid': resp['return']['pid']}})
+                if r2 and r2['return'].get('exitcode') == 0:
+                    print('Guest reached multi-user.target')
+                    break
+            time.sleep(2)
+
+        for label, cmd in [
+            ('assign IP',  'ip addr add 10.0.2.15/24 dev enp0s3 2>/dev/null || true'),
+            ('add route',  'ip route add default via 10.0.2.2 dev enp0s3 2>/dev/null || true'),
+            ('start sshd', 'systemctl start ssh.service'),
+        ]:
+            resp = send_recv({'execute': 'guest-exec', 'arguments': {
+                'path': '/bin/bash', 'arg': ['-c', cmd], 'capture-output': True,
+            }})
+            time.sleep(1)
+            if resp and 'return' in resp:
+                r2 = send_recv({'execute': 'guest-exec-status',
+                                'arguments': {'pid': resp['return']['pid']}})
+                ec = r2['return'].get('exitcode') if r2 else '?'
+                print(f'{label}: exit={ec}')
+
+        sock.close()
+        print('Guest network and sshd bootstrapped')
+        PY
+
     - name: Wait for VM SSH
       run: |
         elapsed=0
         while [ $elapsed -lt 180 ]; do
           if ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
-                 -o ConnectTimeout=1 \
+                 -o ConnectTimeout=3 \
                  -o NoHostAuthenticationForLocalhost=yes \
                  -o StrictHostKeyChecking=no \
                  -p "$VM_SSH_PORT" "$VM_USERNAME"@qemu true 2>/dev/null; then
