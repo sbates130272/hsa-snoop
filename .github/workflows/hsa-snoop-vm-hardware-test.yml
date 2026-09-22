@@ -339,6 +339,36 @@ jobs:
         cmake --build /tmp/hsa-snoop/build --parallel $(nproc)
         EOF
 
+    - name: Build and install hsa-snoop .deb in VM
+      run: |
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
+        set -euo pipefail
+        VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
+        sudo_cmd apt-get update
+        sudo_cmd apt-get install -y --no-install-recommends bpftrace dpkg-dev
+        rm -rf /tmp/hsa-snoop-pkg
+        mkdir -p /tmp/hsa-snoop-pkg/usr/local /tmp/hsa-snoop-pkg/DEBIAN
+        cmake --install /tmp/hsa-snoop/build --prefix /tmp/hsa-snoop-pkg/usr/local
+        cp /tmp/hsa-snoop/debian/control \
+          /tmp/hsa-snoop/debian/postinst \
+          /tmp/hsa-snoop/debian/prerm \
+          /tmp/hsa-snoop/debian/conffiles \
+          /tmp/hsa-snoop-pkg/DEBIAN/
+        chmod 0755 /tmp/hsa-snoop-pkg/DEBIAN/postinst /tmp/hsa-snoop-pkg/DEBIAN/prerm
+        sed -i 's/^Version:.*/Version: 0~vmtest/' /tmp/hsa-snoop-pkg/DEBIAN/control
+        dpkg-deb --build --root-owner-group /tmp/hsa-snoop-pkg /tmp/hsa-snoop_0~vmtest_amd64.deb
+        sudo_cmd dpkg -i /tmp/hsa-snoop_0~vmtest_amd64.deb
+        sudo_cmd systemctl stop hsa-snoop.service || true
+        sudo_cmd test -x /usr/local/bin/hsa-snoop
+        sudo_cmd systemctl cat hsa-snoop.service > /tmp/hsa-snoop-service.txt
+        test -s /tmp/hsa-snoop_0~vmtest_amd64.deb
+        grep -q 'ExecStart=/usr/local/bin/hsa-snoop \$HSA_SNOOP_ARGS' /tmp/hsa-snoop-service.txt
+        grep -q '^HSA_SNOOP_ARGS=' /etc/default/hsa-snoop
+        EOF
+
     - name: Build fio hipfile test tool in VM
       run: |
         ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
@@ -409,24 +439,18 @@ jobs:
         gfx="$build_dir/examples/gfx-test"
         nvme_dir=/mnt/nvme
         sdma="$build_dir/examples/sdma-test"
+        service_artifact_dir="$artifact_dir/systemd"
 
         cleanup_prom() {
           status=$?
-          if [ "${prom_pid:-}" ]; then
-            if kill -0 "$prom_pid" 2>/dev/null; then
-              kill "$prom_pid" 2>/dev/null || true
-            fi
-            wait "$prom_pid"
-            prom_status=$?
-            if [ "$status" -eq 0 ] && [ "$prom_status" -ne 0 ]; then
-              status=$prom_status
-            fi
+          if [ "${service_started:-0}" -eq 1 ]; then
+            sudo_cmd systemctl stop hsa-snoop.service || true
           fi
           exit "$status"
         }
 
         rm -rf "$artifact_dir"
-        mkdir -p "$artifact_dir"/all
+        mkdir -p "$artifact_dir"/all "$service_artifact_dir"
         test -x "$ais"
         test -x "$fio"
         test -d "$nvme_dir"
@@ -472,14 +496,59 @@ jobs:
         find "$artifact_dir/all" -type f -name '*.json' | grep -q .
         grep -R -Eq '"name":"(vadd|vscale|vdot|copy_linear)"' "$artifact_dir/all"
 
-        sudo_cmd "$binary" \
-          --all \
-          --mem-snoop \
-          --ais-snoop \
-          --prometheus \
-          --prometheus-port 9488 \
-          --duration 20 &
-        prom_pid=$!
+        repo_args=$(python3 - <<'PY'
+        import shlex
+        from pathlib import Path
+
+        for line in Path("/tmp/hsa-snoop/systemd/hsa-snoop.conf").read_text().splitlines():
+            if line.startswith("HSA_SNOOP_ARGS="):
+                print(" ".join(shlex.split(line.split("=", 1)[1].strip().strip('"'))))
+                break
+        else:
+            raise SystemExit("HSA_SNOOP_ARGS not found in repo config")
+        PY
+        )
+        installed_args=$(python3 - <<'PY'
+        import shlex
+        from pathlib import Path
+
+        for line in Path("/etc/default/hsa-snoop").read_text().splitlines():
+            if line.startswith("HSA_SNOOP_ARGS="):
+                print(" ".join(shlex.split(line.split("=", 1)[1].strip().strip('"'))))
+                break
+        else:
+            raise SystemExit("HSA_SNOOP_ARGS not found in installed config")
+        PY
+        )
+        [ "$installed_args" = "$repo_args" ]
+        case " $installed_args " in
+          *" --all "* ) ;;
+          * ) echo "missing --all in installed service args" >&2; exit 1 ;;
+        esac
+        case " $installed_args " in
+          *" --prometheus "* ) ;;
+          * ) echo "missing --prometheus in installed service args" >&2; exit 1 ;;
+        esac
+        case " $installed_args " in
+          *" --ais-snoop "* ) ;;
+          * ) echo "missing --ais-snoop in installed service args" >&2; exit 1 ;;
+        esac
+        case " $installed_args " in
+          *" --mem-snoop "* ) ;;
+          * ) echo "missing --mem-snoop in installed service args" >&2; exit 1 ;;
+        esac
+        case " $installed_args " in
+          *" --xnack-snoop "* ) ;;
+          * ) echo "missing --xnack-snoop in installed service args" >&2; exit 1 ;;
+        esac
+        printf '%s\n' "$repo_args" > "$service_artifact_dir/repo-hsa-snoop-args.txt"
+        printf '%s\n' "$installed_args" > "$service_artifact_dir/installed-hsa-snoop-args.txt"
+        sudo_cmd systemctl cat hsa-snoop.service > "$service_artifact_dir/hsa-snoop.service"
+        cp /etc/default/hsa-snoop "$service_artifact_dir/hsa-snoop.default"
+        cp /tmp/hsa-snoop_0~vmtest_amd64.deb "$service_artifact_dir/"
+
+        sudo_cmd systemctl restart hsa-snoop.service
+        service_started=1
         trap cleanup_prom EXIT
         python3 - <<'PY'
         import sys, time, urllib.request
@@ -491,6 +560,7 @@ jobs:
                 time.sleep(1)
         sys.exit(1)
         PY
+        sudo_cmd systemctl is-active --quiet hsa-snoop.service
         "$gfx" --loops 2 --batch 4 --sleep-ms 50
         "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0
         "$fio" \
@@ -538,8 +608,9 @@ jobs:
             time.sleep(1)
         sys.exit(1)
         PY
-        wait "$prom_pid"
-        prom_pid=
+        sudo_cmd journalctl -u hsa-snoop.service --no-pager > "$service_artifact_dir/hsa-snoop.journal.txt"
+        sudo_cmd systemctl stop hsa-snoop.service
+        service_started=0
         trap - EXIT
         grep -q '^hsa_snoop_up ' "$artifact_dir/prometheus.txt"
         grep -q 'hsa_kernel_launches_total' "$artifact_dir/prometheus.txt"
