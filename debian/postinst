@@ -38,8 +38,12 @@ case "$1" in
         systemctl daemon-reload
         if [ -f /lib/systemd/system/hsa-snoop-prometheus.service ] || \
            [ -f /usr/lib/systemd/system/hsa-snoop-prometheus.service ]; then
-            systemctl enable hsa-snoop-prometheus.service
-            systemctl start hsa-snoop-prometheus.service || true
+            if [ -z "${2:-}" ]; then
+                systemctl enable hsa-snoop-prometheus.service
+                systemctl start hsa-snoop-prometheus.service || true
+            elif systemctl is-enabled hsa-snoop-prometheus.service >/dev/null 2>&1; then
+                systemctl start hsa-snoop-prometheus.service || true
+            fi
         fi
         ;;
 esac
