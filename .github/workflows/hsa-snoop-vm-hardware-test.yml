@@ -349,6 +349,14 @@ jobs:
           "dkms status amdgpu | grep -q installed"
         echo "✓ amdgpu DKMS module installed"
 
+    - name: Patch amdgpu DKMS source and rebuild for rocjitsu
+      timeout-minutes: 10
+      run: |
+        vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
+          "VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d) bash -s" \
+          < hsa-snoop/ci/patch-amdgpu-dkms.sh
+        echo "✓ amdgpu DKMS patched and rebuilt"
+
     - name: Load amdgpu with rocjitsu parameters
       timeout-minutes: 5
       run: |
@@ -366,7 +374,7 @@ jobs:
           ip_block_mask=0x7f \
           vm_update_mode=3 \
           gpu_recovery=0 \
-          vramlimit=256
+          vramlimit=1024
         EOF
         echo "✓ amdgpu probe completed"
 
