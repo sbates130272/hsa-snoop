@@ -168,8 +168,8 @@ jobs:
     - name: Join the compose network
       run: |
         container_id=$(cat /etc/hostname)
-        docker inspect "$container_id" \
-          | grep -q '"vfio-user-rocjitsu-vm_default"' \
+        docker inspect --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' "$container_id" \
+          | grep -qx 'vfio-user-rocjitsu-vm_default' \
           || docker network connect vfio-user-rocjitsu-vm_default "$container_id"
 
     - name: Wait for rocjitsu server healthy
@@ -302,10 +302,18 @@ jobs:
         sdma="$build_dir/examples/sdma-test"
 
         cleanup_prom() {
+          status=$?
           if [ "${prom_pid:-}" ]; then
-            kill "$prom_pid" 2>/dev/null || true
-            wait "$prom_pid" || true
+            if kill -0 "$prom_pid" 2>/dev/null; then
+              kill "$prom_pid" 2>/dev/null || true
+            fi
+            wait "$prom_pid"
+            prom_status=$?
+            if [ "$status" -eq 0 ] && [ "$prom_status" -ne 0 ]; then
+              status=$prom_status
+            fi
           fi
+          exit "$status"
         }
 
         rm -rf "$artifact_dir"
@@ -386,6 +394,7 @@ jobs:
         sys.exit(1)
         PY
         wait "$prom_pid"
+        prom_pid=
         trap - EXIT
         grep -q '^hsa_snoop_up ' "$artifact_dir/prometheus.txt"
         grep -q 'hsa_kernel_launches_total' "$artifact_dir/prometheus.txt"
