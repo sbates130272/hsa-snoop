@@ -2,6 +2,18 @@ name: hsa-snoop - vm-hardware-test
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '**.cpp'
+      - '**.h'
+      - '**.hip'
+      - 'CMakeLists.txt'
+      - 'examples/**'
+      - 'src/**'
+      - 'tests/**'
+      - '.github/workflows/vm-hardware-test.yml'
   push:
     branches:
       - main
@@ -23,10 +35,14 @@ permissions:
 # The job overrides this to write only when the event is a push to main.
 
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
-  QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
-  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:latest
+  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260921.gb3399b3-rocjitsu.8e01a5a
+  QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260919.g359579e-qemu11.1.1-vfu.8039244
 
 jobs:
   vm-hardware-test:
@@ -36,8 +52,11 @@ jobs:
     permissions:
       contents: write
     container:
-      image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
-      options: --device /dev/kvm -v /var/run/docker.sock:/var/run/docker.sock
+      image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260919.g359579e-qemu11.1.1-vfu.8039244
+      options: >-
+        --device /dev/kvm
+        -v /var/run/docker.sock:/var/run/docker.sock
+        -v /var/lib/qemu-tool:/var/lib/qemu-tool
 
     steps:
     - name: Check out hsa-snoop
@@ -51,27 +70,43 @@ jobs:
         repository: sbates130272/qemu-minimal
         path: qemu-minimal
 
-    - name: Install dependencies
+    - name: Verify KVM is available
+      run: |
+        test -c /dev/kvm || { echo "::error::/dev/kvm missing - guest would run under TCG"; exit 1; }
+        test -r /dev/kvm && test -w /dev/kvm || { echo "::error::/dev/kvm not read-write"; exit 1; }
+        python3 -c "import os, fcntl; fcntl.ioctl(os.open('/dev/kvm', os.O_RDWR), 0xAE00, 0)" \
+          || { echo "::error::/dev/kvm present but KVM_GET_API_VERSION failed"; exit 1; }
+        echo "KVM available: $(ls -l /dev/kvm)"
+
+    - name: Report disk space
+      run: df -h / "$VM_IMAGES_DIR" 2>/dev/null || df -h /
+
+    - name: Install missing packages
       run: |
         apt-get update -qq
-        apt-get install -y -qq ansible python3-pip openssh-client
+        apt-get install -y -qq python3-pip
+
+    - name: Use a fixed pip cache directory
+      run: echo "PIP_CACHE_DIR=/var/cache/pip-ci" >> "$GITHUB_ENV"
+
+    - name: Cache pip
+      uses: actions/cache@v6
+      with:
+        path: /var/cache/pip-ci
+        key: pip-qemu-tool-v2-${{ hashFiles('qemu-minimal/qemu/pyproject.toml') }}
 
     - name: Install jmespath for Ansible json_query filter
       run: |
         py=$(sed -n '1s/^#! *//p' "$(command -v ansible-playbook)" | awk '{print $1}')
         "${py}" -m pip install --break-system-packages jmespath
 
-    - name: Cache pip
-      uses: actions/cache@v6
-      with:
-        path: ~/.cache/pip
-        key: pip-qemu-tool-${{ hashFiles('qemu-minimal/qemu/pyproject.toml') }}
-
     - name: Install qemu-tool
       run: pip install --break-system-packages -e ./qemu-minimal/qemu
 
     - name: Generate SSH key-pair
-      run: mkdir -p "$HOME/.ssh" && ssh-keygen -t rsa -q -f "$HOME/.ssh/id_rsa" -N ""
+      run: |
+        mkdir -p "$HOME/.ssh" && ssh-keygen -t rsa -q -f "$HOME/.ssh/id_rsa" -N ""
+        [ "$HOME" = /root ] || { rm -rf /root/.ssh && ln -s "$HOME/.ssh" /root/.ssh; }
 
     - name: Prepare GnuPG directory for git_setup
       run: mkdir -p "$HOME/.gnupg"
@@ -79,11 +114,11 @@ jobs:
     - name: Cache Ansible collections
       uses: actions/cache@v6
       with:
-        path: ~/.ansible/collections
-        key: ansible-collections-${{ hashFiles('qemu-minimal/ansible/requirements.yml') }}
+        path: /github/home/.ansible/collections
+        key: ansible-collections-v2-${{ hashFiles('qemu-minimal/ansible/requirements.yml') }}
 
     - name: Install Ansible collections
-      run: ansible-galaxy collection install --pre -r qemu-minimal/ansible/requirements.yml
+      run: ansible-galaxy collection install --pre --no-deps -r qemu-minimal/ansible/requirements.yml
 
     - name: Cache cloud image
       uses: actions/cache@v6
@@ -94,12 +129,20 @@ jobs:
     - name: Ensure images directory exists
       run: mkdir -p "$VM_IMAGES_DIR" && chmod 777 "$VM_IMAGES_DIR"
 
+    - name: Stage qemu-tool source for sibling containers
+      run: |
+        rm -rf /var/lib/qemu-tool/src
+        mkdir -p /var/lib/qemu-tool/src
+        cp -r qemu-minimal/qemu /var/lib/qemu-tool/src/
+
     - name: Pull CI images
       run: |
         docker pull "$ROCJITSU_IMAGE"
         docker pull "$QEMU_IMAGE"
 
     - name: Generate VM with vm-rocjitsu playbook
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         qemu-tool gen-vm \
           --vm-name hsa-snoop-test \
@@ -107,16 +150,23 @@ jobs:
           --username ubuntu \
           --password password \
           --packages none \
-          --size 20 \
+          --size 64 \
           --ansible-playbook qemu-minimal/ansible/playbooks/vm-rocjitsu.yml
 
     - name: Bring up rocjitsu compose stack
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
       env:
         VM_NAME: hsa-snoop-test
-        QEMU_TOOL_SRC: ${{ github.workspace }}/qemu-minimal
+        QEMU_TOOL_SRC: /var/lib/qemu-tool/src
+        VM_VCPUS: "2"
+        VM_VMEM: "4096"
+        VM_SHM_SIZE: "5g"
       run: |
         docker compose up --detach
+        echo "Compose stack started"
+
+    - name: Join the compose network
+      run: docker network connect vfio-user-rocjitsu-vm_default "$(cat /etc/hostname)"
 
     - name: Wait for rocjitsu server healthy
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
@@ -129,6 +179,7 @@ jobs:
           sleep 2
         done
         [ "$health" = "healthy" ] || (docker compose logs rocjitsu && exit 1)
+        echo "rocjitsu server healthy"
 
     - name: Wait for VM SSH
       run: |
@@ -137,7 +188,7 @@ jobs:
           if ssh -o ConnectTimeout=1 \
                  -o NoHostAuthenticationForLocalhost=yes \
                  -o StrictHostKeyChecking=no \
-                 -p 2222 ubuntu@localhost true 2>/dev/null; then
+                 -p 2222 ubuntu@qemu true 2>/dev/null; then
             echo "VM ready after ${elapsed}s"
             exit 0
           fi
@@ -146,60 +197,203 @@ jobs:
         echo "VM failed to boot in time"
         exit 1
 
-    - name: Load amdgpu via amdgpu-probe
+    - name: Verify firmware stubs present
       run: |
         ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@localhost "sudo /usr/local/bin/amdgpu-probe"
+          -p 2222 ubuntu@qemu \
+          "test -f /lib/firmware/amdgpu/gc_12_1_0_imu.bin"
+        echo "✓ gfx1250 firmware stubs present"
 
-    - name: Verify amdgpu loaded and KFD present
+    - name: Verify amdgpu-probe installed
       run: |
         ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@localhost "lsmod | grep -q amdgpu && ls /dev/kfd"
+          -p 2222 ubuntu@qemu \
+          "test -x /usr/local/bin/amdgpu-probe"
+        echo "✓ amdgpu-probe installed"
+
+    - name: Verify amdgpu DKMS module installed
+      run: |
+        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 ubuntu@qemu \
+          "dkms status amdgpu | grep -q installed"
+        echo "✓ amdgpu DKMS module installed"
+
+    - name: Load amdgpu via amdgpu-probe
+      timeout-minutes: 5
+      run: |
+        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+          -p 2222 ubuntu@qemu \
+          "sudo timeout 120 /usr/local/bin/amdgpu-probe"
+        echo "✓ amdgpu-probe completed"
+
+    - name: Dump guest dmesg on failure
+      if: failure()
+      timeout-minutes: 2
+      run: |
+        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
+          -p 2222 ubuntu@qemu "sudo dmesg | tail -200" || true
+
+    - name: Verify amdgpu module loaded and a GPU KFD node present
+      run: |
+        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 ubuntu@qemu "lsmod | grep -q amdgpu"
+        echo "✓ amdgpu module loaded"
+        gpus=$(ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 ubuntu@qemu \
+          "cat /sys/class/kfd/kfd/topology/nodes/*/name 2>/dev/null | grep -c .")
+        if [ "$gpus" -lt 1 ]; then
+          echo "no GPU KFD node: amdgpu loaded but never bound the device" >&2
+          ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+            -p 2222 ubuntu@qemu "sudo dmesg | grep -i amdgpu | tail -20" >&2
+          exit 1
+        fi
+        echo "✓ GPU KFD node present ($gpus)"
 
     - name: Copy hsa-snoop source into VM
       run: |
         scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P 2222 -r hsa-snoop ubuntu@localhost:/tmp/hsa-snoop
+          -P 2222 -r hsa-snoop ubuntu@qemu:/tmp/hsa-snoop
 
     - name: Build hsa-snoop in VM
       run: |
         ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@localhost bash -s <<'EOF'
+          -p 2222 ubuntu@qemu bash -s <<'EOF'
         cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
+          -DBUILD_TESTING=ON \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DGPU_TARGETS=gfx1250 \
-          -DHSA_SNOOP_HARDWARE_TESTS=ON
+          -DHSA_SNOOP_HARDWARE_TESTS=ON \
+          -DHSA_SNOOP_PROMETHEUS=ON
         cmake --build /tmp/hsa-snoop/build --parallel $(nproc)
         EOF
 
     - name: Run unit tests in VM
       run: |
         ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@localhost bash -s <<'EOF'
+          -p 2222 ubuntu@qemu bash -s <<'EOF'
         cd /tmp/hsa-snoop/build
-        ctest --exclude-regex sdma-hardware-test -V
+        ctest --exclude-regex sdma-hardware-test --output-on-failure
         EOF
 
     - name: Run hardware test in VM
       run: |
         ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@localhost bash -s <<'EOF'
+          -p 2222 ubuntu@qemu bash -s <<'EOF'
         cd /tmp/hsa-snoop/build
-        sudo ctest -R sdma-hardware-test -V
+        sudo ctest -R sdma-hardware-test --output-on-failure
+        EOF
+
+    - name: Run hsa-snoop mode coverage in VM
+      run: |
+        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 ubuntu@qemu bash -s <<'EOF'
+        set -euo pipefail
+
+        build_dir=/tmp/hsa-snoop/build
+        artifact_dir=/tmp/hsa-snoop-artifacts
+        binary="$build_dir/hsa-snoop"
+        gfx="$build_dir/examples/gfx-test"
+        sdma="$build_dir/examples/sdma-test"
+
+        rm -rf "$artifact_dir"
+        mkdir -p "$artifact_dir"/all
+
+        sudo "$binary" \
+          --format json \
+          --out "$artifact_dir/launch.json" \
+          -- "$gfx" --loops 2 --batch 4 --sleep-ms 50
+        test -s "$artifact_dir/launch.json"
+        grep -Eq '"name":"(vadd|vscale|vdot)"' "$artifact_dir/launch.json"
+
+        cat > "$artifact_dir/attach-target.sh" <<'ATTACH'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        sleep 3
+        exec /tmp/hsa-snoop/build/examples/gfx-test --loops 0 --batch 4 --sleep-ms 50
+        ATTACH
+        chmod +x "$artifact_dir/attach-target.sh"
+        "$artifact_dir/attach-target.sh" &
+        target_pid=$!
+        trap 'kill "$target_pid" 2>/dev/null || true' EXIT
+        sudo "$binary" \
+          --pid "$target_pid" \
+          --duration 10 \
+          --format json \
+          --out "$artifact_dir/pid.json"
+        kill "$target_pid" 2>/dev/null || true
+        wait "$target_pid" || true
+        trap - EXIT
+        test -s "$artifact_dir/pid.json"
+        grep -Eq '"name":"(vadd|vscale|vdot)"' "$artifact_dir/pid.json"
+
+        sudo "$binary" \
+          --all \
+          --duration 15 \
+          --format json \
+          --out-dir "$artifact_dir/all" &
+        all_pid=$!
+        sleep 3
+        "$gfx" --loops 2 --batch 4 --sleep-ms 50
+        "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0
+        wait "$all_pid"
+        find "$artifact_dir/all" -type f -name '*.json' | grep -q .
+        grep -R -Eq '"name":"(vadd|vscale|vdot|copy_linear)"' "$artifact_dir/all"
+
+        sudo "$binary" \
+          --all \
+          --prometheus \
+          --prometheus-port 9488 \
+          --duration 20 &
+        prom_pid=$!
+        python3 - <<'PY'
+        import sys, time, urllib.request
+        for _ in range(30):
+            try:
+                urllib.request.urlopen("http://127.0.0.1:9488/metrics", timeout=2).read()
+                sys.exit(0)
+            except Exception:
+                time.sleep(1)
+        sys.exit(1)
+        PY
+        "$gfx" --loops 2 --batch 4 --sleep-ms 50
+        "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0
+        python3 - <<'PY' > "$artifact_dir/prometheus.txt"
+        import sys, time, urllib.request
+        for _ in range(30):
+            try:
+                data = urllib.request.urlopen("http://127.0.0.1:9488/metrics", timeout=2).read().decode()
+            except Exception:
+                time.sleep(1)
+                continue
+            if "hsa_kernel_launches_total" in data and "hsa_sdma_copies_total" in data:
+                sys.stdout.write(data)
+                sys.exit(0)
+            time.sleep(1)
+        sys.exit(1)
+        PY
+        wait "$prom_pid"
+        grep -q '^hsa_snoop_up ' "$artifact_dir/prometheus.txt"
+        grep -q 'hsa_kernel_launches_total' "$artifact_dir/prometheus.txt"
+        grep -q 'hsa_sdma_copies_total' "$artifact_dir/prometheus.txt"
         EOF
 
     - name: Collect test results
       if: always()
       run: |
+        mkdir -p ./artifacts
         scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P 2222 -r ubuntu@localhost:/tmp/hsa-snoop/build/Testing ./test-results || true
+          -P 2222 -r ubuntu@qemu:/tmp/hsa-snoop/build/Testing ./artifacts/test-results || true
+        scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -P 2222 -r ubuntu@qemu:/tmp/hsa-snoop-artifacts ./artifacts/hsa-snoop-artifacts || true
 
     - name: Upload test results
       if: always()
       uses: actions/upload-artifact@v7
       with:
         name: vm-hardware-test-results
-        path: test-results/
+        path: artifacts/
         retention-days: 7
 
     - name: Collect Prometheus snapshot for perf history
