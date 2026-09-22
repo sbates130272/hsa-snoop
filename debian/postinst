@@ -30,9 +30,14 @@ case "$1" in
             fi
         fi
 
+        systemctl stop hsa-snoop.service || true
+        systemctl disable hsa-snoop.service || true
+        rm -f /etc/logrotate.d/hsa-snoop
+        rm -f /usr/local/etc/logrotate.d/hsa-snoop
+
         systemctl daemon-reload
-        systemctl enable hsa-snoop.service
-        systemctl start hsa-snoop.service || true
+        systemctl enable hsa-snoop-prometheus.service
+        systemctl start hsa-snoop-prometheus.service || true
         ;;
 esac
 
