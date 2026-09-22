@@ -2,7 +2,8 @@
 set -e
 
 STATE_DIR=/var/lib/hsa-snoop
-STATE_FILE=${STATE_DIR}/service-was-enabled
+ENABLED_STATE_FILE=${STATE_DIR}/service-was-enabled
+ACTIVE_STATE_FILE=${STATE_DIR}/service-was-active
 
 case "$1" in
     configure)
@@ -44,12 +45,14 @@ case "$1" in
             if [ -z "${2:-}" ]; then
                 systemctl enable hsa-snoop-prometheus.service
                 systemctl start hsa-snoop-prometheus.service || true
-            elif [ -f "$STATE_FILE" ]; then
+            elif [ -f "$ENABLED_STATE_FILE" ]; then
                 systemctl enable hsa-snoop-prometheus.service
+                systemctl start hsa-snoop-prometheus.service || true
+            elif [ -f "$ACTIVE_STATE_FILE" ]; then
                 systemctl start hsa-snoop-prometheus.service || true
             fi
         fi
-        rm -f "$STATE_FILE"
+        rm -f "$ENABLED_STATE_FILE" "$ACTIVE_STATE_FILE"
         ;;
 esac
 

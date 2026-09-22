@@ -426,7 +426,7 @@ cmake -B build -DHSA_SNOOP_PROMETHEUS=ON -DCMAKE_INSTALL_PREFIX=/usr/local
 cmake --build build --parallel
 
 # Install binary and unit files
-sudo cmake --install build
+sudo cmake --install build --prefix /usr/local
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now hsa-snoop-prometheus
