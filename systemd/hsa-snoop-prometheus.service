@@ -6,8 +6,7 @@ After=local-fs.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/default/hsa-snoop
-ExecStartPre=/bin/mkdir -p /var/log/hsa-snoop
-ExecStart=/usr/local/bin/hsa-snoop $HSA_SNOOP_ARGS
+ExecStart=/bin/sh -lc 'exec @HSA_SNOOP_EXECUTABLE@ --all --prometheus $HSA_SNOOP_ARGS'
 Restart=on-failure
 RestartSec=5s
 

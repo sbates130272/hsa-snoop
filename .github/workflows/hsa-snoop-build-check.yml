@@ -52,9 +52,8 @@ jobs:
     - name: Verify install
       run: |
         test -x /tmp/hsa-snoop-install/bin/hsa-snoop
-        test -f /tmp/hsa-snoop-install/lib/systemd/system/hsa-snoop.service
-        test -f /tmp/hsa-snoop-install/share/hsa-snoop/hsa-snoop.conf
-        test -f /tmp/hsa-snoop-install/etc/logrotate.d/hsa-snoop
+        test ! -e /tmp/hsa-snoop-install/lib/systemd/system/hsa-snoop-prometheus.service
+        test ! -e /tmp/hsa-snoop-install/share/hsa-snoop/hsa-snoop.conf
         /tmp/hsa-snoop-install/bin/hsa-snoop --help
 
   build-check-prometheus:
@@ -90,8 +89,7 @@ jobs:
     - name: Verify install
       run: |
         test -x /tmp/hsa-snoop-install/bin/hsa-snoop
-        test -f /tmp/hsa-snoop-install/lib/systemd/system/hsa-snoop.service
+        test -f /tmp/hsa-snoop-install/lib/systemd/system/hsa-snoop-prometheus.service
         test -f /tmp/hsa-snoop-install/share/hsa-snoop/hsa-snoop.conf
-        test -f /tmp/hsa-snoop-install/etc/logrotate.d/hsa-snoop
         /tmp/hsa-snoop-install/bin/hsa-snoop --help
         /tmp/hsa-snoop-install/bin/hsa-snoop --prometheus --all 2>&1 | grep -q "Prometheus metrics at"

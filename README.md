@@ -418,64 +418,16 @@ sudo bpftrace scripts/hsa-snoop.bt
 
 ## Running as a systemd daemon
 
-Two independent unit files are provided under `systemd/`:
-
-| Unit | Mode | Output |
-| --- | --- | --- |
-| `hsa-snoop.service` | `--all` (trace files) | `/var/log/hsa-snoop/*.pftrace` |
-| `hsa-snoop-prometheus.service` | `--all --prometheus` | HTTP `/metrics` on port 9488 |
-
-Both can run simultaneously — they use separate discovery probes and do not
-share state.
-
-### Trace-file daemon
-
-```bash
-# Install binary and unit files
-sudo cmake --install build --prefix /usr/local
-
-# (Optional) drop-in to pick up /etc/hsa-snoop.conf for runtime tuning
-sudo mkdir -p /etc/systemd/system/hsa-snoop.service.d
-sudo cp systemd/hsa-snoop-override.conf \
-        /etc/systemd/system/hsa-snoop.service.d/override.conf
-sudo cp systemd/hsa-snoop.conf /etc/hsa-snoop.conf
-
-# Create the log directory
-sudo mkdir -p /var/log/hsa-snoop
-
-# Enable and start
-sudo systemctl daemon-reload
-sudo systemctl enable --now hsa-snoop
-
-# Check status / live logs
-sudo systemctl status hsa-snoop
-sudo journalctl -fu hsa-snoop
-```
-
-Traces accumulate in `/var/log/hsa-snoop/` as `.pftrace` files, one per
-discovered AQL queue, named `<comm>-<uid>.pftrace`. Open them in
-<https://ui.perfetto.dev>.
-
-To tune the daemon (poll interval, output format, etc.) edit
-`/etc/hsa-snoop.conf` and run `sudo systemctl restart hsa-snoop`.
-
-Filesystem usage is managed by **logrotate** — trace files are rotated at
-512 MiB and the last 8 rotated copies are kept (compressed), giving a soft
-ceiling of ~4 GiB. Triggered daily by the system logrotate timer. Configuration
-is installed to `/etc/logrotate.d/hsa-snoop`; edit it to adjust size, count,
-or compression.
-
-### Prometheus daemon
-
 Requires a build with `-DHSA_SNOOP_PROMETHEUS=ON`.
 
 ```bash
-# Install binary and unit files (if not already done above)
-sudo cmake --install build --prefix /usr/local
+# Configure with the same install prefix you intend to deploy.
+cmake -B build -DHSA_SNOOP_PROMETHEUS=ON -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build --parallel
 
-# Edit the unit to set SUDO_UID/SUDO_GID to the primary GPU-capable user
-# (needed for gpu_type detection via rocminfo on WSL2/DXG systems).
-# The defaults in the unit file are UID/GID 1000.
+# Install binary and unit files to the prefix chosen above
+sudo cmake --install build
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now hsa-snoop-prometheus
 
@@ -487,7 +439,13 @@ sudo journalctl -fu hsa-snoop-prometheus
 curl http://localhost:9488/metrics
 ```
 
-To change the port, override `ExecStart` in a drop-in:
+The packaged/systemd-managed daemon is `hsa-snoop-prometheus.service`.
+Prometheus-enabled installs also stage `/etc/default/hsa-snoop`; edit it to tune
+the daemon (poll interval, optional snoops, etc.), then run
+`sudo systemctl restart hsa-snoop-prometheus.service`.
+
+To change the port, set it in `HSA_SNOOP_ARGS` or override `ExecStart` in a
+drop-in:
 
 ```bash
 sudo mkdir -p /etc/systemd/system/hsa-snoop-prometheus.service.d
@@ -563,11 +521,8 @@ scripts/slurm/                     multi-GFX Slurm validation + capture harness
 scripts/slurm/obs-job.sh           capture a replayable Prometheus+log dataset
 scripts/observability/             offline Grafana/Prometheus/Loki replay stack
 grafana/hsa-snoop-dashboard.json   reference Grafana dashboard
-systemd/hsa-snoop.service          systemd unit (trace-file daemon / --all mode)
 systemd/hsa-snoop-prometheus.service  systemd unit (Prometheus exporter daemon)
-systemd/hsa-snoop.conf             runtime configuration (ExecStart arguments)
-systemd/hsa-snoop-override.conf    drop-in wiring hsa-snoop.conf into the unit
-systemd/hsa-snoop.logrotate        logrotate policy (512 MiB rotation, 8 kept)
+systemd/hsa-snoop.conf             runtime configuration (extra ExecStart arguments)
 ```
 
 ## Limitations & notes

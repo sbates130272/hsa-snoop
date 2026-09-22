@@ -1,6 +1,15 @@
 #!/bin/sh
 set -e
 
+STATE_DIR=/var/lib/hsa-snoop
+ENABLED_STATE_FILE=${STATE_DIR}/service-was-enabled
+ACTIVE_STATE_FILE=${STATE_DIR}/service-was-active
+FIRST_INSTALL=0
+
+if [ -z "${2:-}" ]; then
+    FIRST_INSTALL=1
+fi
+
 case "$1" in
     configure)
         # Install /etc/default/hsa-snoop only on a fresh install (not upgrade),
@@ -9,7 +18,7 @@ case "$1" in
         # where the file is missing entirely (e.g. first install on a clean node).
         if [ ! -f /etc/default/hsa-snoop ]; then
             install -m 0644 \
-                /usr/local/share/hsa-snoop/hsa-snoop.conf \
+                /usr/share/hsa-snoop/hsa-snoop.conf \
                 /etc/default/hsa-snoop
 
             # Auto-detect the primary GPU-capable console user's UID/GID so
@@ -30,9 +39,26 @@ case "$1" in
             fi
         fi
 
+        systemctl stop hsa-snoop.service || true
+        systemctl disable hsa-snoop.service || true
+
         systemctl daemon-reload
-        systemctl enable hsa-snoop.service
-        systemctl start hsa-snoop.service || true
+        systemctl reset-failed hsa-snoop.service || true
+        if [ -f /lib/systemd/system/hsa-snoop-prometheus.service ] || \
+           [ -f /usr/lib/systemd/system/hsa-snoop-prometheus.service ]; then
+            if [ "$FIRST_INSTALL" -eq 1 ]; then
+                systemctl enable hsa-snoop-prometheus.service || true
+                systemctl start hsa-snoop-prometheus.service || true
+            else
+                if [ -f "$ENABLED_STATE_FILE" ]; then
+                    systemctl enable hsa-snoop-prometheus.service || true
+                fi
+                if [ -f "$ACTIVE_STATE_FILE" ]; then
+                    systemctl start hsa-snoop-prometheus.service || true
+                fi
+            fi
+        fi
+        rm -f "$ENABLED_STATE_FILE" "$ACTIVE_STATE_FILE"
         ;;
 esac
 

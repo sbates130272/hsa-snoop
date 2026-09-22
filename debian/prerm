@@ -1,8 +1,30 @@
 #!/bin/sh
 set -e
 
+STATE_DIR=/var/lib/hsa-snoop
+ENABLED_STATE_FILE=${STATE_DIR}/service-was-enabled
+ACTIVE_STATE_FILE=${STATE_DIR}/service-was-active
+
 case "$1" in
-    remove|upgrade|deconfigure)
+    remove|deconfigure)
+        systemctl stop hsa-snoop-prometheus.service || true
+        systemctl disable hsa-snoop-prometheus.service || true
+        systemctl stop hsa-snoop.service || true
+        systemctl disable hsa-snoop.service || true
+        ;;
+    upgrade)
+        rm -f "$ENABLED_STATE_FILE" "$ACTIVE_STATE_FILE"
+        if systemctl is-active hsa-snoop-prometheus.service >/dev/null 2>&1 || \
+           systemctl is-active hsa-snoop.service >/dev/null 2>&1; then
+            mkdir -p "$STATE_DIR"
+            touch "$ACTIVE_STATE_FILE"
+        fi
+        if systemctl is-enabled hsa-snoop-prometheus.service >/dev/null 2>&1 || \
+           systemctl is-enabled hsa-snoop.service >/dev/null 2>&1; then
+            mkdir -p "$STATE_DIR"
+            touch "$ENABLED_STATE_FILE"
+        fi
+        systemctl stop hsa-snoop-prometheus.service || true
         systemctl stop hsa-snoop.service || true
         systemctl disable hsa-snoop.service || true
         ;;
