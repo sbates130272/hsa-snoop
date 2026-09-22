@@ -353,7 +353,7 @@ jobs:
       timeout-minutes: 10
       run: |
         vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
-          "VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d) bash -s" \
+          "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" \
           < hsa-snoop/ci/patch-amdgpu-dkms.sh
         echo "✓ amdgpu DKMS patched and rebuilt"
 

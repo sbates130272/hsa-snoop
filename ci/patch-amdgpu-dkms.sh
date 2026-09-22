@@ -12,6 +12,7 @@
 #
 # Run as the guest user; root comes from sudo (password via VM_SUDO_PASSWORD).
 set -euo pipefail
+VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
 sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
 
 sudo_cmd python3 - << 'PYEOF'
