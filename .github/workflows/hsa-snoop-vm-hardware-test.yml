@@ -198,19 +198,37 @@ jobs:
         # qemu-tool creates qemu-br2222 (172.16.223.1/24) + dnsmasq inside the
         # container; the guest gets 172.16.223.100 assigned via QGA bootstrap.
         # This eliminates the SLIRP banner-stall that blocks SSH from outside.
-        printf '%s\n' \
-          'services:' \
-          '  qemu:' \
-          '    cap_add:' \
-          '      - NET_ADMIN' \
-          '      - NET_RAW' \
-          '      - SYS_ADMIN' \
-          '    devices:' \
-          '      - /dev/kvm' \
-          '      - /dev/net/tun' \
-          '    environment:' \
-          '      VM_MGMT_TAP: "true"' \
-          > docker-compose.override.yml
+        # Override the qemu service to add TAP networking capabilities and
+        # pass --mgmt-tap explicitly in the entrypoint (env var alone is not
+        # reliably picked up by qemu-tool from the container environment).
+        python3 - > docker-compose.override.yml <<'PY'
+        import json
+        cfg = {
+            "services": {
+                "qemu": {
+                    "cap_add": ["NET_ADMIN", "NET_RAW", "SYS_ADMIN"],
+                    "devices": ["/dev/kvm", "/dev/net/tun"],
+                    "entrypoint": [
+                        "/bin/sh", "-c",
+                        "cp -r /qemu-tool-src/qemu /tmp/qemu-tool-build && "
+                        "PIPX_BIN_DIR=/usr/local/bin pipx install --force /tmp/qemu-tool-build && "
+                        "socks=$(ls /run/vfu/*.sock 2>/dev/null | tr '\\n' ',' | sed 's/,$//') && "
+                        "[ -n \"$socks\" ] || { echo 'ERROR: no vfio-user sockets' >&2; exit 1; } && "
+                        'exec qemu-tool run-vm '
+                        '--images "${VM_IMAGES_DIR:-/var/lib/qemu-tool/images}" '
+                        '--vm-name "${VM_NAME:-qemu-minimal}" '
+                        '--vcpus "${VM_VCPUS:-4}" '
+                        '--vmem "${VM_VMEM:-8192}" '
+                        '--ssh-port 2222 '
+                        '--mgmt-tap '
+                        '--vfio-userdev "$socks" '
+                        '${VM_NVME:+--nvme "$VM_NVME"}'
+                    ],
+                }
+            }
+        }
+        print(json.dumps(cfg, indent=2))
+        PY
 
     - name: Bring up rocjitsu compose stack
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
@@ -269,61 +287,8 @@ jobs:
         docker exec "$qemu_container" test -S "$qga_sock" \
           || { echo "QGA socket never appeared in $qemu_container"; exit 1; }
 
-        docker exec "$qemu_container" python3 - "$qga_sock" <<'PY'
-        import socket, json, sys, time
-
-        qga_path = sys.argv[1]
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(qga_path)
-        sock.settimeout(5)
-
-        def send_recv(obj):
-            sock.send((json.dumps(obj) + '\n').encode())
-            buf = b''
-            for _ in range(40):
-                try:
-                    buf += sock.recv(4096)
-                    return json.loads(buf.decode())
-                except (json.JSONDecodeError, socket.timeout):
-                    pass
-            return None
-
-        send_recv({'execute': 'guest-sync', 'arguments': {'id': 1}})
-
-        # Wait for multi-user.target before touching the network
-        for _ in range(60):
-            resp = send_recv({'execute': 'guest-exec', 'arguments': {
-                'path': '/bin/systemctl',
-                'arg': ['is-active', 'multi-user.target'],
-                'capture-output': True,
-            }})
-            if resp and 'return' in resp:
-                time.sleep(1)
-                r2 = send_recv({'execute': 'guest-exec-status',
-                                'arguments': {'pid': resp['return']['pid']}})
-                if r2 and r2['return'].get('exitcode') == 0:
-                    print('Guest reached multi-user.target')
-                    break
-            time.sleep(2)
-
-        for label, cmd in [
-            ('assign IP',  'ip addr add 172.16.223.100/24 dev enp0s3 2>/dev/null || true'),
-            ('add route',  'ip route add default via 172.16.223.1 dev enp0s3 2>/dev/null || true'),
-            ('start sshd', 'systemctl start ssh.service'),
-        ]:
-            resp = send_recv({'execute': 'guest-exec', 'arguments': {
-                'path': '/bin/bash', 'arg': ['-c', cmd], 'capture-output': True,
-            }})
-            time.sleep(1)
-            if resp and 'return' in resp:
-                r2 = send_recv({'execute': 'guest-exec-status',
-                                'arguments': {'pid': resp['return']['pid']}})
-                ec = r2['return'].get('exitcode') if r2 else '?'
-                print(f'{label}: exit={ec}')
-
-        sock.close()
-        print('Guest network and sshd bootstrapped')
-        PY
+        docker cp hsa-snoop/ci/qga-bootstrap.py "$qemu_container":/tmp/qga-bootstrap.py
+        docker exec "$qemu_container" python3 /tmp/qga-bootstrap.py "$qga_sock"
         # Copy the SSH key into the qemu container for the wait step
         docker cp "$HOME/.ssh/id_rsa" vfio-user-rocjitsu-vm-qemu-1:/tmp/vm-id_rsa
         docker exec vfio-user-rocjitsu-vm-qemu-1 chmod 600 /tmp/vm-id_rsa
@@ -339,41 +304,13 @@ jobs:
         printf 'Host qemu\n  ProxyCommand docker exec -i vfio-user-rocjitsu-vm-qemu-1 nc 172.16.223.100 22\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' >> "$HOME/.ssh/config"
 
     - name: Wait for VM SSH
-      # QEMU SLIRP hostfwd stalls SSH banner exchanges from outside the qemu
-      # container. Use the QGA (already confirmed working) to poll sshd status
-      # inside the guest instead of attempting a live SSH handshake.
       run: |
         qemu_container="vfio-user-rocjitsu-vm-qemu-1"
         qga_sock="/tmp/qga-hsa-snoop-test-2222.sock"
+        docker cp hsa-snoop/ci/qga-wait-ssh.py "$qemu_container":/tmp/qga-wait-ssh.py
         elapsed=0
         while [ $elapsed -lt 180 ]; do
-          result=$(docker exec "$qemu_container" python3 - "$qga_sock" <<'PY' 2>/dev/null
-        import socket, json, sys, time
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(sys.argv[1])
-        sock.settimeout(5)
-        def send_recv(obj):
-            sock.send((json.dumps(obj) + '\n').encode())
-            buf = b''
-            for _ in range(20):
-                try:
-                    buf += sock.recv(4096)
-                    return json.loads(buf.decode())
-                except (json.JSONDecodeError, socket.timeout): pass
-            return None
-        send_recv({'execute': 'guest-sync', 'arguments': {'id': 99}})
-        r = send_recv({'execute': 'guest-exec', 'arguments': {
-            'path': '/bin/systemctl', 'arg': ['is-active', 'ssh.service'],
-            'capture-output': True}})
-        if not r: sys.exit(1)
-        time.sleep(1)
-        r2 = send_recv({'execute': 'guest-exec-status',
-                        'arguments': {'pid': r['return']['pid']}})
-        sock.close()
-        sys.exit(0 if r2 and r2['return'].get('exitcode') == 0 else 1)
-        PY
-          )
-          if [ $? -eq 0 ]; then
+          if docker exec "$qemu_container" python3 /tmp/qga-wait-ssh.py "$qga_sock" 2>/dev/null; then
             echo "VM sshd active after ${elapsed}s"
             exit 0
           fi
