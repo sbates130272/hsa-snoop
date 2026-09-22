@@ -17,6 +17,6 @@ exec qemu-tool run-vm \
     --vcpus "${VM_VCPUS:-4}" \
     --vmem "${VM_VMEM:-8192}" \
     --ssh-port "${VM_SSH_PORT:-2222}" \
-    --mgmt-tap \
+    ${VM_MGMT_MAC:+--mac "$VM_MGMT_MAC"} \
     --vfio-userdev "$socks" \
     ${VM_NVME:+--nvme "$VM_NVME"}

@@ -44,9 +44,12 @@ env:
   FIO_REPO: https://github.com/axboe/fio.git
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
   VM_SSH_PORT: "2222"
-  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260921.gb3399b3-rocjitsu.8e01a5a
-  ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260921.g584b3f9-vm.resolute-rocjitsu-qm.5d68689-qcow2
-  QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260919.g359579e-qemu11.1.1-vfu.8039244
+  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260922.gd2b49c6-rocjitsu.8e01a5a
+  ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260922.gd2b49c6-vm.resolute-rocjitsu-qm.63cc0bc-qcow2
+  QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260922.gd2b49c6-qemu11.1.1-vfu.8039244
+  # Deterministic MAC for SSH port 2222: _mgmt_mac(2222) = 52:54:00:00:08:ae.
+  # Pass explicitly so netplan on images that pin to this MAC always matches.
+  VM_MGMT_MAC: "52:54:00:00:08:ae"
 
 jobs:
   vm-hardware-test:
@@ -197,11 +200,21 @@ jobs:
         VM_NAME: hsa-snoop-test
         VM_NVME: "1"
         VM_SSH_PORT: ${{ env.VM_SSH_PORT }}
+        VM_MGMT_MAC: ${{ env.VM_MGMT_MAC }}
         QEMU_TOOL_SRC: /var/lib/qemu-tool/src
         VM_VCPUS: "4"
         VM_VMEM: "4096"
         VM_SHM_SIZE: "5g"
       run: |
+        # Stage the entrypoint script (passes --mac so netplan matches).
+        cp ../../../../hsa-snoop/ci/qemu-entrypoint.sh \
+          "$VM_IMAGES_DIR/qemu-entrypoint.sh"
+        chmod +x "$VM_IMAGES_DIR/qemu-entrypoint.sh"
+        printf '%s\n' \
+          'services:' \
+          '  qemu:' \
+          '    entrypoint: ["${VM_IMAGES_DIR}/qemu-entrypoint.sh"]' \
+          > docker-compose.override.yml
         docker compose up --detach
         echo "Compose stack started"
 
