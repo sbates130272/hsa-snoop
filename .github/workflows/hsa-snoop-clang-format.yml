@@ -11,7 +11,7 @@ on:
       - '**.h'
       - '**.hip'
       - '.clang-format'
-      - '.github/workflows/clang-format.yml'
+      - '.github/workflows/hsa-snoop-clang-format.yml'
 
 jobs:
   clang-format:

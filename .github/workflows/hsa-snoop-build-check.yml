@@ -14,7 +14,7 @@ on:
       - 'examples/**'
       - 'src/**'
       - 'systemd/**'
-      - '.github/workflows/build-check.yml'
+      - '.github/workflows/hsa-snoop-build-check.yml'
 
 jobs:
   build-check:

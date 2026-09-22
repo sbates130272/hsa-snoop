@@ -10,7 +10,7 @@ on:
       - '**.md'
       - '.wordlist.txt'
       - '.spellcheck.yml'
-      - '.github/workflows/spell-check.yml'
+      - '.github/workflows/hsa-snoop-spell-check.yml'
 
 jobs:
   spell-check:

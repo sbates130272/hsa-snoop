@@ -14,7 +14,7 @@ on:
       - 'systemd/**'
       - 'debian/**'
       - 'grafana/**'
-      - '.github/workflows/debian-package.yml'
+      - '.github/workflows/hsa-snoop-debian-package.yml'
 
 jobs:
   build-deb:
