@@ -1,6 +1,9 @@
 #!/bin/sh
 set -e
 
+STATE_DIR=/var/lib/hsa-snoop
+STATE_FILE=${STATE_DIR}/service-was-enabled
+
 case "$1" in
     configure)
         # Install /etc/default/hsa-snoop only on a fresh install (not upgrade),
@@ -41,8 +44,9 @@ case "$1" in
             if [ -z "${2:-}" ]; then
                 systemctl enable hsa-snoop-prometheus.service
                 systemctl start hsa-snoop-prometheus.service || true
-            elif systemctl is-enabled hsa-snoop-prometheus.service >/dev/null 2>&1; then
+            elif [ -f "$STATE_FILE" ]; then
                 systemctl start hsa-snoop-prometheus.service || true
+                rm -f "$STATE_FILE"
             fi
         fi
         ;;
