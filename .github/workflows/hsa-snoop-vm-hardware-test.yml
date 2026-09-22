@@ -302,26 +302,59 @@ jobs:
         sock.close()
         print('Guest network and sshd bootstrapped')
         PY
-        # Copy the SSH key into the qemu container so the wait step can use it
+        # Copy the SSH key into the qemu container for the wait step
         docker cp "$HOME/.ssh/id_rsa" vfio-user-rocjitsu-vm-qemu-1:/tmp/vm-id_rsa
         docker exec vfio-user-rocjitsu-vm-qemu-1 chmod 600 /tmp/vm-id_rsa
+        # Install an SSH ProxyCommand so all subsequent `ssh ... @qemu` calls
+        # from the CI container are transparently tunnelled through `docker exec`
+        # into the qemu container, where SLIRP hostfwd works reliably.
+        # This avoids rewriting every ssh/scp call in the workflow.
+        mkdir -p "$HOME/.ssh"
+        printf 'Host qemu\n  ProxyCommand docker exec -i vfio-user-rocjitsu-vm-qemu-1 nc 127.0.0.1 2222\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' >> "$HOME/.ssh/config"
+        # nc may not be in the qemu container; install it if absent
+        docker exec vfio-user-rocjitsu-vm-qemu-1 sh -c \
+          "which nc || (apt-get update -qq && apt-get install -y -qq netcat-openbsd)" 2>/dev/null || true
 
     - name: Wait for VM SSH
-      # SSH via the compose network hostname hits QEMU's SLIRP hostfwd, which
-      # accepts the TCP connection but stalls on the banner in this environment.
-      # Test reachability from inside the qemu container (127.0.0.1:$VM_SSH_PORT)
-      # where SLIRP hostfwd works reliably, then confirm with a real SSH command.
+      # QEMU SLIRP hostfwd stalls SSH banner exchanges from outside the qemu
+      # container. Use the QGA (already confirmed working) to poll sshd status
+      # inside the guest instead of attempting a live SSH handshake.
       run: |
+        qemu_container="vfio-user-rocjitsu-vm-qemu-1"
+        qga_sock="/tmp/qga-hsa-snoop-test-2222.sock"
         elapsed=0
         while [ $elapsed -lt 180 ]; do
-          if docker exec vfio-user-rocjitsu-vm-qemu-1 \
-               ssh -i /tmp/vm-id_rsa -o IdentitiesOnly=yes \
-                   -o StrictHostKeyChecking=no -o ConnectTimeout=3 \
-                   -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 true 2>/dev/null; then
-            echo "VM ready after ${elapsed}s"
+          result=$(docker exec "$qemu_container" python3 - "$qga_sock" <<'PY' 2>/dev/null
+        import socket, json, sys, time
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(sys.argv[1])
+        sock.settimeout(5)
+        def send_recv(obj):
+            sock.send((json.dumps(obj) + '\n').encode())
+            buf = b''
+            for _ in range(20):
+                try:
+                    buf += sock.recv(4096)
+                    return json.loads(buf.decode())
+                except (json.JSONDecodeError, socket.timeout): pass
+            return None
+        send_recv({'execute': 'guest-sync', 'arguments': {'id': 99}})
+        r = send_recv({'execute': 'guest-exec', 'arguments': {
+            'path': '/bin/systemctl', 'arg': ['is-active', 'ssh.service'],
+            'capture-output': True}})
+        if not r: sys.exit(1)
+        time.sleep(1)
+        r2 = send_recv({'execute': 'guest-exec-status',
+                        'arguments': {'pid': r['return']['pid']}})
+        sock.close()
+        sys.exit(0 if r2 and r2['return'].get('exitcode') == 0 else 1)
+        PY
+          )
+          if [ $? -eq 0 ]; then
+            echo "VM sshd active after ${elapsed}s"
             exit 0
           fi
-          sleep 2; elapsed=$((elapsed + 2))
+          sleep 3; elapsed=$((elapsed + 3))
         done
         echo "VM failed to boot in time"
         exit 1
