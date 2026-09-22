@@ -49,11 +49,13 @@ case "$1" in
             if [ -z "${2:-}" ]; then
                 systemctl enable hsa-snoop-prometheus.service
                 systemctl start hsa-snoop-prometheus.service || true
-            elif [ -f "$ENABLED_STATE_FILE" ]; then
-                systemctl enable hsa-snoop-prometheus.service
-            fi
-            if [ -f "$ACTIVE_STATE_FILE" ]; then
-                systemctl start hsa-snoop-prometheus.service || true
+            else
+                if [ -f "$ENABLED_STATE_FILE" ]; then
+                    systemctl enable hsa-snoop-prometheus.service
+                fi
+                if [ -f "$ACTIVE_STATE_FILE" ]; then
+                    systemctl start hsa-snoop-prometheus.service || true
+                fi
             fi
         fi
         rm -f "$ENABLED_STATE_FILE" "$ACTIVE_STATE_FILE"
