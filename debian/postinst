@@ -38,10 +38,6 @@ case "$1" in
         systemctl disable hsa-snoop.service || true
         rm -f /etc/systemd/system/hsa-snoop.service
         rm -f /etc/systemd/system/multi-user.target.wants/hsa-snoop.service
-        rm -f /lib/systemd/system/hsa-snoop.service
-        rm -f /usr/lib/systemd/system/hsa-snoop.service
-        rm -f /etc/logrotate.d/hsa-snoop
-        rm -f /usr/local/etc/logrotate.d/hsa-snoop
 
         systemctl daemon-reload
         if [ -f /lib/systemd/system/hsa-snoop-prometheus.service ] || \
