@@ -423,6 +423,7 @@ Requires a build with `-DHSA_SNOOP_PROMETHEUS=ON`.
 ```bash
 # Configure with the same install prefix you intend to deploy.
 cmake -B build -DHSA_SNOOP_PROMETHEUS=ON -DCMAKE_INSTALL_PREFIX=/usr/local
+cmake --build build --parallel
 
 # Install binary and unit files
 sudo cmake --install build
