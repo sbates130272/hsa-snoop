@@ -43,6 +43,7 @@ case "$1" in
         systemctl disable hsa-snoop.service || true
 
         systemctl daemon-reload
+        systemctl reset-failed hsa-snoop.service || true
         if [ -f /lib/systemd/system/hsa-snoop-prometheus.service ] || \
            [ -f /usr/lib/systemd/system/hsa-snoop-prometheus.service ]; then
             if [ "$FIRST_INSTALL" -eq 1 ]; then
