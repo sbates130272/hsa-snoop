@@ -42,6 +42,7 @@ concurrency:
 env:
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
   ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260921.gb3399b3-rocjitsu.8e01a5a
+  ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260921.g584b3f9-vm.resolute-rocjitsu-qm.5d68689-qcow2
   QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260919.g359579e-qemu11.1.1-vfu.8039244
 
 jobs:
@@ -51,6 +52,9 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: write
+    defaults:
+      run:
+        shell: bash
     container:
       image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260919.g359579e-qemu11.1.1-vfu.8039244
       options: >-
@@ -81,53 +85,39 @@ jobs:
     - name: Report disk space
       run: df -h / "$VM_IMAGES_DIR" 2>/dev/null || df -h /
 
-    - name: Install missing packages
-      run: |
-        apt-get update -qq
-        apt-get install -y -qq python3-pip
-
-    - name: Use a fixed pip cache directory
-      run: echo "PIP_CACHE_DIR=/var/cache/pip-ci" >> "$GITHUB_ENV"
-
-    - name: Cache pip
-      uses: actions/cache@v6
-      with:
-        path: /var/cache/pip-ci
-        key: pip-qemu-tool-v2-${{ hashFiles('qemu-minimal/qemu/pyproject.toml') }}
-
-    - name: Install jmespath for Ansible json_query filter
-      run: |
-        py=$(sed -n '1s/^#! *//p' "$(command -v ansible-playbook)" | awk '{print $1}')
-        "${py}" -m pip install --break-system-packages jmespath
-
-    - name: Install qemu-tool
-      run: pip install --break-system-packages -e ./qemu-minimal/qemu
-
-    - name: Generate SSH key-pair
-      run: |
-        mkdir -p "$HOME/.ssh" && ssh-keygen -t rsa -q -f "$HOME/.ssh/id_rsa" -N ""
-        [ "$HOME" = /root ] || { rm -rf /root/.ssh && ln -s "$HOME/.ssh" /root/.ssh; }
-
-    - name: Prepare GnuPG directory for git_setup
-      run: mkdir -p "$HOME/.gnupg"
-
-    - name: Cache Ansible collections
-      uses: actions/cache@v6
-      with:
-        path: /github/home/.ansible/collections
-        key: ansible-collections-v2-${{ hashFiles('qemu-minimal/ansible/requirements.yml') }}
-
-    - name: Install Ansible collections
-      run: ansible-galaxy collection install --pre --no-deps -r qemu-minimal/ansible/requirements.yml
-
-    - name: Cache cloud image
-      uses: actions/cache@v6
-      with:
-        path: ${{ env.VM_IMAGES_DIR }}/*-server-cloudimg-*.img
-        key: cloud-img-amd64-resolute-hsa-snoop-rocjitsu
-
     - name: Ensure images directory exists
       run: mkdir -p "$VM_IMAGES_DIR" && chmod 777 "$VM_IMAGES_DIR"
+
+    - name: Fetch prebuilt rocjitsu guest image
+      run: |
+        set -euo pipefail
+        artifact_dir=$(mktemp -d)
+        cd "$artifact_dir"
+        oras pull "$ROCJITSU_VM_IMAGE"
+        ref_digest=$(
+          oras discover --format json "$ROCJITSU_VM_IMAGE" \
+            | python3 -c 'import json,sys; refs=json.load(sys.stdin).get("referrers", []); assert refs, "no referrers found"; print(refs[0]["digest"])'
+        )
+        oras pull "${ROCJITSU_VM_IMAGE%:*}@${ref_digest}"
+        zstd -d --long=27 --rm ./*.qcow2.zst
+        install -d -m 700 "$HOME/.ssh"
+        install -m 600 id_rsa "$HOME/.ssh/id_rsa"
+        install -m 644 id_rsa.pub "$HOME/.ssh/id_rsa.pub"
+        python3 - <<'PY' >> "$GITHUB_ENV"
+        import json
+        import base64
+        from pathlib import Path
+
+        info = json.loads(Path("vm-info.json").read_text())
+        print(f"VM_USERNAME={info['username']}")
+        print(f"VM_PASSWORD_B64={base64.b64encode(info['password'].encode()).decode()}")
+        PY
+        rm -f "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2" \
+          "$VM_IMAGES_DIR/hsa-snoop-test.qcow2"
+        mv ./*.qcow2 "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2"
+        qemu-img create -F qcow2 \
+          -b "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2" \
+          -f qcow2 "$VM_IMAGES_DIR/hsa-snoop-test.qcow2"
 
     - name: Stage qemu-tool source for sibling containers
       run: |
@@ -139,19 +129,6 @@ jobs:
       run: |
         docker pull "$ROCJITSU_IMAGE"
         docker pull "$QEMU_IMAGE"
-
-    - name: Generate VM with vm-rocjitsu playbook
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        qemu-tool gen-vm \
-          --vm-name hsa-snoop-test \
-          --release resolute \
-          --username ubuntu \
-          --password password \
-          --packages none \
-          --size 64 \
-          --ansible-playbook qemu-minimal/ansible/playbooks/vm-rocjitsu.yml
 
     - name: Bring up rocjitsu compose stack
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
@@ -189,10 +166,11 @@ jobs:
       run: |
         elapsed=0
         while [ $elapsed -lt 180 ]; do
-          if ssh -o ConnectTimeout=1 \
+          if ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+                 -o ConnectTimeout=1 \
                  -o NoHostAuthenticationForLocalhost=yes \
                  -o StrictHostKeyChecking=no \
-                 -p 2222 ubuntu@qemu true 2>/dev/null; then
+                 -p 2222 "$VM_USERNAME"@qemu true 2>/dev/null; then
             echo "VM ready after ${elapsed}s"
             exit 0
           fi
@@ -201,69 +179,112 @@ jobs:
         echo "VM failed to boot in time"
         exit 1
 
-    - name: Verify firmware stubs present
+    - name: Install rocjitsu firmware gap set in guest
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu \
-          "test -f /lib/firmware/amdgpu/gc_12_1_0_imu.bin"
+        set -euo pipefail
+        fw_dir=$(mktemp -d)
+        docker run --rm --entrypoint /bin/sh "$ROCJITSU_IMAGE" \
+          -c 'python3 /usr/local/bin/vfio_guest_firmware.py --set gap --output /out && tar -cf - -C /out .' \
+          | tar -xf - -C "$fw_dir"
+        test -f "$fw_dir/gc_12_1_0_imu.bin"
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu \
+          "rm -rf /tmp/rocjitsu-firmware && mkdir -p /tmp/rocjitsu-firmware"
+        tar -cf - -C "$fw_dir" . \
+          | ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+              -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+              -p 2222 "$VM_USERNAME"@qemu \
+              "tar -xf - -C /tmp/rocjitsu-firmware"
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
+        set -euo pipefail
+        VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
+        sudo_cmd mkdir -p /lib/firmware/amdgpu
+        sudo_cmd cp /tmp/rocjitsu-firmware/* /lib/firmware/amdgpu/
+        sudo_cmd test -f /lib/firmware/amdgpu/gc_12_1_0_imu.bin
+        EOF
         echo "✓ gfx1250 firmware stubs present"
-
-    - name: Verify amdgpu-probe installed
-      run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu \
-          "test -x /usr/local/bin/amdgpu-probe"
-        echo "✓ amdgpu-probe installed"
 
     - name: Verify amdgpu DKMS module installed
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu \
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu \
           "dkms status amdgpu | grep -q installed"
         echo "✓ amdgpu DKMS module installed"
 
-    - name: Load amdgpu via amdgpu-probe
+    - name: Load amdgpu with rocjitsu parameters
       timeout-minutes: 5
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
           -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-          -p 2222 ubuntu@qemu \
-          "sudo timeout 120 /usr/local/bin/amdgpu-probe"
-        echo "✓ amdgpu-probe completed"
+          -p 2222 "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
+        set -euo pipefail
+        VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
+        test ! -d /sys/module/amdgpu
+        sudo_cmd timeout 120 modprobe amdgpu \
+          emu_mode=1 \
+          fw_load_type=0 \
+          discovery=2 \
+          ip_block_mask=0x7f \
+          vm_update_mode=3 \
+          gpu_recovery=0 \
+          vramlimit=1024
+        EOF
+        echo "✓ amdgpu probe completed"
 
     - name: Dump guest dmesg on failure
       if: failure()
       timeout-minutes: 2
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
           -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-          -p 2222 ubuntu@qemu "sudo dmesg | tail -200" || true
+          -p 2222 "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF' || true
+        set -euo pipefail
+        VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' dmesg | tail -200
+        EOF
 
     - name: Verify amdgpu module loaded and a GPU KFD node present
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu "lsmod | grep -q amdgpu"
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu "lsmod | grep -q amdgpu"
         echo "✓ amdgpu module loaded"
-        gpus=$(ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu \
+        gpus=$(ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu \
           "cat /sys/class/kfd/kfd/topology/nodes/*/name 2>/dev/null | grep -c .")
         if [ "$gpus" -lt 1 ]; then
           echo "no GPU KFD node: amdgpu loaded but never bound the device" >&2
-          ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-            -p 2222 ubuntu@qemu "sudo dmesg | grep -i amdgpu | tail -20" >&2
+          ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+            -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+            -p 2222 "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF' >&2
+          set -euo pipefail
+          VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+          printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' dmesg | grep -i amdgpu | tail -20
+          EOF
           exit 1
         fi
         echo "✓ GPU KFD node present ($gpus)"
 
     - name: Copy hsa-snoop source into VM
       run: |
-        scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P 2222 -r hsa-snoop ubuntu@qemu:/tmp/hsa-snoop
+        scp -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -P 2222 -r hsa-snoop "$VM_USERNAME"@qemu:/tmp/hsa-snoop
 
     - name: Build hsa-snoop in VM
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu bash -s <<'EOF'
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
         cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
           -DBUILD_TESTING=ON \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
@@ -275,25 +296,34 @@ jobs:
 
     - name: Run unit tests in VM
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu bash -s <<'EOF'
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
         cd /tmp/hsa-snoop/build
         ctest --exclude-regex sdma-hardware-test --output-on-failure
         EOF
 
     - name: Run hardware test in VM
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu bash -s <<'EOF'
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
+        set -euo pipefail
+        VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
         cd /tmp/hsa-snoop/build
-        sudo ctest -R sdma-hardware-test --output-on-failure
+        sudo_cmd ctest -R sdma-hardware-test --output-on-failure
         EOF
 
     - name: Run hsa-snoop mode coverage in VM
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu bash -s <<'EOF'
+        ssh -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
+
+        VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
 
         build_dir=/tmp/hsa-snoop/build
         artifact_dir=/tmp/hsa-snoop-artifacts
@@ -319,7 +349,7 @@ jobs:
         rm -rf "$artifact_dir"
         mkdir -p "$artifact_dir"/all
 
-        sudo "$binary" \
+        sudo_cmd "$binary" \
           --format json \
           --out "$artifact_dir/launch.json" \
           -- "$gfx" --loops 2 --batch 4 --sleep-ms 50
@@ -336,7 +366,7 @@ jobs:
         "$artifact_dir/attach-target.sh" &
         target_pid=$!
         trap 'kill "$target_pid" 2>/dev/null || true' EXIT
-        sudo "$binary" \
+        sudo_cmd "$binary" \
           --pid "$target_pid" \
           --duration 10 \
           --format json \
@@ -347,7 +377,7 @@ jobs:
         test -s "$artifact_dir/pid.json"
         grep -Eq '"name":"(vadd|vscale|vdot)"' "$artifact_dir/pid.json"
 
-        sudo "$binary" \
+        sudo_cmd "$binary" \
           --all \
           --duration 15 \
           --format json \
@@ -360,7 +390,7 @@ jobs:
         find "$artifact_dir/all" -type f -name '*.json' | grep -q .
         grep -R -Eq '"name":"(vadd|vscale|vdot|copy_linear)"' "$artifact_dir/all"
 
-        sudo "$binary" \
+        sudo_cmd "$binary" \
           --all \
           --prometheus \
           --prometheus-port 9488 \
@@ -405,10 +435,12 @@ jobs:
       if: always()
       run: |
         mkdir -p ./artifacts
-        scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P 2222 -r ubuntu@qemu:/tmp/hsa-snoop/build/Testing ./artifacts/test-results || true
-        scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P 2222 -r ubuntu@qemu:/tmp/hsa-snoop-artifacts ./artifacts/hsa-snoop-artifacts || true
+        scp -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -P 2222 -r "$VM_USERNAME"@qemu:/tmp/hsa-snoop/build/Testing ./artifacts/test-results || true
+        scp -i "$HOME/.ssh/id_rsa" -o IdentitiesOnly=yes \
+          -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
+          -P 2222 -r "$VM_USERNAME"@qemu:/tmp/hsa-snoop-artifacts ./artifacts/hsa-snoop-artifacts || true
 
     - name: Upload test results
       if: always()
