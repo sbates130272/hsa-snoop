@@ -16,6 +16,9 @@ on:
       - 'systemd/**'
       - '.github/workflows/hsa-snoop-build-check.yml'
 
+permissions:
+  contents: read
+
 jobs:
   build-check:
     name: build-check for hsa-snoop

@@ -12,6 +12,9 @@ on:
       - '.spellcheck.yml'
       - '.github/workflows/hsa-snoop-spell-check.yml'
 
+permissions:
+  contents: read
+
 jobs:
   spell-check:
     name: spell-check for hsa-snoop

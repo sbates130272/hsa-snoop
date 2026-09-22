@@ -15,6 +15,9 @@ on:
       - 'tests/**'
       - '.github/workflows/hsa-snoop-vm-hardware-test.yml'
 
+permissions:
+  contents: read
+
 env:
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
   QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest

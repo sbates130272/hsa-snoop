@@ -13,6 +13,9 @@ on:
       - '.clang-format'
       - '.github/workflows/hsa-snoop-clang-format.yml'
 
+permissions:
+  contents: read
+
 jobs:
   clang-format:
     name: clang-format lint for hsa-snoop

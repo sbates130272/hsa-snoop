@@ -16,6 +16,9 @@ on:
       - 'grafana/**'
       - '.github/workflows/hsa-snoop-debian-package.yml'
 
+permissions:
+  contents: read
+
 jobs:
   build-deb:
     name: Build Debian package (Prometheus)
