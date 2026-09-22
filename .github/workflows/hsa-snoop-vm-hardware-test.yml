@@ -360,22 +360,14 @@ jobs:
     - name: Load amdgpu with rocjitsu parameters
       timeout-minutes: 5
       run: |
-        vm-ssh \
-          -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
-        set -euo pipefail
-        VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
-        sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
-        test ! -d /sys/module/amdgpu
-        sudo_cmd timeout 120 modprobe amdgpu \
-          emu_mode=1 \
-          fw_load_type=0 \
-          discovery=2 \
-          ip_block_mask=0x7f \
-          vm_update_mode=3 \
-          gpu_recovery=0 \
-          vramlimit=1024
-        EOF
+        # Copy amdgpu-probe into the guest and run it.  The script is sourced
+        # from ci/ (mirrors qemu-minimal's vm-rocjitsu.yml) so the parameters
+        # and the already-loaded check stay in one place.
+        tar -cf - -C hsa-snoop/ci amdgpu-probe.sh \
+          | vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
+              "tar -xf - -C /tmp && chmod +x /tmp/amdgpu-probe.sh"
+        vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
+          "timeout 120 /tmp/amdgpu-probe.sh"
         echo "✓ amdgpu probe completed"
 
     - name: Dump guest dmesg on failure
