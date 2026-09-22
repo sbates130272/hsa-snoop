@@ -229,22 +229,26 @@ jobs:
       # The VM image's netplan matches on macaddress "52:54:00:12:34:56"
       # (interface name enp0s2), but qemu-tool assigns a different MAC so
       # the NIC comes up as enp0s3 with no DHCP — SLIRP hostfwd never
-      # forwards the SSH banner.  The QEMU Guest Agent works without networking,
-      # so use it to assign the SLIRP static IP (10.0.2.15/24, gw 10.0.2.2)
-      # and start sshd before the SSH wait loop below.
-      # Remove this step once the VM image uses `match: driver: virtio_net`.
+      # forwards the SSH banner.  The QEMU Guest Agent socket lives inside
+      # the qemu compose container; exec into it to reach the socket without
+      # networking.  Remove this step once the VM image uses
+      # `match: driver: virtio_net` in its netplan config.
       run: |
         set -euo pipefail
+        qemu_container="vfio-user-rocjitsu-vm-qemu-1"
         qga_sock="/tmp/qga-hsa-snoop-test-2222.sock"
+
+        # Wait for the QEMU container to create the QGA socket
         elapsed=0
         while [ $elapsed -lt 120 ]; do
-          [ -S "$qga_sock" ] && break
+          docker exec "$qemu_container" test -S "$qga_sock" 2>/dev/null && break
           sleep 2; elapsed=$((elapsed + 2))
         done
-        [ -S "$qga_sock" ] || { echo "QGA socket never appeared"; exit 1; }
+        docker exec "$qemu_container" test -S "$qga_sock" \
+          || { echo "QGA socket never appeared in $qemu_container"; exit 1; }
 
-        python3 - "$qga_sock" <<'PY'
-        import socket, json, base64, sys, time
+        docker exec "$qemu_container" python3 - "$qga_sock" <<'PY'
+        import socket, json, sys, time
 
         qga_path = sys.argv[1]
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
