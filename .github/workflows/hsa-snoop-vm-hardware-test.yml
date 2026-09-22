@@ -166,7 +166,11 @@ jobs:
         echo "Compose stack started"
 
     - name: Join the compose network
-      run: docker network connect vfio-user-rocjitsu-vm_default "$(cat /etc/hostname)"
+      run: |
+        container_id=$(cat /etc/hostname)
+        docker inspect "$container_id" \
+          | grep -q '"vfio-user-rocjitsu-vm_default"' \
+          || docker network connect vfio-user-rocjitsu-vm_default "$container_id"
 
     - name: Wait for rocjitsu server healthy
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
@@ -297,6 +301,13 @@ jobs:
         gfx="$build_dir/examples/gfx-test"
         sdma="$build_dir/examples/sdma-test"
 
+        cleanup_prom() {
+          if [ "${prom_pid:-}" ]; then
+            kill "$prom_pid" 2>/dev/null || true
+            wait "$prom_pid" || true
+          fi
+        }
+
         rm -rf "$artifact_dir"
         mkdir -p "$artifact_dir"/all
 
@@ -347,6 +358,7 @@ jobs:
           --prometheus-port 9488 \
           --duration 20 &
         prom_pid=$!
+        trap cleanup_prom EXIT
         python3 - <<'PY'
         import sys, time, urllib.request
         for _ in range(30):
@@ -374,6 +386,7 @@ jobs:
         sys.exit(1)
         PY
         wait "$prom_pid"
+        trap - EXIT
         grep -q '^hsa_snoop_up ' "$artifact_dir/prometheus.txt"
         grep -q 'hsa_kernel_launches_total' "$artifact_dir/prometheus.txt"
         grep -q 'hsa_sdma_copies_total' "$artifact_dir/prometheus.txt"
