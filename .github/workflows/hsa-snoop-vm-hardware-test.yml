@@ -107,6 +107,7 @@ jobs:
 
         manifest = json.load(open(os.environ["MANIFEST_JSON"]))
         discover = json.load(open(os.environ["REFERRERS_JSON"]))
+        referrers = discover.get("manifests", discover.get("referrers", []))
         annotations = manifest.get("annotations") or {}
         expected = {
             "org.opencontainers.image.description",
@@ -118,7 +119,7 @@ jobs:
             "io.batesste.ci-images.target",
         }
         matches = []
-        for ref in discover.get("referrers", []):
+        for ref in referrers:
             if ref.get("artifactType") != "application/vnd.batesste.vm-info.v1":
                 continue
             ref_annotations = ref.get("annotations") or {}
