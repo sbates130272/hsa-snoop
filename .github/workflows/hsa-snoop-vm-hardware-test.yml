@@ -275,7 +275,6 @@ jobs:
     - name: Prepare emulated NVMe filesystem in guest
       run: |
         vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
@@ -303,16 +302,13 @@ jobs:
           | tar -xf - -C "$fw_dir"
         test -f "$fw_dir/gc_12_1_0_imu.bin"
         vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
           "rm -rf /tmp/rocjitsu-firmware && mkdir -p /tmp/rocjitsu-firmware"
         tar -cf - -C "$fw_dir" . \
           | vm-ssh \
-    
               -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
               "tar -xf - -C /tmp/rocjitsu-firmware"
         vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
@@ -326,7 +322,6 @@ jobs:
     - name: Verify amdgpu DKMS module installed
       run: |
         vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
           "dkms status amdgpu | grep -q installed"
         echo "✓ amdgpu DKMS module installed"
@@ -335,7 +330,6 @@ jobs:
       timeout-minutes: 5
       run: |
         vm-ssh \
-
           -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
@@ -358,7 +352,6 @@ jobs:
       timeout-minutes: 2
       run: |
         vm-ssh \
-
           -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF' || true
         set -euo pipefail
@@ -369,17 +362,14 @@ jobs:
     - name: Verify amdgpu module loaded and a GPU KFD node present
       run: |
         vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "lsmod | grep -q amdgpu"
         echo "✓ amdgpu module loaded"
         gpus=$(vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
           "cat /sys/class/kfd/kfd/topology/nodes/*/name 2>/dev/null | grep -c .")
         if [ "$gpus" -lt 1 ]; then
           echo "no GPU KFD node: amdgpu loaded but never bound the device" >&2
           vm-ssh \
-  
             -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF' >&2
           set -euo pipefail
           VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
@@ -389,7 +379,6 @@ jobs:
         fi
         echo "✓ GPU KFD node present ($gpus)"
         vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 bash -s <<'EOF'
         set -euo pipefail
         for card in /sys/class/drm/card*; do
@@ -417,7 +406,6 @@ jobs:
     - name: Build hsa-snoop in VM
       run: |
         vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 bash -s <<'EOF'
         cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
           -DBUILD_TESTING=ON \
@@ -431,7 +419,6 @@ jobs:
     - name: Build and install hsa-snoop .deb in VM
       run: |
         vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
@@ -461,7 +448,6 @@ jobs:
     - name: Build fio hipfile test tool in VM
       run: |
         vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 FIO_REPO=$FIO_REPO FIO_COMMIT=$FIO_COMMIT bash -s" <<'EOF'
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
@@ -491,7 +477,6 @@ jobs:
     - name: Run unit tests in VM
       run: |
         vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 bash -s <<'EOF'
         cd /tmp/hsa-snoop/build
         ctest --exclude-regex sdma-hardware-test --output-on-failure
@@ -500,7 +485,6 @@ jobs:
     - name: Run hardware test in VM
       run: |
         vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
@@ -512,7 +496,6 @@ jobs:
     - name: Run hsa-snoop mode, Prometheus, and AIS coverage in VM
       run: |
         vm-ssh \
-
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
         set -euo pipefail
 
