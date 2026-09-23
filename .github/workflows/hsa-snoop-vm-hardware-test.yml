@@ -411,16 +411,16 @@ jobs:
 
     - name: Build hsa-snoop in VM
       run: |
-        vm-ssh \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 bash -s <<'EOF'
-        cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
-          -DBUILD_TESTING=ON \
-          -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-          -DGPU_TARGETS=gfx1250 \
-          -DHSA_SNOOP_HARDWARE_TESTS=ON \
-          -DHSA_SNOOP_PROMETHEUS=ON
-        cmake --build /tmp/hsa-snoop/build --parallel $(nproc)
-        EOF
+        vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
+          "ROCM_PATH=\$(for d in /opt/rocm /opt/rocm/*; do [ -d \"\$d/lib\" ] && echo \"\$d\" && break; done); \
+           cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
+             -DBUILD_TESTING=ON \
+             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+             -DGPU_TARGETS=gfx1250 \
+             -DHSA_SNOOP_HARDWARE_TESTS=ON \
+             -DHSA_SNOOP_PROMETHEUS=ON \
+             -DCMAKE_PREFIX_PATH=\$ROCM_PATH && \
+           cmake --build /tmp/hsa-snoop/build --parallel \$(nproc)"
 
     - name: Build and install hsa-snoop .deb in VM
       run: |
