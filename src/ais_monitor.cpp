@@ -12,6 +12,7 @@
 // -> /sys/class/block/... -> PCI slot once per unique <pid,fd> pair.
 #include "ais_monitor.h"
 
+#include <algorithm>
 #include <fcntl.h>
 #include <limits.h>
 #include <signal.h>
