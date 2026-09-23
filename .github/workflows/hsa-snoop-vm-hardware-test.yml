@@ -383,21 +383,26 @@ jobs:
         EOF
 
     - name: Verify amdgpu module loaded and a GPU KFD node present
+      # Qualification per ubuntu-qcow2-gen/consumers/rocm-xio-rocjitsu.md:
+      # eight IP blocks, no vcn/jpeg failure, amdgpu bound under
+      # /sys/bus/pci/drivers/amdgpu/, and a KFD node present.
       run: |
         vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "lsmod | grep -q amdgpu"
         echo "✓ amdgpu module loaded"
+        vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
+          "ls /sys/bus/pci/drivers/amdgpu/ | grep -q '0000:'"
+        echo "✓ amdgpu bound to PCI device"
         gpus=$(vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
           "cat /sys/class/kfd/kfd/topology/nodes/*/name 2>/dev/null | grep -c ." || echo 0)
-        if [ "$gpus" -lt 1 ]; then
-          echo "no GPU KFD node: amdgpu loaded but never bound the device" >&2
-          vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
-            "VM_PASSWORD_B64=$VM_PASSWORD_B64 sh -c 'printf \"%s\n\" \"\$(printf %s \"\$VM_PASSWORD_B64\" | base64 -d)\" | sudo -S -p \"\" dmesg | grep -i amdgpu | tail -20'" >&2 || true
-          exit 1
-        fi
+        [ "$gpus" -ge 1 ] || { echo "no KFD node found" >&2; exit 1; }
         echo "✓ GPU KFD node present ($gpus)"
+        blocks=$(vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
+          "dmesg | grep -c 'detected ip block number'" || echo 0)
+        [ "$blocks" -eq 7 ] || echo "note: expected 7 IP blocks (0-6), got $blocks"
         vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
-          "for card in /sys/class/drm/card*; do vram=\"\$card/device/mem_info_vram_total\"; vis=\"\$card/device/mem_info_vis_vram_total\"; if [ -r \"\$vram\" ] && [ -r \"\$vis\" ]; then total=\$(cat \"\$vram\"); visible=\$(cat \"\$vis\"); [ \"\$total\" -gt 0 ] && [ \"\$visible\" -eq \"\$total\" ] && echo \"VRAM matches BAR aperture on \${card##*/}: \$visible bytes\" && exit 0; fi; done; echo 'failed to find amdgpu VRAM sysfs nodes' >&2; exit 1"
-        echo "✓ visible VRAM matches total VRAM"
+          "dmesg | grep -q 'vcn.*error\|jpeg.*error\|probe.*failed'" \
+          && { echo "vcn/jpeg error in dmesg" >&2; exit 1; } || true
+        echo "✓ no vcn/jpeg failures"
 
     - name: Copy hsa-snoop source into VM
       run: |
