@@ -26,7 +26,8 @@ const char* VersionName(Version version) {
 }
 
 bool IsSupportedVersion(Version version) {
-    return version == Version::V4 || version == Version::V6;
+    return version == Version::V4 || version == Version::V6 ||
+           version == Version::V7;
 }
 
 Version VersionFromGfxTarget(uint32_t gfx_target_version) {
@@ -78,16 +79,18 @@ Version DetectVersion(uint32_t gpu_id, const char* topology_root) {
 
 bool IsLinearCopy(Version version, uint8_t sub_op) {
     return (version == Version::V4 && sub_op == SUBOP_COPY_LINEAR) ||
-           (version == Version::V6 &&
+           ((version == Version::V6 || version == Version::V7) &&
             (sub_op == SUBOP_COPY_LINEAR || sub_op == SUBOP_COPY_LINEAR_BC));
 }
 
 uint64_t LinearCopyBytes(Version version, uint8_t sub_op, uint32_t count_dw) {
     if (!IsLinearCopy(version, sub_op))
         return 0;
-    const uint32_t mask = version == Version::V6 && sub_op == SUBOP_COPY_LINEAR
-                              ? kLinearCopyCountMask30
-                              : kLinearCopyCountMask22;
+    const uint32_t mask =
+        (version == Version::V6 || version == Version::V7) &&
+                sub_op == SUBOP_COPY_LINEAR
+            ? kLinearCopyCountMask30
+            : kLinearCopyCountMask22;
     return static_cast<uint64_t>(count_dw & mask) + 1;
 }
 
@@ -126,13 +129,15 @@ const char* OpName(Version version, uint8_t op) {
     case OP_VERSION_SPECIFIC_16:
         if (version == Version::V4)
             return "dummy_trap";
-        if (version == Version::V6)
+        if (version == Version::V6 || version == Version::V7)
             return "gpuvm_inv";
         return "unknown";
     case OP_GCR_REQ:
-        return version == Version::V6 ? "gcr_req" : "unknown";
+        return (version == Version::V6 || version == Version::V7) ? "gcr_req"
+                                                                   : "unknown";
     case OP_V6_DUMMY_TRAP:
-        return version == Version::V6 ? "dummy_trap" : "unknown";
+        return (version == Version::V6 || version == Version::V7) ? "dummy_trap"
+                                                                   : "unknown";
     }
     return "unknown";
 }
@@ -156,17 +161,27 @@ const char* CopySubOpName(Version version, uint8_t sub_op) {
     case SUBOP_COPY_LINEAR_PHY:
         return "linear_physical";
     case SUBOP_COPY_LINEAR_BC:
-        return version == Version::V6 ? "linear_bc" : "unknown";
+        return (version == Version::V6 || version == Version::V7) ? "linear_bc"
+                                                                   : "unknown";
     case SUBOP_COPY_TILED_BC:
-        return version == Version::V6 ? "tiled_bc" : "unknown";
+        return (version == Version::V6 || version == Version::V7) ? "tiled_bc"
+                                                                   : "unknown";
     case SUBOP_COPY_LINEAR_SUB_WIND_BC:
-        return version == Version::V6 ? "linear_subwindow_bc" : "unknown";
+        return (version == Version::V6 || version == Version::V7)
+                   ? "linear_subwindow_bc"
+                   : "unknown";
     case SUBOP_COPY_TILED_SUB_WIND_BC:
-        return version == Version::V6 ? "tiled_subwindow_bc" : "unknown";
+        return (version == Version::V6 || version == Version::V7)
+                   ? "tiled_subwindow_bc"
+                   : "unknown";
     case SUBOP_COPY_T2T_SUB_WIND_BC:
-        return version == Version::V6 ? "t2t_subwindow_bc" : "unknown";
+        return (version == Version::V6 || version == Version::V7)
+                   ? "t2t_subwindow_bc"
+                   : "unknown";
     case SUBOP_COPY_LINEAR_SUB_WIND_LARGE:
-        return version == Version::V6 ? "linear_subwindow_large" : "unknown";
+        return (version == Version::V6 || version == Version::V7)
+                   ? "linear_subwindow_large"
+                   : "unknown";
     }
     return "unknown";
 }
@@ -238,6 +253,17 @@ uint32_t CopyPacketLenV6(uint32_t header) {
     }
 }
 
+// v7 (gfx12) adds an unconditional DCC metadata word to COPY_LINEAR, making it
+// 8 DW instead of 7. All other sub-op lengths are unchanged from v6.
+uint32_t CopyPacketLenV7(uint32_t header) {
+    const uint8_t sub = HeaderSubOp(header);
+    if (HeaderBroadcast(header))
+        return BroadcastCopyPacketLen(sub);
+    if (sub == SUBOP_COPY_LINEAR || sub == SUBOP_COPY_LINEAR_BC)
+        return 8;
+    return CopyPacketLenV6(header);
+}
+
 uint32_t PollPacketLen(Version version, uint8_t sub) {
     switch (sub) {
     case 0: // POLL_REGMEM
@@ -248,8 +274,8 @@ uint32_t PollPacketLen(Version version, uint8_t sub) {
         return 5;
     case 3: // POLL_MEM_VERIFY
         return 13;
-    case 4: // VM_INVALIDATION (v6)
-        return version == Version::V6 ? 4 : 0;
+    case 4: // VM_INVALIDATION (v6+)
+        return (version == Version::V6 || version == Version::V7) ? 4 : 0;
     default:
         return 0;
     }
@@ -284,8 +310,11 @@ uint32_t PacketLenDwords(Version version, const uint32_t* dw, uint32_t navail) {
         // Header + `count` trailing dwords (count may be 0).
         return 1 + NopCount(dw0);
     case OP_COPY:
-        return version == Version::V4 ? CopyPacketLenV4(dw0)
-                                      : CopyPacketLenV6(dw0);
+        if (version == Version::V4)
+            return CopyPacketLenV4(dw0);
+        if (version == Version::V7)
+            return CopyPacketLenV7(dw0);
+        return CopyPacketLenV6(dw0);
     case OP_WRITE: {
         // header, dst_addr_lo, dst_addr_hi, count(dwords-1), data[count+1].
         if (sub != 0 || navail < 4)
@@ -319,9 +348,9 @@ uint32_t PacketLenDwords(Version version, const uint32_t* dw, uint32_t navail) {
     case OP_VERSION_SPECIFIC_16:
         return version == Version::V4 ? 2 : 4;
     case OP_GCR_REQ:
-        return version == Version::V6 ? 5 : 0;
+        return (version == Version::V6 || version == Version::V7) ? 5 : 0;
     case OP_V6_DUMMY_TRAP:
-        return version == Version::V6 ? 2 : 0;
+        return (version == Version::V6 || version == Version::V7) ? 2 : 0;
     }
     return 0; // unknown opcode
 }
