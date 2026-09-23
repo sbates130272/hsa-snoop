@@ -1,0 +1,86 @@
+name: hsa-snoop - docs-deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'README.md'
+      - 'docs/**'
+      - 'ci/report/publish-perf.py'
+      - '.github/workflows/docs-deploy.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish-site:
+    name: publish GitHub Pages site
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Fetch the published performance history
+        run: |
+          set -euo pipefail
+          mkdir -p docs/perf-history
+          if git fetch --quiet --depth 1 origin gh-pages 2>/dev/null \
+             && git show FETCH_HEAD:perf/history.jsonl \
+                  > docs/perf-history/history.jsonl 2>/dev/null; then
+            echo "using $(wc -l < docs/perf-history/history.jsonl) published runs"
+          else
+            echo "::notice::no published history on gh-pages; rendering the placeholder"
+          fi
+
+      - name: Render the performance tracker assets
+        run: |
+          python3 ci/report/publish-perf.py --render-only --docs-dir docs
+
+      - name: Publish to gh-pages
+        run: |
+          set -euo pipefail
+
+          git config user.name  "hsa-snoop-ci"
+          git config user.email "hsa-snoop-ci@users.noreply.github.com"
+          git config commit.gpgSign false
+
+          git fetch --quiet origin gh-pages
+          git worktree add --quiet --detach ../gh-pages FETCH_HEAD
+
+          for attempt in 1 2 3; do
+            rsync -a --delete \
+              --exclude '.git' \
+              --exclude 'perf/' \
+              docs/ ../gh-pages/
+
+            touch ../gh-pages/.nojekyll
+
+            git -C ../gh-pages add -A
+            if git -C ../gh-pages diff --cached --quiet; then
+              echo "site unchanged"
+              exit 0
+            fi
+            git -C ../gh-pages commit \
+              -m "docs: publish site from ${GITHUB_SHA}" \
+              -m "Built by docs-deploy.yml. [skip ci]"
+
+            if git -C ../gh-pages push origin HEAD:gh-pages; then
+              echo "published"
+              exit 0
+            fi
+            echo "push rejected (attempt ${attempt}); refreshing and retrying"
+            sleep $((attempt * 5))
+            git fetch --quiet origin gh-pages
+            git -C ../gh-pages reset --hard FETCH_HEAD
+          done
+
+          echo "::error::could not push the site after 3 attempts"
+          exit 1
