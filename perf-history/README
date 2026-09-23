@@ -1,0 +1,8 @@
+# Scratch space for ci/report/publish-perf.py. The durable record lives at
+# perf/history.jsonl on the gh-pages branch, alongside the badge-*.json files
+# that back the GitHub Pages performance summary.
+#
+# What is committed on main is only a placeholder so local runs and pull-request
+# checks can still render a complete tracker page before any published history
+# exists. During docs deployment and perf publishing, the real gh-pages history
+# is copied into docs/perf-history/ first and the tools operate on that data.
