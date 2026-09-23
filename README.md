@@ -24,8 +24,8 @@ sudo ./hsa-snoop --all               # monitor every GPU process system-wide
 
 Project pages and performance tracking:
 
-- GitHub Pages site: <https://sbates130272.github.io/hsa-snoop/>
-- Performance tracker: <https://sbates130272.github.io/hsa-snoop/perf/>
+- [GitHub Pages site](https://sbates130272.github.io/hsa-snoop/)
+- [Performance tracker](https://sbates130272.github.io/hsa-snoop/perf/)
 
 Example (from the bundled `gfx-test` example):
 
