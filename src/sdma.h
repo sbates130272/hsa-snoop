@@ -20,8 +20,9 @@
 namespace sdma {
 
 // KFD topology exposes gfx_target_version rather than the SDMA IP version.
-// gfx9 uses SDMA v4, gfx10 uses v5, and gfx11 uses v6. Only v4 and v6 have
-// packet tables below; known but unsupported generations fail closed.
+// gfx9 uses SDMA v4, gfx10 uses v5, gfx11 uses v6, and gfx12 uses v7. v4,
+// v6, and v7 are supported; v7 reuses the v6 packet layout. v5 and unknown
+// generations fail closed.
 enum class Version : uint8_t {
     Unknown = 0,
     V4 = 4,
