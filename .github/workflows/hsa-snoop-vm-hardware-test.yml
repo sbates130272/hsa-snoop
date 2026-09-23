@@ -411,18 +411,25 @@ jobs:
 
     - name: Build hsa-snoop in VM
       run: |
+        # Build the core binary and tests without cmake's HIP language support,
+        # which cmake 4.2 breaks with therock's hipcc wrapper.  Compile the
+        # .hip examples separately with hipcc directly -- the same approach
+        # qemu-minimal uses for all HIP compilation.
         vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
-          "ROCM_PATH=\$(for d in /opt/rocm /opt/rocm/*; do [ -d \"\$d/lib\" ] && echo \"\$d\" && break; done); \
-           CLANG=\$(find \$ROCM_PATH/lib/llvm/bin \$ROCM_PATH/bin -name 'clang' -not -name 'clang++' 2>/dev/null | head -1); \
+          "ROCM_PATH=\$(for d in /opt/rocm/core-* /opt/rocm; do [ -d \"\$d/bin\" ] && echo \"\$d\" && break; done); \
            cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
              -DBUILD_TESTING=ON \
              -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-             -DGPU_TARGETS=gfx1250 \
-             -DHSA_SNOOP_HARDWARE_TESTS=ON \
-             -DHSA_SNOOP_PROMETHEUS=ON \
-             -DCMAKE_PREFIX_PATH=\$ROCM_PATH \
-             \${CLANG:+-DCMAKE_HIP_COMPILER=\$CLANG} && \
-           cmake --build /tmp/hsa-snoop/build --parallel \$(nproc)"
+             -DHSA_SNOOP_HARDWARE_TESTS=OFF \
+             -DHSA_SNOOP_PROMETHEUS=ON && \
+           cmake --build /tmp/hsa-snoop/build --parallel \$(nproc) && \
+           mkdir -p /tmp/hsa-snoop/build/examples && \
+           for src in /tmp/hsa-snoop/examples/*.hip; do \
+             name=\$(basename \"\$src\" .hip); \
+             \$ROCM_PATH/bin/hipcc --offload-arch=gfx1250 \
+               -o /tmp/hsa-snoop/build/examples/\$name \$src; \
+             echo built: \$name; \
+           done"
 
     - name: Build and install hsa-snoop .deb in VM
       run: |
@@ -492,14 +499,19 @@ jobs:
 
     - name: Run hardware test in VM
       run: |
-        vm-ssh \
-          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
-        set -euo pipefail
-        VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
-        sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
-        cd /tmp/hsa-snoop/build
-        sudo_cmd ctest -R sdma-hardware-test --output-on-failure
-        EOF
+        # sdma-hardware-test is not registered by ctest (HSA_SNOOP_HARDWARE_TESTS=OFF);
+        # run the equivalent directly: hsa-snoop tracing sdma-test, per
+        # tests/sdma_hardware_test.cmake
+        vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
+          "VM_PASSWORD_B64=$VM_PASSWORD_B64 sh -c '\
+            VM_SUDO_PASSWORD=\$(printf %s \"\$VM_PASSWORD_B64\" | base64 -d); \
+            printf \"%s\n\" \"\$VM_SUDO_PASSWORD\" | sudo -S -p \"\" \
+              /tmp/hsa-snoop/build/hsa-snoop \
+              --format json \
+              --out /tmp/sdma-hardware-test.json \
+              --poll-us 20 \
+              -- /tmp/hsa-snoop/build/examples/sdma-test --streams 1 --buf-mb 1 --iters 20 --report 0 && \
+            test -s /tmp/sdma-hardware-test.json'"
 
     - name: Run hsa-snoop mode, Prometheus, and AIS coverage in VM
       run: |
