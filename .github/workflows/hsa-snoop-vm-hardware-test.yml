@@ -569,11 +569,16 @@ jobs:
         test -d "$nvme_dir"
 
         sudo_cmd "$binary" \
+          --all \
+          --duration 10 \
           --format json \
-          --out "$artifact_dir/launch.json" \
-          -- "$gfx" --loops 2 --batch 4 --sleep-ms 50
-        test -s "$artifact_dir/launch.json"
-        grep -Eq '"name":"(vadd|vscale|vdot)"' "$artifact_dir/launch.json"
+          --out-dir "$artifact_dir/launch-mode" &
+        launch_pid=$!
+        sleep 2
+        "$gfx" --loops 2 --batch 4 --sleep-ms 50
+        wait "$launch_pid"
+        find "$artifact_dir/launch-mode" -name '*.json' | grep -q .
+        grep -R -Eq '"name":"(vadd|vscale|vdot)"' "$artifact_dir/launch-mode"
 
         cat > "$artifact_dir/attach-target.sh" <<'ATTACH'
         #!/usr/bin/env bash
