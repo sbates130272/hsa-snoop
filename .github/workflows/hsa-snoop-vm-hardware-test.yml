@@ -589,7 +589,7 @@ jobs:
         all_pid=$!
         sleep 3
         "$gfx" --loops 2 --batch 4 --sleep-ms 50
-        timeout 30 "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0 || true
+        "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0
         wait "$all_pid"
         find "$artifact_dir/all" -type f -name '*.json' | grep -q .
         grep -R -Eq '"name":"(vadd|vscale|vdot|copy_linear)"' "$artifact_dir/all"
@@ -660,7 +660,7 @@ jobs:
         PY
         sudo_cmd systemctl is-active --quiet hsa-snoop-prometheus.service
         "$gfx" --loops 2 --batch 4 --sleep-ms 50
-        timeout 30 "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0 || true
+        "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0
         "$fio" \
           --name=hipfile-write \
           --filename="$nvme_dir/hipfile.bin" \
