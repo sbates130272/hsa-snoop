@@ -591,7 +591,8 @@ jobs:
         exec /tmp/hsa-snoop/build/examples/gfx-test --loops 0 --batch 4 --sleep-ms 50
         ATTACH
         chmod +x "$artifact_dir/attach-target.sh"
-        "$artifact_dir/attach-target.sh" &
+        # Run as root so it can open KFD (ubuntu cannot open KFD on rocjitsu).
+        sudo_cmd bash "$artifact_dir/attach-target.sh" &
         target_pid=$!
         trap 'kill "$target_pid" 2>/dev/null || true' EXIT
         sudo_cmd "$binary" \
