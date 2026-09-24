@@ -181,6 +181,7 @@ jobs:
         EOF
 
     - name: Run hardware test in VM
+      timeout-minutes: 3
       run: |
         ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
           -p 2222 ubuntu@localhost bash -s <<'EOF'
