@@ -1,0 +1,154 @@
+name: hsa-snoop - Publish Pages
+
+on:
+  workflow_run:
+    workflows:
+      - hsa-snoop - VM Hardware Test
+    types:
+      - completed
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - '.github/workflows/hsa-snoop-publish-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Queue completions; never cancel an in-progress publish since each one
+# appends to the perf history and a gap in the record is permanent.
+concurrency:
+  group: publish-pages
+  cancel-in-progress: false
+
+jobs:
+  publish-pages:
+    name: Publish Pages
+    runs-on: ubuntu-latest
+    # Skip if triggered by a failed VM Hardware Test run; always run on
+    # push-to-main or manual dispatch.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+    - name: Check out hsa-snoop
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Download Prometheus snapshot (workflow_run trigger)
+      if: github.event_name == 'workflow_run'
+      uses: actions/download-artifact@v7
+      with:
+        name: hsa-snoop-perf
+        path: ./perf-snapshot
+        run-id: ${{ github.event.workflow_run.id }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+      continue-on-error: true
+
+    - name: Download latest Prometheus snapshot (push / manual trigger)
+      if: github.event_name != 'workflow_run'
+      uses: dawidd6/action-download-artifact@v6
+      with:
+        name: hsa-snoop-perf
+        path: ./perf-snapshot
+        workflow: hsa-snoop-vm-hardware-test.yml
+        workflow_conclusion: success
+        branch: main
+      continue-on-error: true
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Append perf history entry
+      run: |
+        PROMETHEUS_FILE=./perf-snapshot/prometheus.txt
+        if [ ! -f "$PROMETHEUS_FILE" ]; then
+          echo "No Prometheus snapshot available; skipping perf update"
+          exit 0
+        fi
+        python3 ci/report/publish-perf.py \
+          --prometheus-file "$PROMETHEUS_FILE" \
+          --docs-dir docs \
+          --runner github-hosted
+
+    - name: Publish docs and perf to gh-pages
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+
+        bail() { echo "::warning::$1; pages not published"; exit 0; }
+
+        remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+        git config --global --add safe.directory '*' || true
+        git config --global user.name  "hsa-snoop-ci"
+        git config --global user.email "hsa-snoop-ci@users.noreply.github.com"
+        git config --global commit.gpgSign false
+
+        pages="$(mktemp -d)"
+        git clone --quiet --depth 1 --branch gh-pages "$remote" "$pages" \
+          || bail "could not clone gh-pages (has it been seeded?)"
+
+        # Seed perf history so each run appends to the real record.
+        mkdir -p docs/perf-history
+        cp "$pages/perf/history.jsonl" docs/perf-history/history.jsonl 2>/dev/null || true
+        cp "$pages"/perf/badge-*.json  docs/perf-history/           2>/dev/null || true
+
+        PROMETHEUS_FILE=./perf-snapshot/prometheus.txt
+        if [ -f "$PROMETHEUS_FILE" ]; then
+          python3 ci/report/publish-perf.py \
+            --prometheus-file "$PROMETHEUS_FILE" \
+            --docs-dir docs \
+            --runner github-hosted
+        fi
+
+        for attempt in 1 2 3; do
+          # Sync docs/ content (HTML, CSS, images).
+          rsync -a --delete docs/ "$pages/" \
+            --exclude perf-history \
+            || bail "could not sync docs/"
+
+          # Sync perf history into gh-pages/perf/.
+          mkdir -p "$pages/perf"
+          cp docs/perf-history/history.jsonl "$pages/perf/" 2>/dev/null || true
+          cp docs/perf-history/badge-*.json  "$pages/perf/" 2>/dev/null || true
+          cp docs/perf-history/index.html    "$pages/perf/" 2>/dev/null || true
+
+          git -C "$pages" add -A || bail "could not stage changes"
+          if git -C "$pages" diff --cached --quiet; then
+            echo "nothing to publish"
+            exit 0
+          fi
+          git -C "$pages" commit \
+            -m "pages: publish from run ${GITHUB_RUN_ID}" \
+            -m "[skip ci]" \
+            || bail "could not commit"
+
+          if git -C "$pages" push origin HEAD:gh-pages; then
+            echo "published"
+            exit 0
+          fi
+
+          echo "push rejected (attempt ${attempt}); refreshing and retrying"
+          sleep $((attempt * 5))
+          git -C "$pages" reset --hard HEAD~1 || bail "could not unwind rejected commit"
+          git -C "$pages" fetch --quiet --depth 1 origin gh-pages \
+            || bail "could not refresh gh-pages"
+          git -C "$pages" reset --hard FETCH_HEAD || bail "could not reset to fetched HEAD"
+          cp "$pages/perf/history.jsonl" docs/perf-history/history.jsonl 2>/dev/null || true
+          cp "$pages"/perf/badge-*.json  docs/perf-history/           2>/dev/null || true
+          if [ -f "$PROMETHEUS_FILE" ]; then
+            python3 ci/report/publish-perf.py \
+              --prometheus-file "$PROMETHEUS_FILE" \
+              --docs-dir docs \
+              --runner github-hosted
+          fi
+        done
+        bail "could not push after 3 attempts"

@@ -1,4 +1,4 @@
-name: hsa-snoop - debian-package
+name: hsa-snoop - Debian Package
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   build-deb:
-    name: Build Debian package (Prometheus)
+    name: Build Debian Package (Prometheus)
     runs-on: ubuntu-latest
     container:
       image: rocm/dev-ubuntu-24.04:7.2

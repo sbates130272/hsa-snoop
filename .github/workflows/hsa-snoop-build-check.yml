@@ -1,4 +1,4 @@
-name: hsa-snoop - build-check
+name: hsa-snoop - Build Check
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   build-check:
-    name: build-check for hsa-snoop
+    name: Build Check
     runs-on: ubuntu-latest
     container:
       image: rocm/dev-ubuntu-24.04:7.2
@@ -57,7 +57,7 @@ jobs:
         /tmp/hsa-snoop-install/bin/hsa-snoop --help
 
   build-check-prometheus:
-    name: build-check for hsa-snoop (Prometheus exporter)
+    name: Build Check (Prometheus)
     runs-on: ubuntu-latest
     container:
       image: rocm/dev-ubuntu-24.04:7.2

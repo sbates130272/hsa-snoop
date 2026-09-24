@@ -1,4 +1,4 @@
-name: hsa-snoop - vm-hardware-test
+name: hsa-snoop - VM Hardware Test
 
 on:
   workflow_dispatch:
@@ -53,7 +53,7 @@ env:
 
 jobs:
   vm-hardware-test:
-    name: hardware tests in rocjitsu VM (gfx1250)
+    name: VM Hardware Test
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -761,20 +761,13 @@ jobs:
         path: artifacts/
         retention-days: 7
 
-    - name: Collect Prometheus snapshot for perf history
+    - name: Upload Prometheus snapshot for Publish Pages
       if: success()
-      run: |
-        mkdir -p ./artifacts
-        scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P 2222 ubuntu@localhost:/tmp/hsa-snoop-prometheus.txt \
-          ./artifacts/prometheus.txt 2>/dev/null || true
-
-    - name: Publish performance trends to gh-pages
-      if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
-      uses: ./.github/actions/publish-perf
+      uses: actions/upload-artifact@v7
       with:
-        prometheus-file: ./artifacts/prometheus.txt
-        token: ${{ secrets.GITHUB_TOKEN }}
+        name: hsa-snoop-perf
+        path: artifacts/hsa-snoop-artifacts/prometheus.txt
+        retention-days: 7
 
     - name: Show compose logs on failure
       if: failure()
