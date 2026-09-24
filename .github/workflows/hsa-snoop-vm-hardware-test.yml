@@ -480,9 +480,10 @@ jobs:
         git -C /tmp/fio fetch --depth 1 origin "$FIO_COMMIT"
         git -C /tmp/fio checkout FETCH_HEAD
         cd /tmp/fio
-        ROCM_PATH=$(readlink -f /opt/rocm 2>/dev/null || true)
+        ROCM_PATH=$(for d in /opt/rocm/core-* /opt/rocm; do [ -d "$d/bin" ] && echo "$d" && break; done)
         [ -n "$ROCM_PATH" ] || ROCM_PATH=/opt/rocm
         export ROCM_PATH
+        export PKG_CONFIG_PATH="${ROCM_PATH}/lib/pkgconfig:${ROCM_PATH}/lib64/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
         ./configure --disable-native --enable-libhipfile
         make -j"$(nproc)"
         ./fio --enghelp | grep -qE '^[[:space:]]*libhipfile$'
