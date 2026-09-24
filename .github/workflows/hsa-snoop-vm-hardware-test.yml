@@ -593,16 +593,19 @@ jobs:
         ATTACH
         chmod +x "$artifact_dir/attach-target.sh"
         # Run as root so it can open KFD (ubuntu cannot open KFD on rocjitsu).
-        sudo_cmd bash "$artifact_dir/attach-target.sh" &
+        # Use setsid so gfx-test gets its own process group; we can then
+        # kill the whole group with sudo kill -- -$target_pgid to guarantee
+        # cleanup even when gfx-test runs as root inside a sudo chain.
+        sudo_cmd setsid bash "$artifact_dir/attach-target.sh" &
         target_pid=$!
-        trap 'kill "$target_pid" 2>/dev/null || true' EXIT
+        trap 'sudo_cmd kill -- -"$target_pid" 2>/dev/null || kill "$target_pid" 2>/dev/null || true' EXIT
         sudo_cmd "$binary" \
           --pid "$target_pid" \
           --duration 10 \
           --format json \
           --out "$artifact_dir/pid.json"
-        kill "$target_pid" 2>/dev/null || true
-        wait "$target_pid" || true
+        sudo_cmd kill -- -"$target_pid" 2>/dev/null || kill "$target_pid" 2>/dev/null || true
+        wait "$target_pid" 2>/dev/null || true
         trap - EXIT
         test -s "$artifact_dir/pid.json"
         grep -Eq '"name":"(vadd|vscale|vdot)"' "$artifact_dir/pid.json"
