@@ -86,11 +86,10 @@ bool IsLinearCopy(Version version, uint8_t sub_op) {
 uint64_t LinearCopyBytes(Version version, uint8_t sub_op, uint32_t count_dw) {
     if (!IsLinearCopy(version, sub_op))
         return 0;
-    const uint32_t mask =
-        (version == Version::V6 || version == Version::V7) &&
-                sub_op == SUBOP_COPY_LINEAR
-            ? kLinearCopyCountMask30
-            : kLinearCopyCountMask22;
+    const uint32_t mask = (version == Version::V6 || version == Version::V7) &&
+                                  sub_op == SUBOP_COPY_LINEAR
+                              ? kLinearCopyCountMask30
+                              : kLinearCopyCountMask22;
     return static_cast<uint64_t>(count_dw & mask) + 1;
 }
 
@@ -134,10 +133,10 @@ const char* OpName(Version version, uint8_t op) {
         return "unknown";
     case OP_GCR_REQ:
         return (version == Version::V6 || version == Version::V7) ? "gcr_req"
-                                                                   : "unknown";
+                                                                  : "unknown";
     case OP_V6_DUMMY_TRAP:
         return (version == Version::V6 || version == Version::V7) ? "dummy_trap"
-                                                                   : "unknown";
+                                                                  : "unknown";
     }
     return "unknown";
 }
@@ -162,10 +161,10 @@ const char* CopySubOpName(Version version, uint8_t sub_op) {
         return "linear_physical";
     case SUBOP_COPY_LINEAR_BC:
         return (version == Version::V6 || version == Version::V7) ? "linear_bc"
-                                                                   : "unknown";
+                                                                  : "unknown";
     case SUBOP_COPY_TILED_BC:
         return (version == Version::V6 || version == Version::V7) ? "tiled_bc"
-                                                                   : "unknown";
+                                                                  : "unknown";
     case SUBOP_COPY_LINEAR_SUB_WIND_BC:
         return (version == Version::V6 || version == Version::V7)
                    ? "linear_subwindow_bc"
