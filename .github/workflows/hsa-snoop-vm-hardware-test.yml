@@ -593,18 +593,29 @@ jobs:
         ATTACH
         chmod +x "$artifact_dir/attach-target.sh"
         # Run as root so it can open KFD (ubuntu cannot open KFD on rocjitsu).
-        # Use setsid so gfx-test gets its own process group; we can then
-        # kill the whole group with sudo kill -- -$target_pgid to guarantee
-        # cleanup even when gfx-test runs as root inside a sudo chain.
-        sudo_cmd setsid bash "$artifact_dir/attach-target.sh" &
+        # Write a PID file so we can kill the exact gfx-test PID regardless
+        # of the sudo wrapper chain; gfx-test --loops 0 runs forever so it
+        # must be explicitly killed after hsa-snoop exits.
+        cat > "$artifact_dir/attach-target-wrapper.sh" <<'WRAP'
+        #!/usr/bin/env bash
+        set -euo pipefail
+        sleep 3
+        /tmp/hsa-snoop/build/examples/gfx-test --loops 0 --batch 4 --sleep-ms 50 &
+        echo $! > /tmp/attach-target-gfx.pid
+        wait
+        WRAP
+        sudo_cmd bash "$artifact_dir/attach-target-wrapper.sh" &
         target_pid=$!
-        trap 'sudo_cmd kill -- -"$target_pid" 2>/dev/null || kill "$target_pid" 2>/dev/null || true' EXIT
+        sleep 4
+        gfx_pid=$(sudo_cmd cat /tmp/attach-target-gfx.pid 2>/dev/null || echo "")
+        trap 'sudo_cmd kill "$gfx_pid" "$target_pid" 2>/dev/null || true; wait "$target_pid" 2>/dev/null || true' EXIT
         sudo_cmd "$binary" \
           --pid "$target_pid" \
           --duration 10 \
           --format json \
           --out "$artifact_dir/pid.json"
-        sudo_cmd kill -- -"$target_pid" 2>/dev/null || kill "$target_pid" 2>/dev/null || true
+        sudo_cmd kill "$gfx_pid" 2>/dev/null || true
+        sudo_cmd kill "$target_pid" 2>/dev/null || true
         wait "$target_pid" 2>/dev/null || true
         trap - EXIT
         test -s "$artifact_dir/pid.json"
