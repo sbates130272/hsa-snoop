@@ -482,7 +482,8 @@ jobs:
         set -euo pipefail
         VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
-        sudo_cmd apt-get update
+        # apt-get update already ran in the preceding .deb install step; skip it
+        # here to avoid racing the apt lock between sequential steps.
         sudo_cmd apt-get install -y --no-install-recommends \
           amdrocm-hipfile-dev \
           libaio-dev \
