@@ -499,14 +499,19 @@ jobs:
         EOF
 
     - name: Run hardware test in VM
+      timeout-minutes: 3
       run: |
         # sdma-hardware-test is not registered by ctest (HSA_SNOOP_HARDWARE_TESTS=OFF);
         # run the equivalent directly: hsa-snoop tracing sdma-test, per
-        # tests/sdma_hardware_test.cmake
+        # tests/sdma_hardware_test.cmake.
+        # rocjitsu (emu_mode=1) may not service SDMA queues — if so, sdma-test
+        # hangs in hipDeviceSynchronize(). timeout(1) kills it after 60s so the
+        # step fails fast rather than consuming the job's 120-minute budget.
         vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
           "VM_PASSWORD_B64=$VM_PASSWORD_B64 sh -c '\
             VM_SUDO_PASSWORD=\$(printf %s \"\$VM_PASSWORD_B64\" | base64 -d); \
             printf \"%s\n\" \"\$VM_SUDO_PASSWORD\" | sudo -S -p \"\" \
+              timeout 60 \
               /tmp/hsa-snoop/build/hsa-snoop \
               --format json \
               --out /tmp/sdma-hardware-test.json \
@@ -584,7 +589,7 @@ jobs:
         all_pid=$!
         sleep 3
         "$gfx" --loops 2 --batch 4 --sleep-ms 50
-        "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0
+        timeout 30 "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0 || true
         wait "$all_pid"
         find "$artifact_dir/all" -type f -name '*.json' | grep -q .
         grep -R -Eq '"name":"(vadd|vscale|vdot|copy_linear)"' "$artifact_dir/all"
@@ -655,7 +660,7 @@ jobs:
         PY
         sudo_cmd systemctl is-active --quiet hsa-snoop-prometheus.service
         "$gfx" --loops 2 --batch 4 --sleep-ms 50
-        "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0
+        timeout 30 "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0 || true
         "$fio" \
           --name=hipfile-write \
           --filename="$nvme_dir/hipfile.bin" \
