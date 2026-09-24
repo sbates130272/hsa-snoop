@@ -535,6 +535,7 @@ jobs:
             test -s /tmp/sdma-hardware-test.json'"
 
     - name: Run hsa-snoop mode, Prometheus, and AIS coverage in VM
+      timeout-minutes: 15
       run: |
         vm-ssh \
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
@@ -714,7 +715,7 @@ jobs:
           --thread=1 \
           --output-format=json \
           --output="$artifact_dir/hipfile-read.json"
-        sudo_cmd "$ais" -b -s 0 -D 20 "$nvme_dir/ais-test.bin" | tr '\r' '\n' > "$artifact_dir/ais-test.log"
+        sudo_cmd "$ais" -b -s 0 -D 20 "$nvme_dir/ais-test.bin" < /dev/null | tr '\r' '\n' > "$artifact_dir/ais-test.log"
         python3 - <<'PY' > "$artifact_dir/prometheus.txt"
         import sys, time, urllib.request
         for _ in range(30):
