@@ -628,7 +628,7 @@ jobs:
           --out-dir "$artifact_dir/all" &
         all_pid=$!
         sleep 3
-        "$gfx" --loops 2 --batch 4 --sleep-ms 50
+        sudo_cmd "$gfx" --loops 2 --batch 4 --sleep-ms 50
         "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0
         wait "$all_pid" || true
         find "$artifact_dir/all" -type f -name '*.json' | grep -q .
