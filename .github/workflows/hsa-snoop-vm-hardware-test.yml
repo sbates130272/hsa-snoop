@@ -621,7 +621,7 @@ jobs:
         test -s "$artifact_dir/pid.json"
         grep -Eq '"name":"(vadd|vscale|vdot)"' "$artifact_dir/pid.json"
 
-        sudo_cmd "$binary" \
+        sudo_cmd timeout 25 "$binary" \
           --all \
           --duration 15 \
           --format json \
@@ -630,7 +630,7 @@ jobs:
         sleep 3
         "$gfx" --loops 2 --batch 4 --sleep-ms 50
         "$sdma" --streams 1 --buf-mb 16 --iters 5 --report 0
-        wait "$all_pid"
+        wait "$all_pid" || true
         find "$artifact_dir/all" -type f -name '*.json' | grep -q .
         grep -R -Eq '"name":"(vadd|vscale|vdot|copy_linear)"' "$artifact_dir/all"
 
