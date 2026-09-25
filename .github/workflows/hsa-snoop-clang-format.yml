@@ -1,4 +1,4 @@
-name: hsa-snoop - clang-format
+name: hsa-snoop - Clang Format
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   clang-format:
-    name: clang-format lint for hsa-snoop
+    name: Clang Format
     runs-on: ubuntu-latest
     steps:
     - name: Check out code

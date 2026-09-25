@@ -17,8 +17,19 @@ case "$1" in
         # listed in debian/conffiles automatically; this guard handles the case
         # where the file is missing entirely (e.g. first install on a clean node).
         if [ ! -f /etc/default/hsa-snoop ]; then
+            _conf=
+            for _dir in /usr/share/hsa-snoop /usr/local/share/hsa-snoop; do
+                if [ -f "${_dir}/hsa-snoop.conf" ]; then
+                    _conf="${_dir}/hsa-snoop.conf"
+                    break
+                fi
+            done
+            if [ -z "$_conf" ]; then
+                echo "hsa-snoop: cannot find hsa-snoop.conf in share path" >&2
+                exit 1
+            fi
             install -m 0644 \
-                /usr/share/hsa-snoop/hsa-snoop.conf \
+                "$_conf" \
                 /etc/default/hsa-snoop
 
             # Auto-detect the primary GPU-capable console user's UID/GID so

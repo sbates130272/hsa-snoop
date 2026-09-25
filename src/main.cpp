@@ -535,13 +535,22 @@ int main(int argc, char** argv) {
     if (!child_cmd.empty()) {
         child_cmd.push_back(nullptr);
 
-        // In bpftrace/WSL2 mode the GPU is only accessible to the session user,
-        // not root. When hsa-snoop runs via `sudo`, drop back to the invoking
-        // user (SUDO_UID/SUDO_GID/SUDO_USER) so the child can access the GPU.
+        // When hsa-snoop is invoked via `sudo`, drop back to the invoking
+        // user's UID/GID for the child process. This matters in two ways:
+        //
+        // 1. bpftrace/WSL2: the GPU DXG backend is only accessible to the
+        //    session user, not root. Without the drop the child cannot open
+        //    the device at all.
+        //
+        // 2. kprobe/native Linux: sudo strips LD_LIBRARY_PATH, XDG_RUNTIME_DIR
+        //    and HOME. ROCm on non-standard install trees (e.g. therock's
+        //    /opt/rocm/core-*) needs LD_LIBRARY_PATH to load its SDMA engine
+        //    and may need XDG_RUNTIME_DIR for runtime sockets. Without them
+        //    hipDeviceSynchronize() can block forever even though the ioctl
+        //    itself succeeds.
         const char* sudo_uid_str = getenv("SUDO_UID");
         const char* sudo_gid_str = getenv("SUDO_GID");
-        drop_privs = disc_mode == DiscoveryMode::kBpftrace && sudo_uid_str &&
-                     sudo_gid_str;
+        drop_privs = sudo_uid_str && sudo_gid_str;
         if (drop_privs) {
             run_uid = (uid_t)atoi(sudo_uid_str);
             run_gid = (gid_t)atoi(sudo_gid_str);
@@ -556,22 +565,28 @@ int main(int argc, char** argv) {
             signal(SIGINT, SIG_DFL);
             signal(SIGTERM, SIG_DFL);
             raise(SIGSTOP); // wait until discovery is armed, then continue
-            if (disc_mode == DiscoveryMode::kBpftrace) {
-                // Ensure the ROCm library path is set (sudo strips
-                // LD_LIBRARY_PATH).
-                if (getenv("LD_LIBRARY_PATH") == nullptr)
-                    setenv("LD_LIBRARY_PATH", "/opt/rocm/lib:/usr/lib/wsl/lib",
-                           0);
-                // HSA_ENABLE_DXG_DETECTION selects the WSL2/librocdxg DXG
-                // backend; without it the GPU is not accessible.
-                setenv("HSA_ENABLE_DXG_DETECTION", "1", 0);
-                // XDG_RUNTIME_DIR is needed for the GPU agent socket.
+            if (drop_privs) {
+                // Restore ROCm library path stripped by sudo. Prefer the
+                // therock versioned tree (/opt/rocm/core-*) over the symlink
+                // (/opt/rocm) so HIP finds its SDMA engine on non-standard
+                // installs.
+                if (getenv("LD_LIBRARY_PATH") == nullptr) {
+                    const char* rocm_lib =
+                        disc_mode == DiscoveryMode::kBpftrace
+                            ? "/opt/rocm/lib:/usr/lib/wsl/lib"
+                            : "/opt/rocm/lib:/opt/rocm/lib64";
+                    setenv("LD_LIBRARY_PATH", rocm_lib, 0);
+                }
+                // XDG_RUNTIME_DIR is needed for GPU agent sockets on some
+                // ROCm backends (WSL2 DXG and certain native configurations).
                 if (getenv("XDG_RUNTIME_DIR") == nullptr && run_uid != 0) {
                     char xdg[64];
                     snprintf(xdg, sizeof(xdg), "/run/user/%u", run_uid);
                     setenv("XDG_RUNTIME_DIR", xdg, 0);
                 }
             }
+            if (disc_mode == DiscoveryMode::kBpftrace)
+                setenv("HSA_ENABLE_DXG_DETECTION", "1", 0);
             if (drop_privs) {
                 const char* sudo_user = getenv("SUDO_USER");
                 if (sudo_user && initgroups(sudo_user, run_gid) < 0)

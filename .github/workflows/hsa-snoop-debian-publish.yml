@@ -1,4 +1,4 @@
-name: hsa-snoop - debian-publish
+name: hsa-snoop - Debian Publish
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   publish-deb:
-    name: Publish Debian package to GitHub Releases
+    name: Publish Debian Package to GitHub Releases
     runs-on: ubuntu-latest
     container:
       image: rocm/dev-ubuntu-24.04:7.2
