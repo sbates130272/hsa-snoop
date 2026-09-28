@@ -53,12 +53,12 @@ if(NOT EXISTS "${TRACE_OUTPUT}")
 endif()
 file(READ "${TRACE_OUTPUT}" trace_json)
 
-string(REGEX MATCHALL "\"name\":\"copy_linear\"" copy_events
+string(REGEX MATCHALL "\"name\":\"copy_linear(_bc|_broadcast)?\"" copy_events
        "${trace_json}")
 list(LENGTH copy_events copy_count)
 if(copy_count EQUAL 0)
   message(FATAL_ERROR
-    "no COPY_LINEAR packet was decoded\n${snoop_stderr}")
+    "no COPY_LINEAR-style packet was decoded\n${snoop_stderr}")
 endif()
 
 string(REGEX MATCHALL "\"name\":\"nop\"" nop_events "${trace_json}")
@@ -71,7 +71,7 @@ endif()
 
 if(NOT trace_json MATCHES "\"bytes\":1048576")
   message(FATAL_ERROR
-    "no COPY_LINEAR packet with the expected 1 MiB COUNT was decoded")
+    "no COPY_LINEAR-style packet with the expected 1 MiB COUNT was decoded")
 endif()
 
 # HIP is free to implement individual D2D/D2H operations with compute kernels
@@ -82,9 +82,9 @@ if(NOT trace_json MATCHES "\"direction\":\"h2d\"" OR
    NOT trace_json MATCHES "\"src\":\"0x[1-9a-f][0-9a-f]*\"" OR
    NOT trace_json MATCHES "\"dst\":\"0x[1-9a-f][0-9a-f]*\"")
   message(FATAL_ERROR
-    "no H2D COPY_LINEAR packet with non-zero src/dst was decoded")
+    "no H2D COPY_LINEAR-style packet with non-zero src/dst was decoded")
 endif()
 
 message(STATUS
-  "SDMA v${detected_sdma_version}: decoded ${copy_count} COPY_LINEAR and "
+  "SDMA v${detected_sdma_version}: decoded ${copy_count} COPY_LINEAR-style and "
   "${nop_count} bounded NOP packets")

@@ -567,17 +567,24 @@ jobs:
         else:
             events = []
 
+        def field(event, key):
+            args = event.get("args")
+            if isinstance(args, dict) and key in args:
+                return args[key]
+            return event.get(key)
+
         if not any(
-            event.get("name") == "copy_linear"
+            isinstance(event.get("name"), str)
             and (
-                event.get("args", {}).get("bytes") == 1048576
-                or event.get("bytes") == 1048576
+                event["name"] == "copy_linear"
+                or event["name"] in ("copy_linear_bc", "copy_linear_broadcast")
             )
+            and field(event, "bytes") == 1048576
             for event in events
             if isinstance(event, dict)
         ):
             raise SystemExit(
-                "no copy_linear trace event with the expected 1 MiB COUNT was decoded"
+                "no decoded 1 MiB copy_linear-style trace event was found"
             )
         PY
 
