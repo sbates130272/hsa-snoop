@@ -597,7 +597,10 @@ jobs:
         EOF
 
     - name: Run hsa-snoop mode, Prometheus, and AIS coverage in VM
-      timeout-minutes: 15
+      # This step chains multiple guest-side commands with their own explicit
+      # timeouts (gfx/sdma/fio/AIS plus exporter polling), so the outer GitHub
+      # step budget needs a bit more headroom than 15 minutes.
+      timeout-minutes: 20
       run: |
         vm-ssh \
           -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
