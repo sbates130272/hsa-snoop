@@ -553,8 +553,23 @@ jobs:
         set -e
 
         test -s "$trace"
-        grep -q '"name":"copy_linear"' "$trace"
-        grep -q '"bytes":1048576' "$trace"
+        python3 - "$trace" <<'PY'
+        import json
+        import sys
+
+        with open(sys.argv[1], encoding="utf-8") as f:
+            trace = json.load(f)
+
+        if not any(
+            event.get("name") == "copy_linear"
+            and event.get("args", {}).get("bytes") == 1048576
+            for event in trace.get("traceEvents", [])
+            if isinstance(event, dict)
+        ):
+            raise SystemExit(
+                "no copy_linear trace event with the expected 1 MiB COUNT was decoded"
+            )
+        PY
 
         if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
           exit "$status"
