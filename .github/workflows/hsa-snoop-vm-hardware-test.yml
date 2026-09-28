@@ -531,19 +531,38 @@ jobs:
         # run the equivalent directly: hsa-snoop tracing sdma-test, per
         # tests/sdma_hardware_test.cmake.
         # rocjitsu (emu_mode=1) may not service SDMA queues — if so, sdma-test
-        # hangs in hipDeviceSynchronize(). timeout(1) kills it after 60s so the
-        # step fails fast rather than consuming the job's 120-minute budget.
-        vm-ssh -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 \
-          "VM_PASSWORD_B64=$VM_PASSWORD_B64 sh -c '\
-            VM_SUDO_PASSWORD=\$(printf %s \"\$VM_PASSWORD_B64\" | base64 -d); \
-            printf \"%s\n\" \"\$VM_SUDO_PASSWORD\" | sudo -S -p \"\" \
-              timeout 60 \
-              /tmp/hsa-snoop/build/hsa-snoop \
-              --format json \
-              --out /tmp/sdma-hardware-test.json \
-              --poll-us 20 \
-              -- /tmp/hsa-snoop/build/examples/sdma-test --streams 1 --buf-mb 1 --iters 20 --report 0 && \
-            test -s /tmp/sdma-hardware-test.json'"
+        # hangs in hipDeviceSynchronize(). Accept timeout(1)'s 124 exit status
+        # only if hsa-snoop already wrote a non-empty trace with a decoded
+        # COPY_LINEAR packet; otherwise still fail fast.
+        vm-ssh \
+          -p "$VM_SSH_PORT" "$VM_USERNAME"@127.0.0.1 "VM_PASSWORD_B64=$VM_PASSWORD_B64 bash -s" <<'EOF'
+        set -euo pipefail
+        VM_SUDO_PASSWORD=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        sudo_cmd() { printf '%s\n' "$VM_SUDO_PASSWORD" | sudo -S -p '' "$@"; }
+
+        trace=/tmp/sdma-hardware-test.json
+        rm -f "$trace"
+        set +e
+        sudo_cmd timeout 60 \
+          /tmp/hsa-snoop/build/hsa-snoop \
+          --format json \
+          --out "$trace" \
+          --poll-us 20 \
+          -- /tmp/hsa-snoop/build/examples/sdma-test --streams 1 --buf-mb 1 --iters 20 --report 0
+        status=$?
+        set -e
+
+        test -s "$trace"
+        grep -q '"name":"copy_linear"' "$trace"
+        grep -q '"bytes":1048576' "$trace"
+
+        if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
+          exit "$status"
+        fi
+        if [ "$status" -eq 124 ]; then
+          echo "sdma-test timed out after hsa-snoop captured an SDMA trace; accepting timeout 124 on rocjitsu"
+        fi
+        EOF
 
     - name: Run hsa-snoop mode, Prometheus, and AIS coverage in VM
       timeout-minutes: 15
