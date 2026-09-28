@@ -560,10 +560,20 @@ jobs:
         with open(sys.argv[1], encoding="utf-8") as f:
             trace = json.load(f)
 
+        if isinstance(trace, dict):
+            events = trace.get("traceEvents", [])
+        elif isinstance(trace, list):
+            events = trace
+        else:
+            events = []
+
         if not any(
             event.get("name") == "copy_linear"
-            and event.get("args", {}).get("bytes") == 1048576
-            for event in trace.get("traceEvents", [])
+            and (
+                event.get("args", {}).get("bytes") == 1048576
+                or event.get("bytes") == 1048576
+            )
+            for event in events
             if isinstance(event, dict)
         ):
             raise SystemExit(
