@@ -44,9 +44,9 @@ env:
   FIO_REPO: https://github.com/axboe/fio.git
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
   VM_SSH_PORT: "2222"
-  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260925.g12f12f8-rocjitsu.c85bb75
-  ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260925.g12f12f8-vm.resolute-rocjitsu-qm.e73a1e6-qcow2
-  QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260925.g12f12f8-qemu11.1.1-vfu.8039244
+  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:latest
+  ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:latest-qcow2
+  QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
   # Deterministic MAC for SSH port 2222: _mgmt_mac(2222) = 52:54:00:00:08:ae.
   # Pass explicitly so netplan on images that pin to this MAC always matches.
   VM_MGMT_MAC: "52:54:00:00:08:ae"
@@ -62,7 +62,7 @@ jobs:
       run:
         shell: bash
     container:
-      image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260925.g12f12f8-qemu11.1.1-vfu.8039244
+      image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
       options: >-
         --device /dev/kvm
         -v /var/run/docker.sock:/var/run/docker.sock
