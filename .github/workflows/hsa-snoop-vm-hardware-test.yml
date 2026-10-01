@@ -49,6 +49,7 @@ jobs:
       uses: actions/checkout@v7
       with:
         repository: sbates130272/qemu-minimal
+        ref: b7b730b74e9acd51993aa1eb2adc6e124f1ddee4
         path: qemu-minimal
 
     - name: Install dependencies
