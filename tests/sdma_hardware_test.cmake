@@ -34,7 +34,7 @@ if(NOT snoop_result EQUAL 0)
     "stderr:\n${snoop_stderr}")
 endif()
 
-string(REGEX MATCH "kind=sdma[^\n]*sdma=v([46])" detected_sdma_line
+string(REGEX MATCH "kind=sdma[^\n]*sdma=v([0-9]+)" detected_sdma_line
        "${snoop_stderr}")
 if(NOT detected_sdma_line)
   message(FATAL_ERROR
