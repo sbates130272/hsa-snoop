@@ -86,7 +86,7 @@ jobs:
         key: ansible-collections-${{ hashFiles('qemu-minimal/ansible/requirements.yml') }}
 
     - name: Install Ansible collections
-      run: ansible-galaxy collection install --pre -r qemu-minimal/ansible/requirements.yml
+      run: ansible-galaxy collection install --no-cache --pre -r qemu-minimal/ansible/requirements.yml
 
     - name: Cache cloud image
       uses: actions/cache@v6
