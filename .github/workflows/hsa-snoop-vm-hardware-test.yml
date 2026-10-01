@@ -25,8 +25,10 @@ permissions:
 
 env:
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
+  VM_NAME: hsa-snoop-test
   QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
   ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:latest
+  QEMU_TOOL_SRC: ${{ github.workspace }}/qemu-minimal
 
 jobs:
   vm-hardware-test:
@@ -113,9 +115,6 @@ jobs:
 
     - name: Bring up rocjitsu compose stack
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
-      env:
-        VM_NAME: hsa-snoop-test
-        QEMU_TOOL_SRC: ${{ github.workspace }}/qemu-minimal
       run: |
         docker compose up --detach
 
@@ -227,6 +226,4 @@ jobs:
     - name: Tear down compose stack
       if: always()
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
-      env:
-        VM_NAME: hsa-snoop-test
       run: docker compose down
