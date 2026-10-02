@@ -52,7 +52,7 @@ jobs:
     permissions:
       contents: write
     container:
-      image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260929.g2bdbd16-qemu11.1.2-vfu.8039244
+      image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260925.g12f12f8-qemu11.1.1-vfu.8039244
       options: --device /dev/kvm -v /var/run/docker.sock:/var/run/docker.sock
 
     steps:
@@ -82,9 +82,6 @@ jobs:
 
     - name: Ensure images directory exists
       run: mkdir -p "$VM_IMAGES_DIR" && chmod 777 "$VM_IMAGES_DIR"
-
-    - name: Set up oras
-      uses: oras-project/setup-oras@v1
 
     - name: Fetch prebuilt rocjitsu guest image
       run: |
