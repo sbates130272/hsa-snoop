@@ -211,8 +211,10 @@ jobs:
       run: |
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
+        rocm_path=$(ls -d /opt/rocm/core-* 2>/dev/null | head -1)
         cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DCMAKE_PREFIX_PATH="${rocm_path}" \
           -DGPU_TARGETS=gfx1250 \
           -DHSA_SNOOP_HARDWARE_TESTS=ON
         cmake --build /tmp/hsa-snoop/build --parallel $(nproc)
