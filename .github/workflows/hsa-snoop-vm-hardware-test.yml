@@ -231,15 +231,19 @@ jobs:
       run: |
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
+        set -euo pipefail
         rocm_path=$(ls -d /opt/rocm/core-* 2>/dev/null | head -1)
+        # Skip CMAKE_PREFIX_PATH so find_package(hip) fails quietly and
+        # examples/ is not added — avoids enable_language(HIP) failure.
         cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-          -DCMAKE_PREFIX_PATH="${rocm_path}" \
           -DGPU_TARGETS=gfx1250
         cmake --build /tmp/hsa-snoop/build --parallel $(nproc)
+        # Build sdma-test directly with hipcc, bypassing cmake HIP support.
         "${rocm_path}/bin/hipcc" --offload-arch=gfx1250 -O2 \
           -o /tmp/hsa-snoop/build/sdma-test \
           /tmp/hsa-snoop/examples/sdma-test.hip
+        ls -lh /tmp/hsa-snoop/build/sdma-test
         EOF
 
     - name: Run unit tests in VM
