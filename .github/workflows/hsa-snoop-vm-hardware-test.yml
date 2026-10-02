@@ -118,6 +118,9 @@ jobs:
       run: |
         docker compose up --detach
 
+    - name: Join the compose network
+      run: docker network connect vfio-user-rocjitsu-vm_default "$(cat /etc/hostname)"
+
     - name: Wait for rocjitsu server healthy
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
       run: |
@@ -130,14 +133,14 @@ jobs:
         done
         [ "$health" = "healthy" ] || (docker compose logs rocjitsu && exit 1)
 
-    - name: Wait for VM SSH
+    - name: Wait for VM SSH (180s timeout)
       run: |
         elapsed=0
         while [ $elapsed -lt 180 ]; do
           if ssh -o ConnectTimeout=1 \
                  -o NoHostAuthenticationForLocalhost=yes \
                  -o StrictHostKeyChecking=no \
-                 -p 2222 ubuntu@localhost true 2>/dev/null; then
+                 -p 2222 ubuntu@qemu true 2>/dev/null; then
             echo "VM ready after ${elapsed}s"
             exit 0
           fi
@@ -149,22 +152,22 @@ jobs:
     - name: Load amdgpu via amdgpu-probe
       run: |
         ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@localhost "sudo /usr/local/bin/amdgpu-probe"
+          -p 2222 ubuntu@qemu "sudo /usr/local/bin/amdgpu-probe"
 
     - name: Verify amdgpu loaded and KFD present
       run: |
         ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@localhost "lsmod | grep -q amdgpu && ls /dev/kfd"
+          -p 2222 ubuntu@qemu "lsmod | grep -q amdgpu && ls /dev/kfd"
 
     - name: Copy hsa-snoop source into VM
       run: |
         scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P 2222 -r hsa-snoop ubuntu@localhost:/tmp/hsa-snoop
+          -P 2222 -r hsa-snoop ubuntu@qemu:/tmp/hsa-snoop
 
     - name: Build hsa-snoop in VM
       run: |
         ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@localhost bash -s <<'EOF'
+          -p 2222 ubuntu@qemu bash -s <<'EOF'
         cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DGPU_TARGETS=gfx1250 \
@@ -175,7 +178,7 @@ jobs:
     - name: Run unit tests in VM
       run: |
         ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@localhost bash -s <<'EOF'
+          -p 2222 ubuntu@qemu bash -s <<'EOF'
         cd /tmp/hsa-snoop/build
         ctest --exclude-regex sdma-hardware-test -V
         EOF
@@ -184,7 +187,7 @@ jobs:
       timeout-minutes: 3
       run: |
         ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@localhost bash -s <<'EOF'
+          -p 2222 ubuntu@qemu bash -s <<'EOF'
         cd /tmp/hsa-snoop/build
         sudo ctest -R sdma-hardware-test -V
         EOF
@@ -193,7 +196,7 @@ jobs:
       if: always()
       run: |
         scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P 2222 -r ubuntu@localhost:/tmp/hsa-snoop/build/Testing ./test-results || true
+          -P 2222 -r ubuntu@qemu:/tmp/hsa-snoop/build/Testing ./test-results || true
 
     - name: Upload test results
       if: always()
@@ -208,7 +211,7 @@ jobs:
       run: |
         mkdir -p ./artifacts
         scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P 2222 ubuntu@localhost:/tmp/hsa-snoop-prometheus.txt \
+          -P 2222 ubuntu@qemu:/tmp/hsa-snoop-prometheus.txt \
           ./artifacts/prometheus.txt 2>/dev/null || true
 
     - name: Publish performance trends to gh-pages
