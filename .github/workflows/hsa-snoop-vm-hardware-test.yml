@@ -26,8 +26,8 @@ permissions:
 env:
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
   VM_NAME: hsa-snoop-test
-  QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
-  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:latest
+  QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260929.g2bdbd16-qemu11.1.2-vfu.8039244
+  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260929.g2bdbd16-rocjitsu.f2d13fb
   QEMU_TOOL_SRC: ${{ github.workspace }}/qemu-minimal
 
 jobs:
@@ -104,7 +104,7 @@ jobs:
 
     - name: Generate VM with vm-rocjitsu playbook
       env:
-        ANSIBLE_EXTRA_ARGS: '-e {"git_setup_enable_gpg_signing":false,"user_setup_dotfiles_enable":false,"user_setup_install_amd_ca":false,"user_setup_deploy_ssh_key":false,"rocm_setup_skip_system_upgrade":true,"vm_rocjitsu_firmware_set":"full"}'
+        ANSIBLE_EXTRA_ARGS: '-e {"git_setup_enable_gpg_signing":false,"user_setup_dotfiles_enable":false,"user_setup_install_amd_ca":false,"user_setup_deploy_ssh_key":false,"rocm_setup_skip_system_upgrade":true}'
       run: |
         qemu-tool gen-vm \
           --vm-name hsa-snoop-test \
