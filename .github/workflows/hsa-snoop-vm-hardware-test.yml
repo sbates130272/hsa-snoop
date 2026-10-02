@@ -232,8 +232,8 @@ jobs:
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
         rocm_path=$(ls -d /opt/rocm/core-* 2>/dev/null | head -1)
-        sudo ln -sfn "${rocm_path}" /opt/rocm/rocm 2>/dev/null || true
-        cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
+        export ROCM_PATH="${rocm_path}"
+        ROCM_PATH="${rocm_path}" cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DCMAKE_PREFIX_PATH="${rocm_path}" \
           -DGPU_TARGETS=gfx1250 \
