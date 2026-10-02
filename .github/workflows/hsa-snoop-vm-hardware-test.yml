@@ -83,11 +83,8 @@ jobs:
     - name: Ensure images directory exists
       run: mkdir -p "$VM_IMAGES_DIR" && chmod 777 "$VM_IMAGES_DIR"
 
-    - name: Install oras
-      run: |
-        ORAS_VERSION=1.2.3
-        curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
-          | tar -xz -C /usr/local/bin oras
+    - name: Set up oras
+      uses: oras-project/setup-oras@v1
 
     - name: Fetch prebuilt rocjitsu guest image
       run: |
