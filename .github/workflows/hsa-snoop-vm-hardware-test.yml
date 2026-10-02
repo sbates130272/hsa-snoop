@@ -149,7 +149,7 @@ jobs:
       id: qcow2-cache
       uses: actions/cache@v6
       with:
-        path: ${{ env.VM_IMAGES_DIR }}/hsa-snoop-test-backing.qcow2
+        path: ${{ github.workspace }}/qcow2-cache/hsa-snoop-test-backing.qcow2
         key: qcow2-${{ env.ROCJITSU_VM_IMAGE }}
 
     - name: Download and decompress qcow2 blob
@@ -157,15 +157,18 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
+        mkdir -p "$GITHUB_WORKSPACE/qcow2-cache"
         tmp=$(mktemp -d)
         cd "$tmp"
         oras pull "$ROCJITSU_VM_IMAGE"
         zstd -d --long=27 --rm ./*.qcow2.zst
-        rm -f "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2"
-        mv ./*.qcow2 "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2"
+        mv ./*.qcow2 "$GITHUB_WORKSPACE/qcow2-cache/hsa-snoop-test-backing.qcow2"
 
     - name: Create qcow2 overlay
       run: |
+        mkdir -p "$VM_IMAGES_DIR"
+        cp "$GITHUB_WORKSPACE/qcow2-cache/hsa-snoop-test-backing.qcow2" \
+           "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2"
         rm -f "$VM_IMAGES_DIR/hsa-snoop-test.qcow2"
         qemu-img create -F qcow2 \
           -b "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2" \
@@ -214,8 +217,10 @@ jobs:
 
     - name: Load amdgpu via amdgpu-probe
       run: |
+        vm_password=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
-          -p 2222 "$VM_USERNAME"@qemu "sudo /usr/local/bin/amdgpu-probe"
+          -p 2222 "$VM_USERNAME"@qemu \
+          "echo '${vm_password}' | sudo -S /usr/local/bin/amdgpu-probe"
 
     - name: Verify amdgpu loaded and KFD present
       run: |
@@ -257,13 +262,14 @@ jobs:
     - name: Run hardware test in VM
       timeout-minutes: 3
       run: |
+        vm_password=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
-          -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
-        cd /tmp/hsa-snoop/build
-        sudo cmake \
-          -DHSA_SNOOP=/tmp/hsa-snoop/build/hsa-snoop \
-          -DSDMA_TEST=/tmp/hsa-snoop/build/sdma-test \
-          -DTRACE_OUTPUT=/tmp/sdma-hardware-test.json \
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<EOF
+        set -euo pipefail
+        echo '${vm_password}' | sudo -S cmake \\
+          -DHSA_SNOOP=/tmp/hsa-snoop/build/hsa-snoop \\
+          -DSDMA_TEST=/tmp/hsa-snoop/build/sdma-test \\
+          -DTRACE_OUTPUT=/tmp/sdma-hardware-test.json \\
           -P /tmp/hsa-snoop/tests/sdma_hardware_test.cmake
         EOF
 
