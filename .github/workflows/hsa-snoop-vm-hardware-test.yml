@@ -51,7 +51,7 @@ jobs:
       uses: actions/checkout@v7
       with:
         repository: sbates130272/qemu-minimal
-        ref: b7b730b74e9acd51993aa1eb2adc6e124f1ddee4
+        ref: 29d91692ccf57cc132e460ecdda788a58ef1b2e1
         path: qemu-minimal
 
     - name: Install dependencies
@@ -103,6 +103,11 @@ jobs:
         docker pull "$QEMU_IMAGE"
 
     - name: Generate VM with vm-rocjitsu playbook
+      env:
+        ANSIBLE_EXTRA_ARGS: >-
+          -e {"git_setup_enable_gpg_signing":false,"user_setup_dotfiles_enable":false,
+          "user_setup_install_amd_ca":false,"user_setup_deploy_ssh_key":false,
+          "rocm_setup_skip_system_upgrade":true,"vm_rocjitsu_firmware_set":"full"}
       run: |
         qemu-tool gen-vm \
           --vm-name hsa-snoop-test \
