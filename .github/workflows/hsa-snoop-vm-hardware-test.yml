@@ -104,10 +104,7 @@ jobs:
 
     - name: Generate VM with vm-rocjitsu playbook
       env:
-        ANSIBLE_EXTRA_ARGS: >-
-          -e {"git_setup_enable_gpg_signing":false,"user_setup_dotfiles_enable":false,
-          "user_setup_install_amd_ca":false,"user_setup_deploy_ssh_key":false,
-          "rocm_setup_skip_system_upgrade":true,"vm_rocjitsu_firmware_set":"full"}
+        ANSIBLE_EXTRA_ARGS: '-e {"git_setup_enable_gpg_signing":false,"user_setup_dotfiles_enable":false,"user_setup_install_amd_ca":false,"user_setup_deploy_ssh_key":false,"rocm_setup_skip_system_upgrade":true,"vm_rocjitsu_firmware_set":"full"}'
       run: |
         qemu-tool gen-vm \
           --vm-name hsa-snoop-test \
