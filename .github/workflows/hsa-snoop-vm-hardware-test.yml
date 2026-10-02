@@ -235,10 +235,11 @@ jobs:
         cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DCMAKE_PREFIX_PATH="${rocm_path}" \
-          -DCMAKE_HIP_COMPILER_ROCM_ROOT="${rocm_path}" \
-          -DGPU_TARGETS=gfx1250 \
-          -DHSA_SNOOP_HARDWARE_TESTS=ON
+          -DGPU_TARGETS=gfx1250
         cmake --build /tmp/hsa-snoop/build --parallel $(nproc)
+        "${rocm_path}/bin/hipcc" --offload-arch=gfx1250 -O2 \
+          -o /tmp/hsa-snoop/build/sdma-test \
+          /tmp/hsa-snoop/examples/sdma-test.hip
         EOF
 
     - name: Run unit tests in VM
@@ -255,8 +256,11 @@ jobs:
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
         cd /tmp/hsa-snoop/build
-        cd /tmp/hsa-snoop/build
-        sudo ctest -R sdma-hardware-test -V
+        sudo cmake \
+          -DHSA_SNOOP=/tmp/hsa-snoop/build/hsa-snoop \
+          -DSDMA_TEST=/tmp/hsa-snoop/build/sdma-test \
+          -DTRACE_OUTPUT=/tmp/sdma-hardware-test.json \
+          -P /tmp/hsa-snoop/tests/sdma_hardware_test.cmake
         EOF
 
     - name: Collect test results
