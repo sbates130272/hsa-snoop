@@ -53,7 +53,7 @@ jobs:
       contents: write
     container:
       image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260925.g12f12f8-qemu11.1.1-vfu.8039244
-      options: --device /dev/kvm -v /var/run/docker.sock:/var/run/docker.sock
+      options: --device /dev/kvm -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/qemu-tool:/var/lib/qemu-tool
 
     steps:
     - name: Check out hsa-snoop
