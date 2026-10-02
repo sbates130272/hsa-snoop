@@ -42,7 +42,7 @@ env:
   QEMU_TOOL_SRC: /var/lib/qemu-tool/src
   QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260929.g2bdbd16-qemu11.1.2-vfu.8039244
   ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260929.g2bdbd16-rocjitsu.f2d13fb
-  ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-rocjitsu:20260929.g2bdbd16-vm.resolute-rocjitsu-qm.54cc234-qcow2
+  ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ernic-rocjitsu:20260929.g2bdbd16-vm.resolute-ernic-rocjitsu-qm.54cc234-qcow2
 
 jobs:
   vm-hardware-test:
@@ -231,6 +231,7 @@ jobs:
       run: |
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
+        cd /tmp/hsa-snoop/build
         cd /tmp/hsa-snoop/build
         sudo ctest -R sdma-hardware-test -V
         EOF
