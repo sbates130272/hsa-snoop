@@ -83,15 +83,14 @@ jobs:
     - name: Ensure images directory exists
       run: mkdir -p "$VM_IMAGES_DIR" && chmod 777 "$VM_IMAGES_DIR"
 
-    - name: Fetch prebuilt rocjitsu guest image
+    - name: Fetch rocjitsu VM metadata and SSH keys
       shell: bash
       run: |
         set -euo pipefail
-        artifact_dir=$(mktemp -d)
-        cd "$artifact_dir"
-        oras manifest fetch "$ROCJITSU_VM_IMAGE" > manifest.json
-        oras discover --format json "$ROCJITSU_VM_IMAGE" > referrers.json
-        oras pull "$ROCJITSU_VM_IMAGE"
+        artifact_dir="$VM_IMAGES_DIR/.oras-meta"
+        mkdir -p "$artifact_dir"
+        oras manifest fetch "$ROCJITSU_VM_IMAGE" > "$artifact_dir/manifest.json"
+        oras discover --format json "$ROCJITSU_VM_IMAGE" > "$artifact_dir/referrers.json"
         ref_digest=$(
           MANIFEST_JSON="$artifact_dir/manifest.json" REFERRERS_JSON="$artifact_dir/referrers.json" \
             python3 - <<'PY'
@@ -121,10 +120,10 @@ jobs:
         print(matches[0])
         PY
         )
-        meta_dir=$(mktemp -d)
+        meta_dir="$artifact_dir/vm-info"
+        mkdir -p "$meta_dir"
         oras pull --output "$meta_dir" "${ROCJITSU_VM_IMAGE%:*}@${ref_digest}"
         [ -f "$meta_dir/vm-info.json" ] || { echo "vm-info.json missing" >&2; exit 1; }
-        zstd -d --long=27 --rm ./*.qcow2.zst
         install -d -m 700 "$HOME/.ssh"
         META_DIR="$meta_dir" MANIFEST_JSON="$artifact_dir/manifest.json" python3 - <<'PY' > "$artifact_dir/vm-info.env"
         import json, base64, os
@@ -145,8 +144,29 @@ jobs:
         set -a; . "$artifact_dir/vm-info.env"; set +a
         install -m 600 "$meta_dir/$VM_PRIVATE_KEY_FILE" "$HOME/.ssh/id_rsa"
         install -m 644 "$meta_dir/$VM_PUBLIC_KEY_FILE" "$HOME/.ssh/id_rsa.pub"
-        rm -f "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2" "$VM_IMAGES_DIR/hsa-snoop-test.qcow2"
+
+    - name: Cache qcow2 backing image
+      id: qcow2-cache
+      uses: actions/cache@v6
+      with:
+        path: ${{ env.VM_IMAGES_DIR }}/hsa-snoop-test-backing.qcow2
+        key: qcow2-${{ env.ROCJITSU_VM_IMAGE }}
+
+    - name: Download and decompress qcow2 blob
+      if: steps.qcow2-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        tmp=$(mktemp -d)
+        cd "$tmp"
+        oras pull "$ROCJITSU_VM_IMAGE"
+        zstd -d --long=27 --rm ./*.qcow2.zst
+        rm -f "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2"
         mv ./*.qcow2 "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2"
+
+    - name: Create qcow2 overlay
+      run: |
+        rm -f "$VM_IMAGES_DIR/hsa-snoop-test.qcow2"
         qemu-img create -F qcow2 \
           -b "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2" \
           -f qcow2 "$VM_IMAGES_DIR/hsa-snoop-test.qcow2"
@@ -212,6 +232,7 @@ jobs:
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
         rocm_path=$(ls -d /opt/rocm/core-* 2>/dev/null | head -1)
+        sudo ln -sfn "${rocm_path}" /opt/rocm/rocm 2>/dev/null || true
         cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DCMAKE_PREFIX_PATH="${rocm_path}" \
