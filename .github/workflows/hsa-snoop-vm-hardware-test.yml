@@ -65,7 +65,7 @@ jobs:
         path: qemu-minimal
 
     - name: Pin qemu-minimal to known-good commit
-      run: git -C qemu-minimal checkout ad13400f3aa80d55e4c5ef0e56a1a20ac7ab2cd6
+      run: git -C qemu-minimal checkout ad134002e1b5685c0f2fd00efaa2d665b5ebc0f1
 
     - name: Install dependencies
       run: |
