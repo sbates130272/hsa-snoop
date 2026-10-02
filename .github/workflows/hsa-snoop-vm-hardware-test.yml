@@ -84,6 +84,7 @@ jobs:
       run: mkdir -p "$VM_IMAGES_DIR" && chmod 777 "$VM_IMAGES_DIR"
 
     - name: Fetch prebuilt rocjitsu guest image
+      shell: bash
       run: |
         set -euo pipefail
         artifact_dir=$(mktemp -d)
