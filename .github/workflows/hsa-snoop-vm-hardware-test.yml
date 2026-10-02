@@ -41,7 +41,7 @@ env:
   VM_NAME: hsa-snoop-test
   QEMU_TOOL_SRC: /var/lib/qemu-tool/src
   QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260929.g2bdbd16-qemu11.1.2-vfu.8039244
-  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260929.g2bdbd16-rocjitsu.f2d13fb
+  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260925.g12f12f8-rocjitsu.c85bb75
   ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ernic-rocjitsu:20260929.g2bdbd16-vm.resolute-ernic-rocjitsu-qm.54cc234-qcow2
 
 jobs:
@@ -214,6 +214,27 @@ jobs:
         done
         echo "VM failed to boot in time"
         exit 1
+
+    - name: Install rocjitsu firmware stubs in guest
+      run: |
+        set -euo pipefail
+        fw_dir=$(mktemp -d)
+        docker run --rm --entrypoint /bin/sh "$ROCJITSU_IMAGE" \
+          -c 'python3 /usr/local/bin/vfio_guest_firmware.py --set gap --output /out && tar -cf - -C /out .' \
+          | tar -xf - -C "$fw_dir"
+        test -f "$fw_dir/gc_12_1_0_imu.bin"
+        vm_password=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        tar -cf - -C "$fw_dir" . \
+          | ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+              -p 2222 "$VM_USERNAME"@qemu "cat > /tmp/fw.tar"
+        ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<EOF
+        set -euo pipefail
+        mkdir -p /tmp/rocjitsu-firmware
+        tar -xf /tmp/fw.tar -C /tmp/rocjitsu-firmware
+        echo '${vm_password}' | sudo -S mkdir -p /lib/firmware/amdgpu
+        echo '${vm_password}' | sudo -S cp /tmp/rocjitsu-firmware/* /lib/firmware/amdgpu/
+        EOF
 
     - name: Load amdgpu via amdgpu-probe
       run: |
