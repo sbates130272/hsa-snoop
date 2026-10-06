@@ -60,7 +60,9 @@ jobs:
             rsync -a --delete \
               --exclude '.git' \
               --exclude 'perf/' \
+              --exclude 'perf-history/' \
               --exclude 'prom/' \
+              --exclude 'prom-snapshot/' \
               docs/ ../gh-pages/
 
             touch ../gh-pages/.nojekyll
