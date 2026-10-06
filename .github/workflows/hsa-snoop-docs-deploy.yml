@@ -9,7 +9,8 @@ on:
       - 'README.md'
       - 'docs/**'
       - 'ci/report/publish-perf.py'
-      - '.github/workflows/docs-deploy.yml'
+      - '.github/actions/publish-perf/action.yml'
+      - '.github/workflows/hsa-snoop-docs-deploy.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -59,6 +60,7 @@ jobs:
             rsync -a --delete \
               --exclude '.git' \
               --exclude 'perf/' \
+              --exclude 'prom/' \
               docs/ ../gh-pages/
 
             touch ../gh-pages/.nojekyll
@@ -70,7 +72,7 @@ jobs:
             fi
             git -C ../gh-pages commit \
               -m "docs: publish site from ${GITHUB_SHA}" \
-              -m "Built by docs-deploy.yml. [skip ci]"
+              -m "Built by hsa-snoop-docs-deploy.yml. [skip ci]"
 
             if git -C ../gh-pages push origin HEAD:gh-pages; then
               echo "published"

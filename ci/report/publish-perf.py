@@ -17,6 +17,9 @@ Usage (from the repo root):
 When --render-only is passed: regenerate the HTML trend page from the
 existing history.jsonl without appending a new record.  Used by the
 docs-deploy workflow to rebuild the site from the published history.
+
+When --snapshot-output is passed: also render a static Prometheus snapshot
+page (all metrics, grouped by family) to the given path.
 """
 
 import argparse
@@ -134,6 +137,131 @@ def write_badges(history: list[dict], out_dir: Path) -> None:
             continue
         badge_path.write_text(json.dumps(
             badge_json(m["key"], val, m["unit"], m["decimals"])))
+
+
+def render_snapshot_html(prom_text: str, out_path: Path, sha: str, run_id: str, runner: str) -> None:
+    """Write a static page of all Prometheus metrics from prom_text, grouped by family."""
+    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+    prom_values = parse_prometheus(prom_text)
+
+    _SUFFIXES = ("_total", "_created", "_seconds_total", "_bytes_total",
+                 "_count", "_sum", "_bucket")
+    families: dict[str, list[tuple[str, float]]] = {}
+    for raw_key, val in sorted(prom_values.items()):
+        base = raw_key.split("{", 1)[0]
+        family = base
+        for sfx in _SUFFIXES:
+            if base.endswith(sfx):
+                family = base[: -len(sfx)]
+                break
+        families.setdefault(family, []).append((raw_key, val))
+
+    # HELP/TYPE lines use the full metric name (e.g. hsa_kernel_launches_total);
+    # index by both the raw name and the stripped family name so lookups work
+    # regardless of which form the prometheus text uses.
+    help_map: dict[str, str] = {}
+    type_map: dict[str, str] = {}
+    for line in prom_text.splitlines():
+        if line.startswith("# HELP "):
+            parts = line[7:].split(" ", 1)
+            if len(parts) == 2:
+                raw = parts[0]
+                help_map[raw] = parts[1]
+                family_key = raw
+                for sfx in _SUFFIXES:
+                    if raw.endswith(sfx):
+                        family_key = raw[: -len(sfx)]
+                        break
+                help_map[family_key] = parts[1]
+        elif line.startswith("# TYPE "):
+            parts = line[7:].split(" ", 1)
+            if len(parts) == 2:
+                raw = parts[0]
+                type_map[raw] = parts[1]
+                family_key = raw
+                for sfx in _SUFFIXES:
+                    if raw.endswith(sfx):
+                        family_key = raw[: -len(sfx)]
+                        break
+                type_map[family_key] = parts[1]
+
+    family_sections: list[str] = []
+    for family, series in sorted(families.items()):
+        help_text = help_map.get(family, "")
+        mtype = type_map.get(family, "")
+        rows = []
+        for raw_key, val in series:
+            disp = f"{int(val):,}" if val == int(val) else f"{val:.6g}"
+            rows.append(
+                f"<tr><td class=\"metric-name\"><code>{html.escape(raw_key)}</code></td>"
+                f"<td class=\"metric-val\">{html.escape(disp)}</td></tr>"
+            )
+        badge_class = {
+            "counter": "type-counter",
+            "gauge": "type-gauge",
+            "histogram": "type-histogram",
+            "summary": "type-summary",
+        }.get(mtype, "type-unknown")
+        family_sections.append(
+            f"<section class=\"metric-family\">"
+            f"<h2><span class=\"family-name\">{html.escape(family)}</span>"
+            f"<span class=\"mtype {badge_class}\">{html.escape(mtype)}</span></h2>"
+            + (f"<p class=\"help-text\">{html.escape(help_text)}</p>" if help_text else "")
+            + "<table><thead><tr><th>metric</th><th>value</th></tr></thead><tbody>"
+            + "".join(rows)
+            + "</tbody></table></section>"
+        )
+
+    meta_html = (
+        f"<p class=\"snapshot-meta\">"
+        f"Run <code>{html.escape(run_id or 'unknown')}</code> · "
+        f"sha <code>{html.escape((sha or 'unknown')[:8])}</code> · "
+        f"{html.escape(runner)} · {html.escape(timestamp)}"
+        f"</p>"
+    )
+
+    html_doc = f"""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hsa-snoop Prometheus snapshot</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  body {{ font-family: sans-serif; max-width: 1000px; margin: 2em auto; padding: 0 1em 3em; line-height: 1.5; }}
+  h1 {{ font-size: 1.8em; margin-bottom: 0.2em; }}
+  h2 {{ font-size: 1em; margin: 0 0 0.2em; display: flex; align-items: center; gap: 0.5em; }}
+  .snapshot-meta {{ color: #666; font-size: 0.9em; margin-bottom: 2em; }}
+  .metric-family {{ border: 1px solid #d0d7de; border-radius: 8px; padding: 1rem; margin-bottom: 1.2em; background: rgba(127,127,127,0.04); }}
+  .family-name {{ font-family: monospace; font-size: 1em; }}
+  .help-text {{ color: #555; font-size: 0.88em; margin: 0.15em 0 0.6em; }}
+  .mtype {{ font-size: 0.7em; font-weight: 600; border-radius: 4px; padding: 1px 6px; text-transform: uppercase; }}
+  .type-counter {{ background: #dbeafe; color: #1e40af; }}
+  .type-gauge {{ background: #dcfce7; color: #166534; }}
+  .type-histogram {{ background: #fef9c3; color: #854d0e; }}
+  .type-summary {{ background: #f3e8ff; color: #6b21a8; }}
+  .type-unknown {{ background: #f1f5f9; color: #475569; }}
+  table {{ border-collapse: collapse; width: 100%; font-size: 0.9em; }}
+  th {{ text-align: left; border-bottom: 2px solid #d0d7de; padding: 0.3rem 0.5rem; }}
+  td {{ border-bottom: 1px solid #eaecef; padding: 0.25rem 0.5rem; }}
+  .metric-name {{ font-family: monospace; word-break: break-all; }}
+  .metric-val {{ text-align: right; font-family: monospace; white-space: nowrap; }}
+  a {{ color: #0b57d0; }}
+</style>
+</head>
+<body>
+<h1>hsa-snoop Prometheus snapshot</h1>
+<p>All metrics emitted by the most recent successful CI run on the default branch,
+collected from the hardware test VM via <code>hsa-snoop --prometheus</code>.</p>
+{meta_html}
+{"".join(family_sections) if family_sections else "<p><em>No metrics found in snapshot.</em></p>"}
+<p><small>Generated by <code>ci/report/publish-perf.py</code>. Source: <a href="https://github.com/sbates130272/hsa-snoop">sbates130272/hsa-snoop</a>. &nbsp;|&nbsp; <a href="../perf/">Performance trend charts</a></small></p>
+</body>
+</html>
+"""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(html_doc)
 
 
 def render_html(history: list[dict], out_path: Path) -> None:
@@ -289,6 +417,8 @@ def main() -> None:
     ap.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
     ap.add_argument("--render-only", action="store_true",
                     help="Regenerate HTML from existing history without appending a new record")
+    ap.add_argument("--snapshot-output", metavar="PATH",
+                    help="Also render a full Prometheus snapshot page to this path")
     args = ap.parse_args()
 
     docs = Path(args.docs_dir)
@@ -336,6 +466,20 @@ def main() -> None:
     render_html(history, html_path)
     print(f"wrote badges to {history_path.parent}")
     print(f"rendered trend page to {html_path}")
+
+    if args.snapshot_output:
+        prom_src = args.prometheus_file if not args.render_only else None
+        if prom_src and Path(prom_src).exists():
+            render_snapshot_html(
+                Path(prom_src).read_text(),
+                Path(args.snapshot_output),
+                args.sha,
+                args.run_id,
+                args.runner,
+            )
+            print(f"rendered snapshot page to {args.snapshot_output}")
+        else:
+            print(f"--snapshot-output set but no prometheus file available; skipping snapshot", file=sys.stderr)
 
 
 if __name__ == "__main__":

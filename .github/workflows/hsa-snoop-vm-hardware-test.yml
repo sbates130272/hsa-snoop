@@ -2,6 +2,9 @@ name: hsa-snoop - vm-hardware-test
 
 on:
   workflow_dispatch:
+  schedule:
+    # Daily at 02:17 UTC on main — keeps perf history and snapshot fresh.
+    - cron: '17 2 * * *'
   pull_request:
     paths:
       - '**.cpp'
@@ -325,7 +328,10 @@ jobs:
         test -s ./artifacts/prometheus.txt || echo "No Prometheus snapshot (gfx-hardware-test not wired to --prometheus yet)" >&2
 
     - name: Publish performance trends to gh-pages
-      if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: >-
+        success() && github.ref == 'refs/heads/main' &&
+        (github.event_name == 'push' || github.event_name == 'schedule' ||
+         github.event_name == 'workflow_dispatch')
       uses: ./.github/actions/publish-perf
       with:
         prometheus-file: ./artifacts/prometheus.txt
