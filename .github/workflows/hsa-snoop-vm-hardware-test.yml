@@ -136,7 +136,6 @@ jobs:
         private_key = Path(keys.get("private_key_path", "/output/id_rsa")).name
         public_key = Path(keys.get("public_key_path", "/output/id_rsa.pub")).name
         print(f"VM_USERNAME={username}")
-        print(f"VM_PASSWORD_B64={base64.b64encode(info['password'].encode()).decode()}")
         print(f"VM_PRIVATE_KEY_FILE={private_key}")
         print(f"VM_PUBLIC_KEY_FILE={public_key}")
         PY
@@ -237,25 +236,23 @@ jobs:
           -c 'python3 /usr/local/bin/vfio_guest_firmware.py --set gap --output /out && tar -cf - -C /out .' \
           | tar -xf - -C "$fw_dir"
         test -f "$fw_dir/gc_12_1_0_imu.bin"
-        vm_password=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         tar -cf - -C "$fw_dir" . \
           | ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
               -p 2222 "$VM_USERNAME"@qemu "cat > /tmp/fw.tar"
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
-          -p 2222 "$VM_USERNAME"@qemu bash -s <<EOF
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
         set -euo pipefail
         mkdir -p /tmp/rocjitsu-firmware
         tar -xf /tmp/fw.tar -C /tmp/rocjitsu-firmware
-        echo '${vm_password}' | sudo -S mkdir -p /lib/firmware/amdgpu
-        echo '${vm_password}' | sudo -S cp /tmp/rocjitsu-firmware/* /lib/firmware/amdgpu/
+        sudo mkdir -p /lib/firmware/amdgpu
+        sudo cp /tmp/rocjitsu-firmware/* /lib/firmware/amdgpu/
         EOF
 
     - name: Load amdgpu via amdgpu-probe
       run: |
-        vm_password=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -p 2222 "$VM_USERNAME"@qemu \
-          "echo '${vm_password}' | sudo -S /usr/local/bin/amdgpu-probe"
+          "sudo /usr/local/bin/amdgpu-probe"
 
     - name: Verify amdgpu loaded and KFD present
       run: |
@@ -279,7 +276,8 @@ jobs:
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
           -DCMAKE_PREFIX_PATH="${rocm_path}" \
           -DGPU_TARGETS=gfx1250 \
-          -DHSA_SNOOP_HARDWARE_TESTS=ON
+          -DHSA_SNOOP_HARDWARE_TESTS=ON \
+          -DHSA_SNOOP_PROMETHEUS=ON
         cmake --build /tmp/hsa-snoop/build --parallel $(nproc)
         ls -lh /tmp/hsa-snoop/build/examples/sdma-test /tmp/hsa-snoop/build/examples/gfx-test /tmp/hsa-snoop/build/ais-test
         EOF
@@ -296,12 +294,11 @@ jobs:
     - name: Run hardware tests in VM
       timeout-minutes: 10
       run: |
-        vm_password=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
-          -p 2222 "$VM_USERNAME"@qemu bash -s <<EOF
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
         set -euo pipefail
         cd /tmp/hsa-snoop/build
-        echo '${vm_password}' | sudo -S ctest -L hardware -V
+        sudo ctest -L hardware -V
         EOF
 
     - name: Collect test results
@@ -325,9 +322,7 @@ jobs:
         scp -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -P 2222 "$VM_USERNAME"@qemu:/tmp/hsa-snoop/build/hsa-snoop-prometheus.txt \
           ./artifacts/prometheus.txt 2>/dev/null || true
-        if [ ! -s ./artifacts/prometheus.txt ]; then
-          echo "No Prometheus snapshot produced (build requires HSA_SNOOP_PROMETHEUS=ON)" >&2
-        fi
+        test -s ./artifacts/prometheus.txt || echo "No Prometheus snapshot (gfx-hardware-test not wired to --prometheus yet)" >&2
 
     - name: Publish performance trends to gh-pages
       if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
