@@ -14,7 +14,8 @@
     <p class="lede">Capture AQL queues, SDMA traffic, and Prometheus metrics from real HIP/HSA workloads without rebuilding the amdgpu driver.</p>
     <div class="actions">
       <a class="button button--primary" href="https://github.com/sbates130272/hsa-snoop">View repository</a>
-      <a class="button" href="perf/">Open performance tracker</a>
+      <a class="button" href="perf/">Performance tracker</a>
+      <a class="button" href="prom/">Prometheus snapshot</a>
     </div>
   </div>
 </header>
@@ -31,7 +32,7 @@
     </article>
     <article class="card">
       <h2>Track regressions over time</h2>
-      <p>The GitHub Pages perf tracker publishes CI history to <code>gh-pages/perf/</code> and charts the key counters per run.</p>
+      <p>The GitHub Pages perf tracker publishes CI history to <code>gh-pages/perf/</code> and charts the key counters per run. A full Prometheus snapshot of all metrics is published to <code>gh-pages/prom/</code> after every run.</p>
     </article>
   </section>
 
@@ -46,7 +47,7 @@
       <img alt="AIS RX bytes badge" src="https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_rx_bytes.json">
       <img alt="AIS TX bytes badge" src="https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_tx_bytes.json">
     </div>
-    <p><a href="perf/">View the full trend charts and recent run history.</a></p>
+    <p><a href="perf/">View the full trend charts and recent run history.</a> &nbsp;|&nbsp; <a href="prom/">View the latest Prometheus snapshot.</a></p>
   </section>
 
   <section class="section grid grid--two section--media">

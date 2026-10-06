@@ -1,5 +1,17 @@
 # hsa-snoop
 
+[![vm-hardware-test](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-vm-hardware-test.yml/badge.svg?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-vm-hardware-test.yml)
+[![build-check](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-build-check.yml/badge.svg)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-build-check.yml)
+[![clang-format](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-clang-format.yml/badge.svg)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-clang-format.yml)
+[![spell-check](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-spell-check.yml/badge.svg)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-spell-check.yml)
+[![debian-package](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-package.yml/badge.svg)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-package.yml)
+[![debian-publish](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-publish.yml/badge.svg?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-publish.yml)
+[![docs-deploy](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-docs-deploy.yml/badge.svg?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-docs-deploy.yml)
+[![kernel launches](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-kernel_launches.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)
+[![SDMA copies](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-sdma_copies.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)
+[![AIS RX bytes](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_rx_bytes.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)
+[![AIS TX bytes](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_tx_bytes.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)
+
 `hsa-snoop` detects the HSA **AQL queues** and **SDMA copy queues** an
 application uses to talk to an AMD GPU, tracks their ring-buffer addresses
 (virtual **and** physical), decodes the packets flowing across them (kernel
@@ -26,6 +38,7 @@ Project pages and performance tracking:
 
 - [GitHub Pages site](https://sbates130272.github.io/hsa-snoop/)
 - [Performance tracker](https://sbates130272.github.io/hsa-snoop/perf/)
+- [Prometheus snapshot](https://sbates130272.github.io/hsa-snoop/prom/)
 
 Example (from the bundled `gfx-test` example):
 
