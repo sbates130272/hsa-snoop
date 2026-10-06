@@ -111,13 +111,18 @@ endif()
 install(FILES grafana/hsa-snoop-dashboard.json
         DESTINATION ${CMAKE_INSTALL_DATADIR}/hsa-snoop/grafana)
 
+# ais-test uses raw KFD ioctls only — no HIP runtime dependency.
+add_executable(ais-test examples/ais-test.hip)
+set_source_files_properties(examples/ais-test.hip PROPERTIES LANGUAGE CXX)
+target_include_directories(ais-test PRIVATE examples)
+
 list(APPEND CMAKE_PREFIX_PATH /opt/rocm)
 find_package(hip QUIET)
 if(hip_FOUND)
   message(STATUS "ROCm HIP found — building examples/")
   add_subdirectory(examples)
 else()
-  message(STATUS "ROCm HIP not found — skipping examples/")
+  message(STATUS "ROCm HIP not found — skipping HIP examples (gfx-test, sdma-test)")
 endif()
 
 if(HSA_SNOOP_HARDWARE_TESTS)
@@ -136,4 +141,15 @@ if(HSA_SNOOP_HARDWARE_TESTS)
   set_tests_properties(sdma-hardware-test PROPERTIES
     LABELS "hardware;sdma"
     TIMEOUT 60)
+
+  add_test(
+    NAME gfx-hardware-test
+    COMMAND ${CMAKE_COMMAND}
+      -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
+      -DGFX_TEST=$<TARGET_FILE:gfx-test>
+      -DTRACE_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/gfx-hardware-test.json
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/gfx_hardware_test.cmake)
+  set_tests_properties(gfx-hardware-test PROPERTIES
+    LABELS "hardware;gfx"
+    TIMEOUT 270)
 endif()
