@@ -32,13 +32,17 @@ permissions:
 # (default branch) reach that step; pull_request jobs do not.
 # The job overrides this to write only when the event is a push to main.
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
   VM_NAME: hsa-snoop-test
+  QEMU_TOOL_SRC: /var/lib/qemu-tool/src
   QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260929.g2bdbd16-qemu11.1.2-vfu.8039244
-  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260929.g2bdbd16-rocjitsu.f2d13fb
-  QEMU_TOOL_SRC: ${{ github.workspace }}/qemu-minimal
+  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260925.g12f12f8-rocjitsu.c85bb75
+  ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ernic-rocjitsu:20260929.g2bdbd16-vm.resolute-ernic-rocjitsu-qm.54cc234-qcow2
 
 jobs:
   vm-hardware-test:
@@ -48,8 +52,8 @@ jobs:
     permissions:
       contents: write
     container:
-      image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:latest
-      options: --device /dev/kvm -v /var/run/docker.sock:/var/run/docker.sock
+      image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260925.g12f12f8-qemu11.1.1-vfu.8039244
+      options: --device /dev/kvm -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/qemu-tool:/var/lib/qemu-tool
 
     steps:
     - name: Check out hsa-snoop
@@ -61,70 +65,132 @@ jobs:
       uses: actions/checkout@v7
       with:
         repository: sbates130272/qemu-minimal
-        ref: ad13400f3aa80d55e4c5ef0e56a1a20ac7ab2cd6
         fetch-depth: 0
         path: qemu-minimal
 
-    - name: Install dependencies
-      run: |
-        apt-get update -qq
-        apt-get install -y -qq ansible python3-pip openssh-client
-
-    - name: Install jmespath for Ansible json_query filter
-      run: |
-        py=$(sed -n '1s/^#! *//p' "$(command -v ansible-playbook)" | awk '{print $1}')
-        "${py}" -m pip install --break-system-packages jmespath
-
-    - name: Cache pip
-      uses: actions/cache@v6
-      with:
-        path: ~/.cache/pip
-        key: pip-qemu-tool-${{ hashFiles('qemu-minimal/qemu/pyproject.toml') }}
+    - name: Pin qemu-minimal to known-good commit
+      run: git -C qemu-minimal checkout ad134002e1b5685c0f2fd00efaa2d665b5ebc0f1
 
     - name: Install qemu-tool
       run: pip install --break-system-packages -e ./qemu-minimal/qemu
 
-    - name: Generate SSH key-pair
-      run: mkdir -p "$HOME/.ssh" && ssh-keygen -t rsa -q -f "$HOME/.ssh/id_rsa" -N ""
-
-    - name: Prepare GnuPG directory for git_setup
-      run: mkdir -p "$HOME/.gnupg"
-
-    - name: Cache Ansible collections
-      uses: actions/cache@v6
-      with:
-        path: ~/.ansible/collections
-        key: ansible-collections-${{ hashFiles('qemu-minimal/ansible/requirements.yml') }}
-
-    - name: Install Ansible collections
-      run: ansible-galaxy collection install --pre -r qemu-minimal/ansible/requirements.yml
-
-    - name: Cache cloud image
-      uses: actions/cache@v6
-      with:
-        path: ${{ env.VM_IMAGES_DIR }}/*-server-cloudimg-*.img
-        key: cloud-img-amd64-resolute-hsa-snoop-rocjitsu
+    - name: Stage qemu-tool source for the sibling container
+      run: |
+        rm -rf /var/lib/qemu-tool/src
+        mkdir -p /var/lib/qemu-tool/src
+        cp -r qemu-minimal/qemu /var/lib/qemu-tool/src/
 
     - name: Ensure images directory exists
       run: mkdir -p "$VM_IMAGES_DIR" && chmod 777 "$VM_IMAGES_DIR"
+
+    - name: Fetch rocjitsu VM metadata and SSH keys
+      shell: bash
+      run: |
+        set -euo pipefail
+        artifact_dir="$VM_IMAGES_DIR/.oras-meta"
+        mkdir -p "$artifact_dir"
+        oras manifest fetch "$ROCJITSU_VM_IMAGE" > "$artifact_dir/manifest.json"
+        oras discover --format json "$ROCJITSU_VM_IMAGE" > "$artifact_dir/referrers.json"
+        ref_digest=$(
+          MANIFEST_JSON="$artifact_dir/manifest.json" REFERRERS_JSON="$artifact_dir/referrers.json" \
+            python3 - <<'PY'
+        import json, os
+        manifest = json.load(open(os.environ["MANIFEST_JSON"]))
+        discover = json.load(open(os.environ["REFERRERS_JSON"]))
+        referrers = discover.get("manifests", discover.get("referrers", []))
+        annotations = manifest.get("annotations") or {}
+        expected = {
+            "org.opencontainers.image.description",
+            "org.opencontainers.image.revision",
+            "org.opencontainers.image.created",
+            "vm.flavour",
+            "vm.release",
+            "vm.kernel_release",
+            "io.batesste.ci-images.target",
+        }
+        matches = []
+        for ref in referrers:
+            if ref.get("artifactType") != "application/vnd.batesste.vm-info.v1":
+                continue
+            ref_annotations = ref.get("annotations") or {}
+            if all(ref_annotations.get(key) == annotations.get(key) for key in expected if annotations.get(key)):
+                matches.append(ref["digest"])
+        if len(matches) != 1:
+            raise SystemExit(f"expected exactly one matching vm-info referrer, found {len(matches)}")
+        print(matches[0])
+        PY
+        )
+        meta_dir="$artifact_dir/vm-info"
+        mkdir -p "$meta_dir"
+        oras pull --output "$meta_dir" "${ROCJITSU_VM_IMAGE%:*}@${ref_digest}"
+        [ -f "$meta_dir/vm-info.json" ] || { echo "vm-info.json missing" >&2; exit 1; }
+        install -d -m 700 "$HOME/.ssh"
+        META_DIR="$meta_dir" MANIFEST_JSON="$artifact_dir/manifest.json" python3 - <<'PY' > "$artifact_dir/vm-info.env"
+        import json, base64, os
+        from pathlib import Path
+        manifest = json.loads(Path(os.environ["MANIFEST_JSON"]).read_text())
+        info = json.loads(Path(os.environ["META_DIR"], "vm-info.json").read_text())
+        annotations = manifest.get("annotations") or {}
+        username = annotations.get("vm.username") or info.get("username", "ubuntu")
+        keys = info.get("ssh_keys") or {}
+        private_key = Path(keys.get("private_key_path", "/output/id_rsa")).name
+        public_key = Path(keys.get("public_key_path", "/output/id_rsa.pub")).name
+        print(f"VM_USERNAME={username}")
+        print(f"VM_PASSWORD_B64={base64.b64encode(info['password'].encode()).decode()}")
+        print(f"VM_PRIVATE_KEY_FILE={private_key}")
+        print(f"VM_PUBLIC_KEY_FILE={public_key}")
+        PY
+        cat "$artifact_dir/vm-info.env" >> "$GITHUB_ENV"
+        set -a; . "$artifact_dir/vm-info.env"; set +a
+        install -m 600 "$meta_dir/$VM_PRIVATE_KEY_FILE" "$HOME/.ssh/id_rsa"
+        install -m 644 "$meta_dir/$VM_PUBLIC_KEY_FILE" "$HOME/.ssh/id_rsa.pub"
+
+    - name: Compute qcow2 cache key from manifest digest
+      id: qcow2-key
+      shell: bash
+      run: |
+        set -euo pipefail
+        digest=$(python3 -c "
+        import json, hashlib, pathlib
+        m = json.loads(pathlib.Path('$VM_IMAGES_DIR/.oras-meta/manifest.json').read_text())
+        raw = json.dumps(m, sort_keys=True, separators=(',', ':'))
+        print(hashlib.sha256(raw.encode()).hexdigest()[:16])
+        ")
+        echo "key=qcow2-${digest}" >> "$GITHUB_OUTPUT"
+
+    - name: Cache qcow2 backing image
+      id: qcow2-cache
+      uses: actions/cache@v6
+      with:
+        path: ${{ github.workspace }}/qcow2-cache/hsa-snoop-test-backing.qcow2
+        key: ${{ steps.qcow2-key.outputs.key }}
+
+    - name: Download and decompress qcow2 blob
+      if: steps.qcow2-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$GITHUB_WORKSPACE/qcow2-cache"
+        tmp=$(mktemp -d)
+        cd "$tmp"
+        oras pull "$ROCJITSU_VM_IMAGE"
+        zstd -d --long=27 --rm ./*.qcow2.zst
+        mv ./*.qcow2 "$GITHUB_WORKSPACE/qcow2-cache/hsa-snoop-test-backing.qcow2"
+
+    - name: Create qcow2 overlay
+      run: |
+        mkdir -p "$VM_IMAGES_DIR"
+        cp "$GITHUB_WORKSPACE/qcow2-cache/hsa-snoop-test-backing.qcow2" \
+           "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2"
+        rm -f "$VM_IMAGES_DIR/hsa-snoop-test.qcow2"
+        qemu-img create -F qcow2 \
+          -b "$VM_IMAGES_DIR/hsa-snoop-test-backing.qcow2" \
+          -f qcow2 "$VM_IMAGES_DIR/hsa-snoop-test.qcow2"
 
     - name: Pull CI images
       run: |
         docker pull "$ROCJITSU_IMAGE"
         docker pull "$QEMU_IMAGE"
-
-    - name: Generate VM with vm-rocjitsu playbook
-      env:
-        ANSIBLE_EXTRA_ARGS: '-e {"git_setup_enable_gpg_signing":false,"user_setup_dotfiles_enable":false,"user_setup_install_amd_ca":false,"user_setup_deploy_ssh_key":false,"rocm_setup_skip_system_upgrade":true}'
-      run: |
-        qemu-tool gen-vm \
-          --vm-name hsa-snoop-test \
-          --release resolute \
-          --username ubuntu \
-          --password password \
-          --packages none \
-          --size 20 \
-          --ansible-playbook qemu-minimal/ansible/playbooks/vm-rocjitsu.yml
 
     - name: Bring up rocjitsu compose stack
       working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
@@ -150,10 +216,10 @@ jobs:
       run: |
         elapsed=0
         while [ $elapsed -lt 180 ]; do
-          if ssh -o ConnectTimeout=1 \
-                 -o NoHostAuthenticationForLocalhost=yes \
+          if ssh -i "$HOME/.ssh/id_rsa" \
+                 -o ConnectTimeout=1 \
                  -o StrictHostKeyChecking=no \
-                 -p 2222 ubuntu@qemu true 2>/dev/null; then
+                 -p 2222 "$VM_USERNAME"@qemu true 2>/dev/null; then
             echo "VM ready after ${elapsed}s"
             exit 0
           fi
@@ -162,54 +228,87 @@ jobs:
         echo "VM failed to boot in time"
         exit 1
 
+    - name: Install rocjitsu firmware stubs in guest
+      shell: bash
+      run: |
+        set -euo pipefail
+        fw_dir=$(mktemp -d)
+        docker run --rm --entrypoint /bin/sh "$ROCJITSU_IMAGE" \
+          -c 'python3 /usr/local/bin/vfio_guest_firmware.py --set gap --output /out && tar -cf - -C /out .' \
+          | tar -xf - -C "$fw_dir"
+        test -f "$fw_dir/gc_12_1_0_imu.bin"
+        vm_password=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        tar -cf - -C "$fw_dir" . \
+          | ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+              -p 2222 "$VM_USERNAME"@qemu "cat > /tmp/fw.tar"
+        ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<EOF
+        set -euo pipefail
+        mkdir -p /tmp/rocjitsu-firmware
+        tar -xf /tmp/fw.tar -C /tmp/rocjitsu-firmware
+        echo '${vm_password}' | sudo -S mkdir -p /lib/firmware/amdgpu
+        echo '${vm_password}' | sudo -S cp /tmp/rocjitsu-firmware/* /lib/firmware/amdgpu/
+        EOF
+
     - name: Load amdgpu via amdgpu-probe
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu "sudo /usr/local/bin/amdgpu-probe"
+        vm_password=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu \
+          "echo '${vm_password}' | sudo -S /usr/local/bin/amdgpu-probe"
 
     - name: Verify amdgpu loaded and KFD present
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu "lsmod | grep -q amdgpu && ls /dev/kfd"
+        ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu "lsmod | grep -q amdgpu && ls /dev/kfd"
 
     - name: Copy hsa-snoop source into VM
       run: |
-        scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P 2222 -r hsa-snoop ubuntu@qemu:/tmp/hsa-snoop
+        scp -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -P 2222 -r hsa-snoop "$VM_USERNAME"@qemu:/tmp/hsa-snoop
 
     - name: Build hsa-snoop in VM
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu bash -s <<'EOF'
+        ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
+        set -euo pipefail
+        rocm_path=$(ls -d /opt/rocm/core-* 2>/dev/null | sort -V | tail -1)
+        rocm_path=${rocm_path:-/opt/rocm}
+        export PATH="${rocm_path}/bin:${PATH}"
         cmake -B /tmp/hsa-snoop/build -S /tmp/hsa-snoop \
           -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          -DCMAKE_PREFIX_PATH="${rocm_path}" \
           -DGPU_TARGETS=gfx1250 \
           -DHSA_SNOOP_HARDWARE_TESTS=ON
         cmake --build /tmp/hsa-snoop/build --parallel $(nproc)
+        ls -lh /tmp/hsa-snoop/build/examples/sdma-test /tmp/hsa-snoop/build/examples/gfx-test /tmp/hsa-snoop/build/ais-test
         EOF
 
     - name: Run unit tests in VM
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu bash -s <<'EOF'
+        ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
+        set -euo pipefail
         cd /tmp/hsa-snoop/build
-        ctest --exclude-regex sdma-hardware-test -V
+        ctest --label-exclude hardware -V
         EOF
 
-    - name: Run hardware test in VM
-      timeout-minutes: 3
+    - name: Run hardware tests in VM
+      timeout-minutes: 10
       run: |
-        ssh -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -p 2222 ubuntu@qemu bash -s <<'EOF'
+        vm_password=$(printf '%s' "$VM_PASSWORD_B64" | base64 -d)
+        ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<EOF
+        set -euo pipefail
         cd /tmp/hsa-snoop/build
-        sudo ctest -R sdma-hardware-test -V
+        echo '${vm_password}' | sudo -S ctest -L hardware -V
         EOF
 
     - name: Collect test results
       if: always()
       run: |
-        scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P 2222 -r ubuntu@qemu:/tmp/hsa-snoop/build/Testing ./test-results || true
+        scp -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -P 2222 -r "$VM_USERNAME"@qemu:/tmp/hsa-snoop/build/Testing ./test-results || true
 
     - name: Upload test results
       if: always()
@@ -223,9 +322,12 @@ jobs:
       if: success()
       run: |
         mkdir -p ./artifacts
-        scp -o NoHostAuthenticationForLocalhost=yes -o StrictHostKeyChecking=no \
-          -P 2222 ubuntu@qemu:/tmp/hsa-snoop-prometheus.txt \
+        scp -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -P 2222 "$VM_USERNAME"@qemu:/tmp/hsa-snoop/build/hsa-snoop-prometheus.txt \
           ./artifacts/prometheus.txt 2>/dev/null || true
+        if [ ! -s ./artifacts/prometheus.txt ]; then
+          echo "No Prometheus snapshot produced (build requires HSA_SNOOP_PROMETHEUS=ON)" >&2
+        fi
 
     - name: Publish performance trends to gh-pages
       if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'

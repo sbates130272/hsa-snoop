@@ -21,7 +21,7 @@ execute_process(
   COMMAND "${HSA_SNOOP}"
     --format json
     --out "${TRACE_OUTPUT}"
-    --poll-us 20
+    --poll-us 1000
     -- "${SDMA_TEST}" --streams 1 --buf-mb 1 --iters 20 --report 0
   RESULT_VARIABLE snoop_result
   OUTPUT_VARIABLE snoop_stdout
