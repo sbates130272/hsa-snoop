@@ -42,6 +42,7 @@ concurrency:
 env:
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
   VM_NAME: hsa-snoop-test
+  VM_NVME: '1'
   QEMU_TOOL_SRC: /var/lib/qemu-tool/src
   QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260929.g2bdbd16-qemu11.1.2-vfu.8039244
   ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260925.g12f12f8-rocjitsu.c85bb75
@@ -73,9 +74,6 @@ jobs:
 
     - name: Pin qemu-minimal to known-good commit
       run: git -C qemu-minimal checkout ad134002e1b5685c0f2fd00efaa2d665b5ebc0f1
-
-    - name: Install qemu-tool
-      run: pip install --break-system-packages -e ./qemu-minimal/qemu
 
     - name: Stage qemu-tool source for the sibling container
       run: |
@@ -194,25 +192,20 @@ jobs:
         docker pull "$ROCJITSU_IMAGE"
         docker pull "$QEMU_IMAGE"
 
-    - name: Bring up rocjitsu compose stack
-      working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
-      run: |
-        docker compose up --detach
+    - name: Bring up rocjitsu compose stack and wait for healthy
+      uses: sbates130272/qemu-tool-action@v1
+      with:
+        operation: compose
+        qemu-tool-source: ./qemu-minimal/qemu
+        stack: vfio-user-rocjitsu-vm
+        vm-name: ${{ env.VM_NAME }}
+        images-dir: ${{ env.VM_IMAGES_DIR }}
+        compose-args: up --detach
+        wait-for-healthy: 'true'
+        wait-timeout: '120'
 
     - name: Join the compose network
       run: docker network connect vfio-user-rocjitsu-vm_default "$(cat /etc/hostname)"
-
-    - name: Wait for rocjitsu server healthy
-      working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
-      run: |
-        for i in $(seq 1 30); do
-          health=$(docker compose ps --format json rocjitsu \
-            | python3 -c "import sys,json; s=json.load(sys.stdin); print(s.get('Health',''))" \
-            2>/dev/null || true)
-          [ "$health" = "healthy" ] && break
-          sleep 2
-        done
-        [ "$health" = "healthy" ] || (docker compose logs rocjitsu && exit 1)
 
     - name: Wait for VM SSH (180s timeout)
       run: |
@@ -261,6 +254,26 @@ jobs:
       run: |
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -p 2222 "$VM_USERNAME"@qemu "lsmod | grep -q amdgpu && ls /dev/kfd"
+
+    - name: Prepare NVMe filesystem for AIS test
+      run: |
+        ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
+        set -euo pipefail
+        # Locate the first NVMe namespace exposed by QEMU (nvme0n1).
+        NVME_DEV=/dev/nvme0n1
+        if [ ! -b "$NVME_DEV" ]; then
+          echo "NVMe device $NVME_DEV not found — skipping NVMe prep" >&2
+          exit 0
+        fi
+        sudo mkfs.ext4 -F "$NVME_DEV"
+        sudo mkdir -p /mnt/nvme
+        sudo mount "$NVME_DEV" /mnt/nvme
+        # Pre-allocate the AIS test file so ais-test does not need to ftruncate.
+        sudo dd if=/dev/zero of=/mnt/nvme/ais-test.bin bs=1M count=64 status=none
+        sudo chmod 666 /mnt/nvme/ais-test.bin
+        echo "NVMe ready: /mnt/nvme/ais-test.bin"
+        EOF
 
     - name: Copy hsa-snoop source into VM
       run: |
@@ -344,5 +357,10 @@ jobs:
 
     - name: Tear down compose stack
       if: always()
-      working-directory: qemu-minimal/qemu/compose/vfio-user-rocjitsu-vm
-      run: docker compose down
+      uses: sbates130272/qemu-tool-action@v1
+      with:
+        operation: compose
+        stack: vfio-user-rocjitsu-vm
+        vm-name: ${{ env.VM_NAME }}
+        images-dir: ${{ env.VM_IMAGES_DIR }}
+        compose-args: down

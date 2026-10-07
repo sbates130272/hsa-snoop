@@ -87,6 +87,13 @@ if(BUILD_TESTING)
   target_include_directories(proc-mem-test PRIVATE src)
   target_link_libraries(proc-mem-test PRIVATE Threads::Threads)
   add_test(NAME proc-mem-test COMMAND proc-mem-test)
+
+  add_executable(aql-packet-test
+    tests/aql_packet_test.cpp
+    src/aql.cpp
+  )
+  target_include_directories(aql-packet-test PRIVATE src)
+  add_test(NAME aql-packet-test COMMAND aql-packet-test)
 endif()
 
 if(HSA_SNOOP_PROMETHEUS)
@@ -151,5 +158,28 @@ if(HSA_SNOOP_HARDWARE_TESTS)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/gfx_hardware_test.cmake)
   set_tests_properties(gfx-hardware-test PROPERTIES
     LABELS "hardware;gfx"
-    TIMEOUT 270)
+    TIMEOUT 480)
+
+  # AIS target: path to a file on an NVMe-backed filesystem (or a block device).
+  # When empty the test probes and skips gracefully if AIS is unavailable.
+  set(HSA_SNOOP_HARDWARE_AIS_TARGET "" CACHE STRING
+    "Path to the AIS test target file on an NVMe-backed filesystem")
+  if(NOT HSA_SNOOP_HARDWARE_AIS_TARGET STREQUAL "")
+    set(_ais_target_arg "${HSA_SNOOP_HARDWARE_AIS_TARGET}")
+  else()
+    # Default to the NVMe-backed file prepared by the CI NVMe setup step.
+    # The probe detects AIS availability and skips gracefully if unsupported.
+    set(_ais_target_arg "/mnt/nvme/ais-test.bin")
+  endif()
+  add_test(
+    NAME ais-hardware-test
+    COMMAND ${CMAKE_COMMAND}
+      -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
+      -DAIS_TEST=$<TARGET_FILE:ais-test>
+      -DTRACE_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/ais-hardware-test.json
+      -DAIS_TARGET=${_ais_target_arg}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/ais_hardware_test.cmake)
+  set_tests_properties(ais-hardware-test PROPERTIES
+    LABELS "hardware;ais"
+    TIMEOUT 120)
 endif()
