@@ -167,9 +167,9 @@ if(HSA_SNOOP_HARDWARE_TESTS)
   if(NOT HSA_SNOOP_HARDWARE_AIS_TARGET STREQUAL "")
     set(_ais_target_arg "${HSA_SNOOP_HARDWARE_AIS_TARGET}")
   else()
-    # Default to a temp file that ais-test creates; the probe will detect AIS
-    # availability and skip if the ioctl is not supported.
-    set(_ais_target_arg "/tmp/ais-hardware-test.bin")
+    # Default to the NVMe-backed file prepared by the CI NVMe setup step.
+    # The probe detects AIS availability and skips gracefully if unsupported.
+    set(_ais_target_arg "/mnt/nvme/ais-test.bin")
   endif()
   add_test(
     NAME ais-hardware-test

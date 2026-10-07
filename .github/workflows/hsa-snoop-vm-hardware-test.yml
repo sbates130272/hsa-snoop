@@ -42,6 +42,7 @@ concurrency:
 env:
   VM_IMAGES_DIR: /var/lib/qemu-tool/images
   VM_NAME: hsa-snoop-test
+  VM_NVME: '1'
   QEMU_TOOL_SRC: /var/lib/qemu-tool/src
   QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260929.g2bdbd16-qemu11.1.2-vfu.8039244
   ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260925.g12f12f8-rocjitsu.c85bb75
@@ -253,6 +254,26 @@ jobs:
       run: |
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -p 2222 "$VM_USERNAME"@qemu "lsmod | grep -q amdgpu && ls /dev/kfd"
+
+    - name: Prepare NVMe filesystem for AIS test
+      run: |
+        ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
+        set -euo pipefail
+        # Locate the first NVMe namespace exposed by QEMU (nvme0n1).
+        NVME_DEV=/dev/nvme0n1
+        if [ ! -b "$NVME_DEV" ]; then
+          echo "NVMe device $NVME_DEV not found — skipping NVMe prep" >&2
+          exit 0
+        fi
+        sudo mkfs.ext4 -F "$NVME_DEV"
+        sudo mkdir -p /mnt/nvme
+        sudo mount "$NVME_DEV" /mnt/nvme
+        # Pre-allocate the AIS test file so ais-test does not need to ftruncate.
+        sudo dd if=/dev/zero of=/mnt/nvme/ais-test.bin bs=1M count=64 status=none
+        sudo chmod 666 /mnt/nvme/ais-test.bin
+        echo "NVMe ready: /mnt/nvme/ais-test.bin"
+        EOF
 
     - name: Copy hsa-snoop source into VM
       run: |

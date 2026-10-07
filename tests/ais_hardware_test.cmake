@@ -13,10 +13,18 @@ if(NOT id_result EQUAL 0 OR NOT effective_uid STREQUAL "0")
     "ais-hardware-test must run as root; use sudo ctest --test-dir <build> -L hardware")
 endif()
 
-# Probe whether AIS is available by running ais-test with a single iteration
-# and a zero-length duration.  An ENODEV or ENOSYS exit tells us the kernel
-# does not support AIS on this machine; we emit a skip notice and exit 0 so
-# the test suite is not marked failed on systems without AIS hardware.
+# If the target file does not exist yet (e.g. NVMe not mounted in the CI VM)
+# skip gracefully rather than letting ais-test produce a confusing error.
+if(NOT EXISTS "${AIS_TARGET}")
+  message(STATUS
+    "ais-hardware-test: AIS target '${AIS_TARGET}' not found; skipping "
+    "(mount the NVMe and create the file, or set HSA_SNOOP_HARDWARE_AIS_TARGET)")
+  return()
+endif()
+
+# Probe whether AIS is available by running ais-test with a single iteration.
+# An ENODEV / ENOSYS result means the kernel does not support AIS on this
+# machine; emit a skip notice and exit 0 so the suite is not marked failed.
 execute_process(
   COMMAND "${AIS_TEST}" --iters 1 --duration 1 "${AIS_TARGET}"
   RESULT_VARIABLE ais_probe_result
@@ -28,7 +36,7 @@ execute_process(
 if(NOT ais_probe_result EQUAL 0)
   if(ais_probe_stderr MATCHES "ENODEV|ENOSYS|AIS is not initialized|ALLOC_MEMORY_OF_GPU failed|no KFD GPU")
     message(STATUS
-      "ais-hardware-test: AIS not available on this machine (${ais_probe_stderr}); skipping")
+      "ais-hardware-test: AIS not available on this machine; skipping")
     return()
   endif()
   message(FATAL_ERROR
