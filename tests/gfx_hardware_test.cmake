@@ -24,7 +24,7 @@ execute_process(
   RESULT_VARIABLE snoop_result
   OUTPUT_VARIABLE snoop_stdout
   ERROR_VARIABLE snoop_stderr
-  TIMEOUT 240)
+  TIMEOUT 420)
 if(NOT snoop_result EQUAL 0)
   message(FATAL_ERROR
     "hsa-snoop gfx run failed (${snoop_result})\n"

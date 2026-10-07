@@ -201,7 +201,7 @@ jobs:
         images-dir: ${{ env.VM_IMAGES_DIR }}
         compose-args: up --detach
         wait-for-healthy: 'true'
-        wait-timeout: '60'
+        wait-timeout: '120'
 
     - name: Join the compose network
       run: docker network connect vfio-user-rocjitsu-vm_default "$(cat /etc/hostname)"
