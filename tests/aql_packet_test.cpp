@@ -29,30 +29,30 @@ bool TestPacketSizes() {
 bool TestHeaderType() {
     bool ok = true;
     // Each type occupies bits [7:0] of the 16-bit header.
-    ok &= Expect(
-        aql::HeaderType(static_cast<uint8_t>(aql::PacketType::Invalid)) ==
-            aql::PacketType::Invalid,
-        "Invalid type must round-trip through header");
-    ok &= Expect(
-        aql::HeaderType(static_cast<uint8_t>(aql::PacketType::KernelDispatch)) ==
-            aql::PacketType::KernelDispatch,
-        "KernelDispatch type must round-trip through header");
+    ok &= Expect(aql::HeaderType(static_cast<uint8_t>(
+                     aql::PacketType::Invalid)) == aql::PacketType::Invalid,
+                 "Invalid type must round-trip through header");
+    ok &= Expect(aql::HeaderType(
+                     static_cast<uint8_t>(aql::PacketType::KernelDispatch)) ==
+                     aql::PacketType::KernelDispatch,
+                 "KernelDispatch type must round-trip through header");
     ok &= Expect(
         aql::HeaderType(static_cast<uint8_t>(aql::PacketType::BarrierAnd)) ==
             aql::PacketType::BarrierAnd,
         "BarrierAnd type must round-trip through header");
-    ok &= Expect(
-        aql::HeaderType(static_cast<uint8_t>(aql::PacketType::BarrierOr)) ==
-            aql::PacketType::BarrierOr,
-        "BarrierOr type must round-trip through header");
+    ok &= Expect(aql::HeaderType(static_cast<uint8_t>(
+                     aql::PacketType::BarrierOr)) == aql::PacketType::BarrierOr,
+                 "BarrierOr type must round-trip through header");
     ok &= Expect(
         aql::HeaderType(static_cast<uint8_t>(aql::PacketType::AgentDispatch)) ==
             aql::PacketType::AgentDispatch,
         "AgentDispatch type must round-trip through header");
     // High byte of header must not bleed into the type field.
-    uint16_t dispatch_with_barrier = static_cast<uint8_t>(aql::PacketType::KernelDispatch) |
-                                     (1u << aql::kHeaderBarrierShift);
-    ok &= Expect(aql::HeaderType(dispatch_with_barrier) == aql::PacketType::KernelDispatch,
+    uint16_t dispatch_with_barrier =
+        static_cast<uint8_t>(aql::PacketType::KernelDispatch) |
+        (1u << aql::kHeaderBarrierShift);
+    ok &= Expect(aql::HeaderType(dispatch_with_barrier) ==
+                     aql::PacketType::KernelDispatch,
                  "barrier bit must not corrupt type field");
     return ok;
 }
@@ -70,23 +70,25 @@ bool TestHeaderBarrier() {
 
 bool TestPacketTypeNames() {
     bool ok = true;
-    ok &= Expect(std::string(aql::PacketTypeName(aql::PacketType::Invalid)) == "invalid",
+    ok &= Expect(std::string(aql::PacketTypeName(aql::PacketType::Invalid)) ==
+                     "invalid",
                  "Invalid name must be 'invalid'");
-    ok &= Expect(
-        std::string(aql::PacketTypeName(aql::PacketType::KernelDispatch)) == "kernel_dispatch",
-        "KernelDispatch name must be 'kernel_dispatch'");
-    ok &= Expect(
-        std::string(aql::PacketTypeName(aql::PacketType::BarrierAnd)) == "barrier_and",
-        "BarrierAnd name must be 'barrier_and'");
-    ok &= Expect(
-        std::string(aql::PacketTypeName(aql::PacketType::BarrierOr)) == "barrier_or",
-        "BarrierOr name must be 'barrier_or'");
-    ok &= Expect(
-        std::string(aql::PacketTypeName(aql::PacketType::AgentDispatch)) == "agent_dispatch",
-        "AgentDispatch name must be 'agent_dispatch'");
-    ok &= Expect(
-        std::string(aql::PacketTypeName(aql::PacketType::VendorSpecific)) == "vendor_specific",
-        "VendorSpecific name must be 'vendor_specific'");
+    ok &= Expect(std::string(aql::PacketTypeName(
+                     aql::PacketType::KernelDispatch)) == "kernel_dispatch",
+                 "KernelDispatch name must be 'kernel_dispatch'");
+    ok &=
+        Expect(std::string(aql::PacketTypeName(aql::PacketType::BarrierAnd)) ==
+                   "barrier_and",
+               "BarrierAnd name must be 'barrier_and'");
+    ok &= Expect(std::string(aql::PacketTypeName(aql::PacketType::BarrierOr)) ==
+                     "barrier_or",
+                 "BarrierOr name must be 'barrier_or'");
+    ok &= Expect(std::string(aql::PacketTypeName(
+                     aql::PacketType::AgentDispatch)) == "agent_dispatch",
+                 "AgentDispatch name must be 'agent_dispatch'");
+    ok &= Expect(std::string(aql::PacketTypeName(
+                     aql::PacketType::VendorSpecific)) == "vendor_specific",
+                 "VendorSpecific name must be 'vendor_specific'");
     return ok;
 }
 
@@ -98,7 +100,8 @@ bool TestGridDims() {
     ok &= Expect(aql::GridDims(0x2) == 2, "2D grid must encode as 2");
     ok &= Expect(aql::GridDims(0x3) == 3, "3D grid must encode as 3");
     // Higher bits must not contaminate the dim field.
-    ok &= Expect(aql::GridDims(0xFC) == 0, "high bits must not bleed into dims");
+    ok &=
+        Expect(aql::GridDims(0xFC) == 0, "high bits must not bleed into dims");
     ok &= Expect(aql::GridDims(0xFF) == 3, "all-ones setup must still give 3");
     return ok;
 }
