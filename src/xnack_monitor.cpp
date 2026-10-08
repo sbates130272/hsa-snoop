@@ -73,11 +73,15 @@ bool XnackMonitor::Start(Sink sink) {
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[1]);
-        // Redirect stderr to /dev/null to suppress bpftrace noise.
+        // Redirect stderr to /dev/null to suppress bpftrace noise, including
+        // C++ runtime abort messages printed on SIGKILL. If /dev/null can't be
+        // opened, close fd 2 outright so nothing escapes to the terminal.
         int devnull = open("/dev/null", O_WRONLY);
         if (devnull >= 0) {
             dup2(devnull, STDERR_FILENO);
             close(devnull);
+        } else {
+            close(STDERR_FILENO);
         }
         // Write the bpftrace script to a temp file and pass it as an argument.
         // bpftrace does not support stdin scripts reliably across versions,

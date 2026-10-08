@@ -94,6 +94,21 @@ if(BUILD_TESTING)
   )
   target_include_directories(aql-packet-test PRIVATE src)
   add_test(NAME aql-packet-test COMMAND aql-packet-test)
+
+  # Eviction regression: validates that the parser evicts a queue with unmapped
+  # wptr/rptr after the failure threshold and that a healthy sibling queue
+  # continues to produce records. No GPU, ROCm, or root needed.
+  add_executable(parser-eviction-test
+    tests/parser_eviction_test.cpp
+    src/aql.cpp
+    src/ksym.cpp
+    src/parser.cpp
+    src/proc_mem.cpp
+    src/sdma.cpp
+  )
+  target_include_directories(parser-eviction-test PRIVATE src)
+  target_link_libraries(parser-eviction-test PRIVATE Threads::Threads)
+  add_test(NAME parser-eviction-test COMMAND parser-eviction-test)
 endif()
 
 if(HSA_SNOOP_PROMETHEUS)
@@ -181,5 +196,45 @@ if(HSA_SNOOP_HARDWARE_TESTS)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/ais_hardware_test.cmake)
   set_tests_properties(ais-hardware-test PROPERTIES
     LABELS "hardware;ais"
+    TIMEOUT 120)
+
+  # --all mode: launches two concurrent gfx-test processes and verifies that
+  # hsa-snoop produces one trace file per process with kernel events in each.
+  add_test(
+    NAME all-mode-hardware-test
+    COMMAND ${CMAKE_COMMAND}
+      -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
+      -DGFX_TEST=$<TARGET_FILE:gfx-test>
+      -DTRACE_DIR=${CMAKE_CURRENT_BINARY_DIR}/all-mode-traces
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/all_mode_hardware_test.cmake)
+  set_tests_properties(all-mode-hardware-test PROPERTIES
+    LABELS "hardware;gfx"
+    TIMEOUT 180)
+
+  # SDMA stress: two streams × 4 MB, validates deeper decode than the basic
+  # sdma-hardware-test (more copy_linear events, both H2D and D2D directions).
+  add_test(
+    NAME sdma-stress-hardware-test
+    COMMAND ${CMAKE_COMMAND}
+      -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
+      -DSDMA_TEST=$<TARGET_FILE:sdma-test>
+      -DTRACE_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/sdma-stress-hardware-test.json
+      -DEXPECTED_SDMA_VERSION=${HSA_SNOOP_HARDWARE_SDMA_VERSION}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/sdma_stress_hardware_test.cmake)
+  set_tests_properties(sdma-stress-hardware-test PROPERTIES
+    LABELS "hardware;sdma"
+    TIMEOUT 90)
+
+  # Prometheus monotonicity: scrapes /metrics five times during a 30-second
+  # run and asserts that hsa_kernel_launches_total never decreases.
+  add_test(
+    NAME prometheus-monotonicity-hardware-test
+    COMMAND ${CMAKE_COMMAND}
+      -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
+      -DGFX_TEST=$<TARGET_FILE:gfx-test>
+      -DSCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/prom-monotonicity-scratch
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/prometheus_monotonicity_hardware_test.cmake)
+  set_tests_properties(prometheus-monotonicity-hardware-test PROPERTIES
+    LABELS "hardware;gfx;prometheus"
     TIMEOUT 120)
 endif()
