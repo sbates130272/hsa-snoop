@@ -497,7 +497,7 @@ void AisMonitor::ReadLoop(Sink sink) {
             rec.error = 0;
             rec.completed = true;
 
-            struct timespec ts{};
+            struct timespec ts {};
             clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
             rec.submit_ts = ts.tv_sec + ts.tv_nsec * 1e-9;
             rec.complete_ts = rec.submit_ts;
