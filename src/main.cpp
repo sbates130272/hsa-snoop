@@ -73,7 +73,7 @@ void Usage(const char* p) {
         "                     Port for Prometheus /metrics endpoint "
         "(default 9488)\n"
         "  --ais-snoop        Enable AMD Infinity Storage (AIS) IO snooping\n"
-        "                     via kprobe on kfd_ioctl_ais (requires bpftrace)\n"
+        "                     via kprobe on kfd_ioctl_ais\n"
         "                     AIS events are included in the trace or "
         "Prometheus\n"
         "                     output alongside HSA/SDMA events\n"
@@ -323,7 +323,7 @@ int main(int argc, char** argv) {
     // the same trace writer or prometheus exporter as AQL/SDMA events.
     std::unique_ptr<AisMonitor> ais_monitor;
     if (ais_mode) {
-        ais_monitor = std::make_unique<AisMonitor>();
+        ais_monitor = std::make_unique<AisMonitor>(tracefs);
         bool ais_ok = ais_monitor->Start([&](const AisRecord& r) {
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
             if (prom_exporter) {
@@ -355,7 +355,7 @@ int main(int argc, char** argv) {
             ais_monitor.reset();
         } else {
             fprintf(stderr, "hsa-snoop: AIS monitor armed "
-                            "(kprobe:kfd_ioctl_ais via bpftrace)\n");
+                            "(kprobe:kfd_ioctl_ais via tracefs)\n");
         }
     }
 
