@@ -1,0 +1,91 @@
+# Live hsa-snoop observability stack.
+#
+# Requires hsa-snoop already running on the host with:
+#   hsa-snoop --prometheus --log-dispatches --dispatch-log <path> [workload]
+#
+# Environment variables (all optional, defaults shown):
+#   HSA_SNOOP_PROM_PORT   port hsa-snoop --prometheus binds on the host (9488)
+#   HSA_SNOOP_DISPATCH_LOG  path to the dispatches.ndjson being written (/tmp/hsa-snoop-dispatches.ndjson)
+#   HSA_SNOOP_LOG           path to hsa-snoop stderr log (/tmp/hsa-snoop.log)
+#   HSA_SNOOP_PORT_GRAFANA  host port for Grafana (3000)
+#   HSA_SNOOP_PORT_LOKI     host port for Loki (3100)
+#   HSA_SNOOP_PORT_PROM     host port for Prometheus (9490)
+#   HSA_SNOOP_BIND          Grafana bind address (127.0.0.1; set 0.0.0.0 for remote access)
+
+name: hsa-snoop-live
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.13.2
+    container_name: hsasnoop-live-prometheus
+    user: root
+    extra_hosts:
+      - "host-gateway:host-gateway"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-admin-api
+      - --web.enable-lifecycle
+    volumes:
+      - ${HSA_SNOOP_PROM_CONFIG:-./prometheus-live.yml}:/etc/prometheus/prometheus.yml:ro
+      - prometheus-live-data:/prometheus
+    ports:
+      - "127.0.0.1:${HSA_SNOOP_PORT_PROM:-9490}:9090"
+
+  loki:
+    image: grafana/loki:3.5.7
+    container_name: hsasnoop-live-loki
+    command: ["-config.file=/etc/loki/config.yaml"]
+    user: root
+    environment:
+      GOMAXPROCS: "4"
+    volumes:
+      - ./loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki-live-data:/loki
+    ports:
+      - "127.0.0.1:${HSA_SNOOP_PORT_LOKI:-3100}:3100"
+
+  alloy:
+    image: grafana/alloy:v1.13.0
+    container_name: hsasnoop-live-alloy
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    environment:
+      HSA_SNOOP_DISPATCH_LOG: /logs/dispatches.ndjson
+      HSA_SNOOP_LOG: /logs/hsa-snoop.log
+    volumes:
+      - ./alloy-live.alloy:/etc/alloy/config.alloy:ro
+      - ${HSA_SNOOP_LOG_DIR:-/tmp}:/logs:ro
+      - alloy-live-data:/var/lib/alloy/data
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:12.3.0
+    container_name: hsasnoop-live-grafana
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: dark
+      GF_FEATURE_TOGGLES_ENABLE: lokiLogsDataplane
+      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 1s
+    volumes:
+      - ./provisioning:/etc/grafana/provisioning:ro
+      - ${HSA_SNOOP_DASHBOARDS:-/tmp/hsa-snoop-dashboards}:/var/lib/grafana-dashboards:ro
+      - grafana-live-data:/var/lib/grafana
+    ports:
+      - "${HSA_SNOOP_BIND:-127.0.0.1}:${HSA_SNOOP_PORT_GRAFANA:-3000}:3000"
+    depends_on:
+      - prometheus
+      - loki
+
+volumes:
+  prometheus-live-data:
+  loki-live-data:
+  alloy-live-data:
+  grafana-live-data:
