@@ -1,0 +1,16 @@
+# Live Prometheus: scrapes a running hsa-snoop --prometheus instance.
+#
+# hsa-snoop default port is 9488; override with --prometheus-port.
+# The target is host-gateway:9488 so the container can reach the host network
+# where hsa-snoop is running (or adjust to 172.17.0.1 if host-gateway is not
+# available on your docker version).
+global:
+  scrape_interval: 1s
+  evaluation_interval: 1s
+
+scrape_configs:
+  - job_name: hsa-snoop
+    static_configs:
+      - targets: ["host-gateway:${HSA_SNOOP_PROM_PORT:-9488}"]
+        labels:
+          instance: hsa-snoop

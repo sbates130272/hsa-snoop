@@ -128,7 +128,7 @@
       ],
       "title": "hsa-snoop Status",
       "type": "stat",
-      "description": "Exporter liveness \u2014 green means hsa-snoop is scraping the host."
+      "description": "Exporter liveness — green means hsa-snoop is scraping the host."
     },
     {
       "datasource": {
@@ -428,7 +428,7 @@
       ],
       "title": "Last Kernel Name",
       "type": "stat",
-      "description": "Most recently dispatched kernel name per GPU. One tile per GPU\u00d7kernel_name is intentional \u2014 the gauge resets as the active kernel changes."
+      "description": "Most recently dispatched kernel name per GPU. One tile per GPU×kernel_name is intentional — the gauge resets as the active kernel changes."
     },
     {
       "datasource": {
@@ -513,7 +513,7 @@
     {
       "id": 400,
       "type": "row",
-      "title": "Kernel Launch Timeline (from Loki \u2014 requires --log-dispatches)",
+      "title": "Kernel Launch Timeline (from Loki — requires --log-dispatches)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -527,7 +527,7 @@
       "id": 401,
       "type": "timeseries",
       "title": "Kernel Launches",
-      "description": "One bar per scrape-independent time bucket, stacked by kernel: this is the actual per-launch record, not a sampled counter. The Prometheus path cannot show this \u2014 at the ~2700 launches/s this capture reaches, a 1 s scrape collapses thousands of distinct dispatches into a single counter delta.",
+      "description": "One bar per scrape-independent time bucket, stacked by kernel: this is the actual per-launch record, not a sampled counter. The Prometheus path cannot show this — at the ~2700 launches/s this capture reaches, a 1 s scrape collapses thousands of distinct dispatches into a single counter delta.",
       "datasource": {
         "type": "loki",
         "uid": "${ds_loki}"
@@ -598,7 +598,7 @@
         "type": "loki",
         "uid": "${ds_loki}"
       },
-      "description": "Which process was driving the GPU, over time. Derived from the dispatch event stream, so a process that dispatched at all inside a bucket shows up \u2014 unlike hsa_active_queues, which counts queues that merely exist.",
+      "description": "Which process was driving the GPU, over time. Derived from the dispatch event stream, so a process that dispatched at all inside a bucket shows up — unlike hsa_active_queues, which counts queues that merely exist.",
       "gridPos": {
         "h": 9,
         "w": 8,
@@ -609,7 +609,8 @@
         "defaults": {
           "unit": "short",
           "color": {
-            "mode": "continuous-GrYlRd"
+            "mode": "palette-classic",
+            "fixedColor": "blue"
           },
           "custom": {
             "fillOpacity": 85,
@@ -661,7 +662,7 @@
       "id": 403,
       "type": "timeseries",
       "title": "Measured Kernel Duration (p50 / p99, per kernel)",
-      "description": "Quantiles over the individual measurements. The Prometheus equivalent (panel 'Kernel Duration Percentiles') interpolates inside hsa_kernel_duration_seconds' seven fixed buckets, which span 1e-5 s to 10 s \u2014 on this capture 73% of all dispatches fall in the single 1 ms\u201310 ms bucket, so its p99 is accurate only to within an order of magnitude. Note this is queue-residency (enqueue to queue-consumed), not GPU execution time: at high queue depth a kernel's measured duration includes the time it spent waiting behind others, which is why the burst phase reports tens of milliseconds for a kernel that executes in microseconds.",
+      "description": "Quantiles over the individual measurements. The Prometheus equivalent (panel 'Kernel Duration Percentiles') interpolates inside hsa_kernel_duration_seconds' seven fixed buckets, which span 1e-5 s to 10 s — on this capture 73% of all dispatches fall in the single 1 ms–10 ms bucket, so its p99 is accurate only to within an order of magnitude. Note this is queue-residency (enqueue to queue-consumed), not GPU execution time: at high queue depth a kernel's measured duration includes the time it spent waiting behind others, which is why the burst phase reports tens of milliseconds for a kernel that executes in microseconds.",
       "datasource": {
         "type": "loki",
         "uid": "${ds_loki}"
@@ -674,7 +675,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "\u00b5s",
+          "unit": "µs",
           "custom": {
             "axisLabel": "",
             "drawStyle": "line",
@@ -989,7 +990,7 @@
             "uid": "${ds_prom}"
           },
           "expr": "sum by (gpu_id, gpu_type, kernel_name) (rate(hsa_kernel_launches_total{host=~\"$host\", gpu_id=~\"$gpu_id\", comm=~\"$comm\", pid=~\"$pid\", kernel_name=~\"$kernel\"}[$__rate_interval]))",
-          "legendFormat": "GPU {{gpu_id}} \u2014 {{kernel_name}}",
+          "legendFormat": "GPU {{gpu_id}} — {{kernel_name}}",
           "refId": "A"
         }
       ],
@@ -1027,7 +1028,7 @@
             "showPoints": "never",
             "spanNulls": false
           },
-          "unit": "s"
+          "unit": "µs"
         },
         "overrides": []
       },
@@ -1059,7 +1060,7 @@
             "uid": "${ds_prom}"
           },
           "expr": "sum by (gpu_id, gpu_type, kernel_name) (rate(hsa_kernel_duration_seconds_sum{host=~\"$host\", gpu_id=~\"$gpu_id\", kernel_name=~\"$kernel\"}[$__rate_interval]))\n/ sum by (gpu_id, gpu_type, kernel_name) (rate(hsa_kernel_duration_seconds_count{host=~\"$host\", gpu_id=~\"$gpu_id\", kernel_name=~\"$kernel\"}[$__rate_interval]))",
-          "legendFormat": "GPU {{gpu_id}} \u2014 {{kernel_name}} avg",
+          "legendFormat": "GPU {{gpu_id}} — {{kernel_name}} avg",
           "refId": "A"
         }
       ],
@@ -1085,7 +1086,7 @@
             "showPoints": "never",
             "spanNulls": false
           },
-          "unit": "s"
+          "unit": "µs"
         },
         "overrides": []
       },
@@ -1117,7 +1118,7 @@
             "uid": "${ds_prom}"
           },
           "expr": "histogram_quantile(0.99, sum by (le, gpu_id, gpu_type, kernel_name) (\n  rate(hsa_kernel_duration_seconds_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\", kernel_name=~\"$kernel\"}[$__rate_interval])\n))",
-          "legendFormat": "p99 GPU {{gpu_id}} \u2014 {{kernel_name}}",
+          "legendFormat": "p99 GPU {{gpu_id}} — {{kernel_name}}",
           "refId": "A"
         },
         {
@@ -1126,7 +1127,7 @@
             "uid": "${ds_prom}"
           },
           "expr": "histogram_quantile(0.50, sum by (le, gpu_id, gpu_type, kernel_name) (\n  rate(hsa_kernel_duration_seconds_bucket{host=~\"$host\", gpu_id=~\"$gpu_id\", kernel_name=~\"$kernel\"}[$__rate_interval])\n))",
-          "legendFormat": "p50 GPU {{gpu_id}} \u2014 {{kernel_name}}",
+          "legendFormat": "p50 GPU {{gpu_id}} — {{kernel_name}}",
           "refId": "B"
         }
       ],
@@ -1331,6 +1332,22 @@
                 "value": "s"
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "gradient-gauge"
+              },
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
           }
         ]
       },
@@ -1477,7 +1494,8 @@
         "y": 79
       },
       "id": 106,
-      "title": "SDMA I/O (DMA copy engines \u2014 N/A on APU/unified-memory nodes)",
+      "title": "SDMA I/O (DMA copy engines)",
+      "description": "These panels are N/A on APU/unified-memory nodes where hsa_sdma_present=0.",
       "type": "row"
     },
     {
@@ -1584,7 +1602,7 @@
             "showPoints": "never",
             "spanNulls": false
           },
-          "unit": "Bps"
+          "unit": "bytes"
         },
         "overrides": []
       },
@@ -1807,7 +1825,7 @@
         "y": 99
       },
       "id": 107,
-      "title": "AIS \u2014 AMD Infinity Storage P2P Direct IO",
+      "title": "AIS — AMD Infinity Storage P2P Direct IO",
       "type": "row",
       "panels": []
     },
@@ -1836,7 +1854,7 @@
                   "index": 1
                 },
                 "1": {
-                  "text": "armed \u2014 no AIS IO seen",
+                  "text": "armed — no AIS IO seen",
                   "color": "blue",
                   "index": 2
                 },
@@ -1952,7 +1970,7 @@
           "instant": true,
           "editorMode": "code",
           "expr": "sum(increase(ais_rx_ops_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__range])) or on() vector(0)",
-          "legendFormat": "read (file\u2192VRAM)"
+          "legendFormat": "read (file→VRAM)"
         },
         {
           "datasource": {
@@ -1963,7 +1981,7 @@
           "instant": true,
           "editorMode": "code",
           "expr": "sum(increase(ais_tx_ops_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__range])) or on() vector(0)",
-          "legendFormat": "write (VRAM\u2192file)"
+          "legendFormat": "write (VRAM→file)"
         }
       ],
       "title": "AIS Ops (range)",
@@ -2024,7 +2042,7 @@
           "instant": true,
           "editorMode": "code",
           "expr": "sum(increase(ais_rx_bytes_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__range])) or on() vector(0)",
-          "legendFormat": "read (file\u2192VRAM)"
+          "legendFormat": "read (file→VRAM)"
         },
         {
           "datasource": {
@@ -2035,7 +2053,7 @@
           "instant": true,
           "editorMode": "code",
           "expr": "sum(increase(ais_tx_bytes_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__range])) or on() vector(0)",
-          "legendFormat": "write (VRAM\u2192file)"
+          "legendFormat": "write (VRAM→file)"
         }
       ],
       "title": "AIS Bytes (range)",
@@ -2101,7 +2119,7 @@
           "instant": true,
           "editorMode": "code",
           "expr": "sum(increase(ais_rx_errors_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__range])) or on() vector(0)",
-          "legendFormat": "read (file\u2192VRAM)"
+          "legendFormat": "read (file→VRAM)"
         },
         {
           "datasource": {
@@ -2112,7 +2130,7 @@
           "instant": true,
           "editorMode": "code",
           "expr": "sum(increase(ais_tx_errors_total{host=~\"$host\", gpu_id=~\"$gpu_id\", pcie_id=~\"$pcie_id\"}[$__range])) or on() vector(0)",
-          "legendFormat": "write (VRAM\u2192file)"
+          "legendFormat": "write (VRAM→file)"
         }
       ],
       "title": "AIS Errors (range)",
@@ -2240,7 +2258,7 @@
               "mode": "none"
             }
           },
-          "unit": "Bps"
+          "unit": "bytes"
         },
         "overrides": []
       },
@@ -2851,7 +2869,8 @@
         "x": 0,
         "y": 135
       },
-      "panels": []
+      "panels": [],
+      "description": "Requires Loki datasource and --log-dispatches flag."
     },
     {
       "id": 501,
