@@ -30,7 +30,8 @@ class AisMonitor {
     // kprobes cannot be installed (not root, or kfd_ioctl_ais absent).
     bool Start(Sink sink);
 
-    // Removes kprobes and joins the reader thread.  Safe to call multiple times.
+    // Removes kprobes and joins the reader thread.  Safe to call multiple
+    // times.
     void Stop();
 
     ~AisMonitor() { Stop(); }
@@ -44,8 +45,8 @@ class AisMonitor {
     std::string instance_;    // dedicated tracefs instance path
     std::string probe_entry_; // tracefs event name for entry probe
     int trace_pipe_fd_ = -1;
-    int cancel_wfd_ = -1;     // write end of cancellation pipe
-    int cancel_rfd_ = -1;     // read end of cancellation pipe
+    int cancel_wfd_ = -1; // write end of cancellation pipe
+    int cancel_rfd_ = -1; // read end of cancellation pipe
     std::thread reader_thread_;
     std::atomic<bool> running_{false};
 };

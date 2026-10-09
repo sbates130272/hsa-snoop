@@ -293,7 +293,7 @@ bool AisMonitor::InstallKprobes() {
 
     // Use a pid-based suffix so concurrent hsa-snoop instances don't collide.
     std::string suffix = std::to_string(getpid());
-    probe_entry_  = "hsasnoop_ais_e_" + suffix;
+    probe_entry_ = "hsasnoop_ais_e_" + suffix;
 
     // Remove stale entries (ignore errors).
     WriteTracefs(kpe, "-:" + probe_entry_ + "\n", true);
@@ -303,7 +303,8 @@ bool AisMonitor::InstallKprobes() {
     // [63:32] → read the upper 4 bytes at offset +4.
     // We emit the AIS record at entry time — size_copied is set to size_req.
     std::string entry_def =
-        "p:" + probe_entry_ + " kfd_ioctl_ais"
+        "p:" + probe_entry_ +
+        " kfd_ioctl_ais"
         " gpu_id=+4(%dx):u32"    // handle bits [63:32] = gpu_id
         " size_req=+24(%dx):u64" // in.size
         " op=+32(%dx):u32"       // in.op  (1=READ 2=WRITE)
@@ -334,7 +335,8 @@ void AisMonitor::RemoveKprobes() {
     if (!probe_entry_.empty()) {
         if (!instance_.empty())
             WriteTracefs(instance_ + "/events/kprobes/" + probe_entry_ +
-                         "/enable", "0\n", false);
+                             "/enable",
+                         "0\n", false);
         WriteTracefs(kpe, "-:" + probe_entry_ + "\n", true);
         probe_entry_.clear();
     }
@@ -352,7 +354,8 @@ bool AisMonitor::Start(Sink sink) {
     if (!InstallKprobes())
         return false;
 
-    // Open the instance's trace_pipe (not the global one, which discovery holds).
+    // Open the instance's trace_pipe (not the global one, which discovery
+    // holds).
     trace_pipe_fd_ = open((instance_ + "/trace_pipe").c_str(), O_RDONLY);
     if (trace_pipe_fd_ < 0) {
         fprintf(stderr, "hsa-snoop: cannot open AIS trace_pipe: %s\n",
@@ -361,7 +364,8 @@ bool AisMonitor::Start(Sink sink) {
         return false;
     }
 
-    // Self-pipe for cancellation: Stop() writes a byte; ReadLoop's poll() wakes.
+    // Self-pipe for cancellation: Stop() writes a byte; ReadLoop's poll()
+    // wakes.
     int pfds[2];
     if (pipe2(pfds, O_CLOEXEC) < 0) {
         close(trace_pipe_fd_);
@@ -412,9 +416,9 @@ void AisMonitor::ReadLoop(Sink sink) {
     while (running_) {
         // Poll both trace_pipe and the cancel pipe so Stop() can wake us.
         struct pollfd pfds[2];
-        pfds[0].fd     = trace_pipe_fd_;
+        pfds[0].fd = trace_pipe_fd_;
         pfds[0].events = POLLIN;
-        pfds[1].fd     = cancel_rfd_;
+        pfds[1].fd = cancel_rfd_;
         pfds[1].events = POLLIN;
 
         int r = poll(pfds, 2, 200); // 200 ms timeout to recheck running_
@@ -477,31 +481,30 @@ void AisMonitor::ReadLoop(Sink sink) {
             uint64_t size_req = 0;
             unsigned op_val = 0;
             int file_fd = -1;
-            sscanf(fields,
-                   "gpu_id=%u size_req=%lu op=%u fd=%d",
-                   &gpu_id_val, &size_req, &op_val, &file_fd);
+            sscanf(fields, "gpu_id=%u size_req=%lu op=%u fd=%d", &gpu_id_val,
+                   &size_req, &op_val, &file_fd);
 
             AisRecord rec;
-            rec.seq        = ++seq;
-            rec.pid        = tid;
-            rec.comm       = comm;
-            rec.op         = (op_val == 1) ? AisOp::Read
-                             : (op_val == 2) ? AisOp::Write
-                                             : AisOp::Unknown;
-            rec.gpu_id     = gpu_id_val;
-            rec.size_req   = size_req;
+            rec.seq = ++seq;
+            rec.pid = tid;
+            rec.comm = comm;
+            rec.op = (op_val == 1)   ? AisOp::Read
+                     : (op_val == 2) ? AisOp::Write
+                                     : AisOp::Unknown;
+            rec.gpu_id = gpu_id_val;
+            rec.size_req = size_req;
             rec.size_copied = size_req; // approximation at entry time
-            rec.error      = 0;
-            rec.completed  = true;
+            rec.error = 0;
+            rec.completed = true;
 
-            struct timespec ts {};
+            struct timespec ts{};
             clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-            rec.submit_ts   = ts.tv_sec + ts.tv_nsec * 1e-9;
+            rec.submit_ts = ts.tv_sec + ts.tv_nsec * 1e-9;
             rec.complete_ts = rec.submit_ts;
 
             if (rec.pid > 0 && file_fd >= 0) {
                 rec.pcie_info = ResolvePcieDeviceInfo(rec.pid, file_fd);
-                rec.pcie_id   = rec.pcie_info.bdf;
+                rec.pcie_id = rec.pcie_info.bdf;
             }
 
             sink(rec);

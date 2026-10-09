@@ -13,40 +13,8 @@ if(NOT id_result EQUAL 0 OR NOT effective_uid STREQUAL "0")
     "ais-hardware-test must run as root; use sudo ctest --test-dir <build> -L hardware")
 endif()
 
-# If the target file does not exist yet (e.g. NVMe not mounted in the CI VM)
-# skip gracefully rather than letting ais-test produce a confusing error.
-if(NOT EXISTS "${AIS_TARGET}")
-  message(STATUS
-    "ais-hardware-test: AIS target '${AIS_TARGET}' not found; skipping "
-    "(mount the NVMe and create the file, or set HSA_SNOOP_HARDWARE_AIS_TARGET)")
-  return()
-endif()
-
-# Probe whether AIS is available by running ais-test with a single iteration.
-# An ENODEV / ENOSYS result means the kernel does not support AIS on this
-# machine; emit a skip notice and exit 0 so the suite is not marked failed.
-execute_process(
-  COMMAND "${AIS_TEST}" --iters 1 --duration 1 "${AIS_TARGET}"
-  RESULT_VARIABLE ais_probe_result
-  OUTPUT_VARIABLE ais_probe_stdout
-  ERROR_VARIABLE  ais_probe_stderr
-  TIMEOUT 30)
-
-# ais-test exits 1 when an ioctl fails; check for the ENODEV hint it prints.
-if(NOT ais_probe_result EQUAL 0)
-  if(ais_probe_stderr MATCHES "ENODEV|ENOSYS|AIS is not initialized|ALLOC_MEMORY_OF_GPU failed|no KFD GPU")
-    message(STATUS
-      "ais-hardware-test: AIS not available on this machine; skipping")
-    return()
-  endif()
-  message(FATAL_ERROR
-    "ais-test probe failed unexpectedly (exit=${ais_probe_result})\n"
-    "stdout:\n${ais_probe_stdout}\n"
-    "stderr:\n${ais_probe_stderr}")
-endif()
-
-# AIS is present — run hsa-snoop wrapping a short ais-test workload and verify
-# that AIS events appear in the JSON trace.
+# Run hsa-snoop wrapping a short ais-test workload and verify that AIS
+# events appear in the JSON trace.
 file(REMOVE "${TRACE_OUTPUT}")
 
 execute_process(
