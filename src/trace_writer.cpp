@@ -184,7 +184,10 @@ bool TraceWriter::WriteJson(const std::string& path) {
           << "\"type\":\"" << aql::PacketTypeName(r.type) << "\""
           << ",\"dispatch_id\":" << r.dispatch_id
           << ",\"barrier\":" << (r.barrier ? "true" : "false");
-        if (r.type == aql::PacketType::KernelDispatch) {
+        // On gfx1250/RDNA4 the GPU fast-reset path emits dispatches as
+        // VendorSpecific; annotate those the same way as KernelDispatch.
+        if (r.type == aql::PacketType::KernelDispatch ||
+            r.type == aql::PacketType::VendorSpecific) {
             f << ",\"grid\":\"" << Dims(r.grid) << "\"" << ",\"workgroup\":\""
               << Dims16(r.wg) << "\"" << ",\"kernel_object\":\"0x" << std::hex
               << r.kernel_object << std::dec
@@ -315,7 +318,8 @@ bool TraceWriter::WritePerfetto(const std::string& path) {
             te.MsgField(pf::kTeDebug,
                         DebugStr("type", aql::PacketTypeName(r.type)));
             te.MsgField(pf::kTeDebug, DebugUint("dispatch_id", r.dispatch_id));
-            if (r.type == aql::PacketType::KernelDispatch) {
+            if (r.type == aql::PacketType::KernelDispatch ||
+                r.type == aql::PacketType::VendorSpecific) {
                 te.MsgField(pf::kTeDebug, DebugStr("grid", Dims(r.grid)));
                 te.MsgField(pf::kTeDebug, DebugStr("workgroup", Dims16(r.wg)));
                 te.MsgField(pf::kTeDebug,

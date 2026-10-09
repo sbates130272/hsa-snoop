@@ -73,11 +73,15 @@ bool XnackMonitor::Start(Sink sink) {
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[1]);
-        // Redirect stderr to /dev/null to suppress bpftrace noise.
+        // Redirect stderr to /dev/null to suppress bpftrace noise, including
+        // C++ runtime abort messages printed on SIGKILL. If /dev/null can't be
+        // opened, close fd 2 outright so nothing escapes to the terminal.
         int devnull = open("/dev/null", O_WRONLY);
         if (devnull >= 0) {
             dup2(devnull, STDERR_FILENO);
             close(devnull);
+        } else {
+            close(STDERR_FILENO);
         }
         // Write the bpftrace script to a temp file and pass it as an argument.
         // bpftrace does not support stdin scripts reliably across versions,
@@ -113,22 +117,26 @@ bool XnackMonitor::Start(Sink sink) {
 }
 
 void XnackMonitor::Stop() {
-    if (!running_.exchange(false))
-        return;
+    bool was_running = running_.exchange(false);
     if (bpftrace_pid_ > 0) {
-        kill(bpftrace_pid_, SIGTERM);
-        // Give bpftrace a moment to flush END block output.
-        usleep(200 * 1000);
-        int status;
-        waitpid(bpftrace_pid_, &status, WNOHANG);
-        kill(bpftrace_pid_, SIGKILL);
+        if (was_running) {
+            kill(bpftrace_pid_, SIGTERM);
+            // Give bpftrace a moment to flush END block output.
+            usleep(200 * 1000);
+            int status;
+            waitpid(bpftrace_pid_, &status, WNOHANG);
+            kill(bpftrace_pid_, SIGKILL);
+        }
+        // Always reap: bpftrace may have exited naturally (ReadLoop set
+        // running_=false) leaving a zombie if we only reap in the signal path.
         waitpid(bpftrace_pid_, nullptr, 0);
         bpftrace_pid_ = -1;
     }
-    // Do not close bpftrace_stdout_ here: ReadLoop owns it via fdopen and
-    // will fclose it (which closes the fd) when fgets returns EOF. Killing
-    // the bpftrace child above closes the write end of the pipe and causes
-    // fgets to return EOF, which unblocks ReadLoop naturally.
+    // Always join the reader thread if joinable — ReadLoop may have set
+    // running_=false on its own (bpftrace exited naturally) before Stop() was
+    // called, leaving the thread finished but un-joined.  A joinable thread
+    // in a destructor calls std::terminate(), so we must join regardless of
+    // whether we were the ones to stop the process.
     if (reader_thread_.joinable())
         reader_thread_.join();
 }

@@ -194,7 +194,9 @@ void RingParser::PollQueue(QueueState* qs, double now) {
         !ReadQueuePtr(q.pid, q.rptr_addr, &rptr)) {
         // On WSL2 --all mode, PID reuse can leave queue records with VAs that
         // are invalid in the new process. Evict after sustained read failures.
-        if (++qs->read_fail_count >= 5) {
+        // Threshold 50 (not 5): gfx1250/RDNA4 reads transiently fail between
+        // dispatch bursts; 5 was too aggressive and caused premature eviction.
+        if (++qs->read_fail_count >= 50) {
             fprintf(stderr,
                     "[parser] evicting stale queue uid=%lu pid=%d "
                     "(wptr/rptr unreadable after %d attempts)\n",
@@ -285,8 +287,10 @@ void RingParser::Run() {
         for (QueueState* qs : snapshot) {
             if (qs->evict)
                 continue;
-            if (!ProcAlive(qs->info.pid))
+            if (!ProcAlive(qs->info.pid)) {
+                qs->evict = true;
                 continue;
+            }
             if (qs->info.is_sdma())
                 PollSdmaQueue(qs, now);
             else
@@ -358,7 +362,7 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
     uint64_t wptr_raw = 0, rptr_raw = 0;
     if (!ReadQueuePtr(q.pid, q.wptr_addr, &wptr_raw) ||
         !ReadQueuePtr(q.pid, q.rptr_addr, &rptr_raw)) {
-        if (++qs->read_fail_count >= 5) {
+        if (++qs->read_fail_count >= 50) {
             fprintf(stderr,
                     "[parser] evicting stale sdma queue uid=%lu pid=%d "
                     "(wptr/rptr unreadable after %d attempts)\n",
@@ -368,6 +372,7 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
         return;
     }
 
+    qs->read_fail_count = 0; // clear on success
     uint64_t ring_dw = q.num_dwords();
     if (!ring_dw)
         return;

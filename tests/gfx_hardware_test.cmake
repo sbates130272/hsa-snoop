@@ -37,17 +37,23 @@ if(NOT EXISTS "${TRACE_OUTPUT}")
 endif()
 file(READ "${TRACE_OUTPUT}" trace_json)
 
-# AQL dispatch events appear as "kernel_dispatch" when the kernel name is
-# resolved, or as "kernel_0x<addr>" when the process has already exited and
-# the kernel object VA is no longer in /proc/maps. Both are valid captures.
-string(REGEX MATCHALL "\"name\":\"kernel_dispatch\"" named_events "${trace_json}")
+# AQL dispatch events can appear in several forms depending on GPU and ksym state:
+#   "type":"kernel_dispatch" in args  — typed dispatch (ksym resolved or generic name)
+#   "name":"kernel_0x<addr>"          — process exited before ksym could resolve
+#   "name":"vendor_specific"          — fast-reset path on gfx1250/RDNA4: the GPU resets
+#                                       the AQL header before the parser can read it; the
+#                                       packet body is intact and is emitted as vendor_specific
+# Count all three; any non-zero total confirms the AQL ring was active.
+string(REGEX MATCHALL "\"type\":\"kernel_dispatch\"" typed_events "${trace_json}")
 string(REGEX MATCHALL "\"name\":\"kernel_0x[0-9a-f]+" addr_events "${trace_json}")
-list(LENGTH named_events named_count)
+string(REGEX MATCHALL "\"name\":\"vendor_specific\"" vendor_events "${trace_json}")
+list(LENGTH typed_events typed_count)
 list(LENGTH addr_events addr_count)
-math(EXPR dispatch_count "${named_count} + ${addr_count}")
+list(LENGTH vendor_events vendor_count)
+math(EXPR dispatch_count "${typed_count} + ${addr_count} + ${vendor_count}")
 if(dispatch_count EQUAL 0)
   message(FATAL_ERROR
-    "no AQL dispatch events were decoded (tried kernel_dispatch and kernel_0x*)\n${snoop_stderr}")
+    "no AQL dispatch events were decoded (tried type=kernel_dispatch, name=kernel_0x*, vendor_specific)\n${snoop_stderr}")
 endif()
 
 # Barrier packets are expected in the AQL stream.

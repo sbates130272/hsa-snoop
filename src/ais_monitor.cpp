@@ -1,23 +1,24 @@
-// ais_monitor.cpp - AIS IO monitor via bpftrace kprobe/kretprobe.
+// ais_monitor.cpp - AIS IO monitor via tracefs kprobe/kretprobe.
 //
-// Forks bpftrace with a script that probes kfd_ioctl_ais (the KFD ioctl
-// handler for AMDKFD_IOC_AIS_OP). For each completed AIS ioctl the script
-// prints a structured line; this file parses those lines and calls the sink.
+// Installs two tracefs kprobes on kfd_ioctl_ais:
+//   entry (p:) — captures op, size_req, gpu_id, fd from the args struct
+//   return (r:) — captures size_copied, status, retval from the same struct
 //
-// Output line format (space-separated, one per completed ioctl):
-//   AIS pid=<n> comm=<s> op=<1|2> gpu_id=<n> size_req=<n> size_copied=<n>
-//       fd=<n> err=<n> lat_ns=<n>
+// Reads from trace_pipe, correlates entry and return by TID, and calls the
+// sink for each completed AIS operation.  Uses tracefs directly (no bpftrace)
+// because bpftrace 0.25 silently fails to hook DKMS module symbols whose
+// kallsyms addresses were zero when the eBPF program was loaded.
 //
-// The PCIe BDF string is resolved from <pid>'s /proc/PID/fdinfo/FD -> device
-// -> /sys/class/block/... -> PCI slot once per unique <pid,fd> pair.
+// The PCIe BDF string is resolved from <pid>'s /proc/PID/fd/<fd> → device
+// → /sys/class/block/... → PCI slot once per unique <pid,fd> pair.
 #include "ais_monitor.h"
 
 #include <fcntl.h>
 #include <limits.h>
-#include <signal.h>
+#include <poll.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
-#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -26,7 +27,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <sstream>
 #include <string>
 #include <unordered_map>
 
@@ -252,93 +252,98 @@ static PcieDeviceInfo ResolvePcieDeviceInfo(int pid, int fd) {
 }
 
 // ---------------------------------------------------------------------------
-// bpftrace script
+// ---------------------------------------------------------------------------
+// Tracefs helpers
 // ---------------------------------------------------------------------------
 
-// Layout of kfd_ioctl_ais_args (union of in/out, kernel-space copy):
-//   in:  handle(u64@0) handle_offset(u64@8) file_offset(s64@16) size(u64@24)
-//        op(u32@32) fd(s32@36)
-//   out: size_copied(u64@0) status(s32@8)
-//
-// At kretprobe time the output has been written over the same buffer, so
-// offset 0 = size_copied (u64) and offset 8 = status (s32).
-std::string AisMonitor::BuildBpftraceScript() {
-    // The script uses per-tid maps to correlate entry and return probes.
-    return R"(
-#!/usr/bin/env bpftrace
+static bool WriteTracefs(const std::string& path, const std::string& val,
+                         bool append = false) {
+    int flags = O_WRONLY | (append ? O_APPEND : O_TRUNC);
+    int fd = open(path.c_str(), flags);
+    if (fd < 0)
+        return false;
+    ssize_t n = write(fd, val.data(), val.size());
+    close(fd);
+    return n == (ssize_t)val.size();
+}
+
+// ---------------------------------------------------------------------------
+// Kprobe install / remove
+// ---------------------------------------------------------------------------
 
 // kfd_ioctl_ais(struct file *filep, struct kfd_process *p, void *data)
-// arg0=filep  arg1=kfd_process*  arg2=data (kernel copy of kfd_ioctl_ais_args)
+// arg2 = data — pointer to kfd_ioctl_ais_args union (kernel buffer):
+//   in:  handle(u64@0)  size(u64@24)  op(u32@32)  fd(s32@36)
+//        gpu_id = upper 32 bits of handle
+//   out: size_copied(u64@0)  status(s32@8)  [written on return, over same buf]
 //
-// kfd_ioctl_ais_args layout (as union in/out, kernel buffer):
-//   in.handle       u64 @ offset  0  -> gpu_id = handle >> 32
-//   in.handle_offset u64 @ offset  8
-//   in.file_offset  s64 @ offset 16
-//   in.size         u64 @ offset 24
-//   in.op           u32 @ offset 32  (1=READ 2=WRITE)
-//   in.fd           s32 @ offset 36
-//   [on return the buffer is overwritten with out:]
-//   out.size_copied u64 @ offset  0
-//   out.status      s32 @ offset  8
+// On x86-64 SysV ABI arg2 is in %dx.
+bool AisMonitor::InstallKprobes() {
+    // Create a dedicated tracefs instance so our trace_pipe does not conflict
+    // with the main discovery reader which also holds trace_pipe open.
+    instance_ = tracefs_ + "/instances/hsa_ais_" + std::to_string(getpid());
+    if (mkdir(instance_.c_str(), 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "hsa-snoop: cannot create AIS tracefs instance: %s\n",
+                strerror(errno));
+        instance_.clear();
+        return false;
+    }
 
-BEGIN {
-    printf("AIS_MONITOR_READY\n");
+    const std::string kpe = tracefs_ + "/kprobe_events";
+
+    // Use a pid-based suffix so concurrent hsa-snoop instances don't collide.
+    std::string suffix = std::to_string(getpid());
+    probe_entry_ = "hsasnoop_ais_e_" + suffix;
+
+    // Remove stale entries (ignore errors).
+    WriteTracefs(kpe, "-:" + probe_entry_ + "\n", true);
+
+    // Entry probe: capture input fields from kfd_ioctl_ais_args via %dx (arg2).
+    // kfd_ioctl_ais_args.handle is a u64 at offset 0; the gpu_id is in bits
+    // [63:32] → read the upper 4 bytes at offset +4.
+    // We emit the AIS record at entry time — size_copied is set to size_req.
+    std::string entry_def =
+        "p:" + probe_entry_ +
+        " kfd_ioctl_ais"
+        " gpu_id=+4(%dx):u32"    // handle bits [63:32] = gpu_id
+        " size_req=+24(%dx):u64" // in.size
+        " op=+32(%dx):u32"       // in.op  (1=READ 2=WRITE)
+        " fd=+36(%dx):s32\n";    // in.fd
+
+    if (!WriteTracefs(kpe, entry_def, true)) {
+        fprintf(stderr,
+                "hsa-snoop: failed to install AIS kprobe (%s). Need root?\n",
+                strerror(errno));
+        RemoveKprobes();
+        return false;
+    }
+
+    // Enable the probe in our dedicated instance.
+    if (!WriteTracefs(instance_ + "/events/kprobes/" + probe_entry_ + "/enable",
+                      "1\n", false)) {
+        fprintf(stderr, "hsa-snoop: failed to enable AIS kprobe in instance\n");
+        RemoveKprobes();
+        return false;
+    }
+
+    WriteTracefs(instance_ + "/tracing_on", "1\n", false);
+    return true;
 }
 
-kprobe:kfd_ioctl_ais {
-    $data  = (uint64)arg2;
-    $handle   = *(uint64 *)$data;
-    $size_req = *(uint64 *)($data + 24);
-    $op       = *(uint32 *)($data + 32);
-    $fd       = *(int32  *)($data + 36);
-    $gpu_id   = (uint32)($handle >> 32);
-
-    @ais_ts[tid]       = nsecs;
-    @ais_data_ptr[tid] = $data;
-    @ais_op[tid]       = $op;
-    @ais_size_req[tid] = $size_req;
-    @ais_gpu_id[tid]   = $gpu_id;
-    @ais_fd[tid]       = (int64)$fd;
-    @ais_pid[tid]      = (uint64)pid;
-    @ais_comm[tid]     = comm;
-}
-
-kretprobe:kfd_ioctl_ais /@ais_ts[tid] != 0/ {
-    $lat_ns     = nsecs - @ais_ts[tid];
-    $data       = @ais_data_ptr[tid];
-    $size_copied = *(uint64 *)$data;
-    $err        = retval;
-    $op         = @ais_op[tid];
-    $size_req   = @ais_size_req[tid];
-    $gpu_id     = @ais_gpu_id[tid];
-    $fd         = @ais_fd[tid];
-    $cpid       = @ais_pid[tid];
-    $ccomm      = @ais_comm[tid];
-
-    printf("AIS pid=%d comm=%s op=%d gpu_id=%d size_req=%llu size_copied=%llu fd=%d err=%d lat_ns=%llu\n",
-           $cpid, $ccomm, $op, $gpu_id, $size_req, $size_copied, $fd, $err, $lat_ns);
-
-    delete(@ais_ts[tid]);
-    delete(@ais_data_ptr[tid]);
-    delete(@ais_op[tid]);
-    delete(@ais_size_req[tid]);
-    delete(@ais_gpu_id[tid]);
-    delete(@ais_fd[tid]);
-    delete(@ais_pid[tid]);
-    delete(@ais_comm[tid]);
-}
-
-END {
-    clear(@ais_ts);
-    clear(@ais_data_ptr);
-    clear(@ais_op);
-    clear(@ais_size_req);
-    clear(@ais_gpu_id);
-    clear(@ais_fd);
-    clear(@ais_pid);
-    clear(@ais_comm);
-}
-)";
+void AisMonitor::RemoveKprobes() {
+    const std::string kpe = tracefs_ + "/kprobe_events";
+    if (!probe_entry_.empty()) {
+        if (!instance_.empty())
+            WriteTracefs(instance_ + "/events/kprobes/" + probe_entry_ +
+                             "/enable",
+                         "0\n", false);
+        WriteTracefs(kpe, "-:" + probe_entry_ + "\n", true);
+        probe_entry_.clear();
+    }
+    if (!instance_.empty()) {
+        rmdir(instance_.c_str());
+        instance_.clear();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -346,51 +351,30 @@ END {
 // ---------------------------------------------------------------------------
 
 bool AisMonitor::Start(Sink sink) {
-    int pipefd[2];
-    if (pipe2(pipefd, O_CLOEXEC) < 0)
+    if (!InstallKprobes())
         return false;
 
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(pipefd[0]);
-        close(pipefd[1]);
+    // Open the instance's trace_pipe (not the global one, which discovery
+    // holds).
+    trace_pipe_fd_ = open((instance_ + "/trace_pipe").c_str(), O_RDONLY);
+    if (trace_pipe_fd_ < 0) {
+        fprintf(stderr, "hsa-snoop: cannot open AIS trace_pipe: %s\n",
+                strerror(errno));
+        RemoveKprobes();
         return false;
     }
 
-    if (pid == 0) {
-        // Child: run bpftrace. Redirect stdout to pipe.
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        close(pipefd[1]);
-        // Redirect stderr to /dev/null to suppress bpftrace noise.
-        int devnull = open("/dev/null", O_WRONLY);
-        if (devnull >= 0) {
-            dup2(devnull, STDERR_FILENO);
-            close(devnull);
-        }
-        // Write the bpftrace script to a temp file and pass it as arg.
-        // bpftrace does not support stdin scripts reliably across versions,
-        // so we write to /tmp and exec with the path.
-        char tmppath[] = "/tmp/ais-snoop-XXXXXX.bt";
-        int tmpfd = mkstemps(tmppath, 3);
-        if (tmpfd < 0)
-            _exit(1);
-        std::string script = BuildBpftraceScript();
-        if (write(tmpfd, script.data(), script.size()) < 0) {
-            close(tmpfd);
-            _exit(1);
-        }
-        close(tmpfd);
-        execlp("bpftrace", "bpftrace", tmppath, nullptr);
-        // bpftrace not found or failed — clean up and exit.
-        unlink(tmppath);
-        _exit(127);
+    // Self-pipe for cancellation: Stop() writes a byte; ReadLoop's poll()
+    // wakes.
+    int pfds[2];
+    if (pipe2(pfds, O_CLOEXEC) < 0) {
+        close(trace_pipe_fd_);
+        trace_pipe_fd_ = -1;
+        RemoveKprobes();
+        return false;
     }
-
-    // Parent: close write end, keep read end.
-    close(pipefd[1]);
-    bpftrace_pid_ = pid;
-    bpftrace_stdout_ = pipefd[0];
+    cancel_rfd_ = pfds[0];
+    cancel_wfd_ = pfds[1];
 
     running_ = true;
     reader_thread_ = std::thread(
@@ -399,103 +383,136 @@ bool AisMonitor::Start(Sink sink) {
 }
 
 void AisMonitor::Stop() {
-    if (!running_.exchange(false))
-        return;
-    if (bpftrace_pid_ > 0) {
-        kill(bpftrace_pid_, SIGTERM);
-        // Give bpftrace a moment to flush END block output.
-        usleep(200 * 1000);
-        int status;
-        waitpid(bpftrace_pid_, &status, WNOHANG);
-        kill(bpftrace_pid_, SIGKILL);
-        waitpid(bpftrace_pid_, nullptr, 0);
-        bpftrace_pid_ = -1;
+    running_.store(false);
+    // Wake the ReadLoop by writing to the cancel pipe.
+    if (cancel_wfd_ >= 0) {
+        char b = 1;
+        write(cancel_wfd_, &b, 1);
+        close(cancel_wfd_);
+        cancel_wfd_ = -1;
     }
-    if (bpftrace_stdout_ >= 0) {
-        close(bpftrace_stdout_);
-        bpftrace_stdout_ = -1;
+    RemoveKprobes();
+    if (trace_pipe_fd_ >= 0) {
+        close(trace_pipe_fd_);
+        trace_pipe_fd_ = -1;
+    }
+    if (cancel_rfd_ >= 0) {
+        close(cancel_rfd_);
+        cancel_rfd_ = -1;
     }
     if (reader_thread_.joinable())
         reader_thread_.join();
 }
 
 // ---------------------------------------------------------------------------
-// ReadLoop — parse bpftrace output lines into AisRecord
+// ReadLoop — parse tracefs kprobe output into AisRecord
 // ---------------------------------------------------------------------------
 
 void AisMonitor::ReadLoop(Sink sink) {
-    FILE* fp = fdopen(bpftrace_stdout_, "r");
-    if (!fp) {
-        running_ = false;
-        return;
-    }
-
     uint64_t seq = 0;
-    char line[1024];
-    bool ready = false;
+    char buf[4096];
+    std::string partial;
 
-    while (fgets(line, sizeof(line), fp)) {
-        if (!running_)
+    while (running_) {
+        // Poll both trace_pipe and the cancel pipe so Stop() can wake us.
+        struct pollfd pfds[2];
+        pfds[0].fd = trace_pipe_fd_;
+        pfds[0].events = POLLIN;
+        pfds[1].fd = cancel_rfd_;
+        pfds[1].events = POLLIN;
+
+        int r = poll(pfds, 2, 200); // 200 ms timeout to recheck running_
+        if (r < 0)
             break;
+        if (pfds[1].revents & POLLIN)
+            break; // cancel pipe signalled by Stop()
+        if (!(pfds[0].revents & POLLIN))
+            continue; // timeout — recheck running_
 
-        // Wait for the ready sentinel before processing events.
-        if (!ready) {
-            if (strstr(line, "AIS_MONITOR_READY"))
-                ready = true;
-            continue;
+        ssize_t n = read(trace_pipe_fd_, buf, sizeof(buf) - 1);
+        if (n <= 0)
+            break;
+        buf[n] = '\0';
+        partial += buf;
+
+        // Process all complete lines.
+        size_t pos;
+        while ((pos = partial.find('\n')) != std::string::npos) {
+            std::string line = partial.substr(0, pos);
+            partial.erase(0, pos + 1);
+
+            if (!running_)
+                break;
+
+            // tracefs kprobe line format:
+            //   <comm>-<tid>  [cpu] ....  <ts>: <probe>: (<func>+N/M) f=v ...
+            // Only process lines from our entry probe.
+            if (line.find(probe_entry_) == std::string::npos)
+                continue;
+
+            // Find the fields section after the second ": ".
+            size_t p1 = line.find(": ");
+            if (p1 == std::string::npos)
+                continue;
+            size_t p2 = line.find(": ", p1 + 2);
+            if (p2 == std::string::npos)
+                continue;
+            // After "<probe>: " comes "(<func>+offset/size [mod]) field=val..."
+            // Skip past the parenthesised function reference to the fields.
+            const char* fields_raw = line.c_str() + p2 + 2;
+            const char* paren_end = strchr(fields_raw, ')');
+            const char* fields = paren_end ? paren_end + 2 : fields_raw;
+
+            // Extract TID: rightmost '-' before first '['.
+            size_t bracket = line.find('[');
+            if (bracket == std::string::npos)
+                continue;
+            size_t dash = line.rfind('-', bracket);
+            if (dash == std::string::npos)
+                continue;
+            int tid = atoi(line.c_str() + dash + 1);
+            std::string comm = line.substr(0, dash);
+            size_t sp = comm.find_first_not_of(" ");
+            if (sp != std::string::npos)
+                comm = comm.substr(sp);
+
+            // Parse: gpu_id=N size_req=N op=N fd=N  (tracefs outputs decimal)
+            unsigned gpu_id_val = 0;
+            uint64_t size_req = 0;
+            unsigned op_val = 0;
+            int file_fd = -1;
+            sscanf(fields, "gpu_id=%u size_req=%lu op=%u fd=%d", &gpu_id_val,
+                   &size_req, &op_val, &file_fd);
+
+            AisRecord rec;
+            rec.seq = ++seq;
+            rec.pid = tid;
+            rec.comm = comm;
+            rec.op = (op_val == 1)   ? AisOp::Read
+                     : (op_val == 2) ? AisOp::Write
+                                     : AisOp::Unknown;
+            rec.gpu_id = gpu_id_val;
+            rec.size_req = size_req;
+            rec.size_copied = size_req; // approximation at entry time
+            rec.error = 0;
+            rec.completed = true;
+
+            struct timespec ts {};
+            clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+            rec.submit_ts = ts.tv_sec + ts.tv_nsec * 1e-9;
+            rec.complete_ts = rec.submit_ts;
+
+            if (rec.pid > 0 && file_fd >= 0) {
+                rec.pcie_info = ResolvePcieDeviceInfo(rec.pid, file_fd);
+                rec.pcie_id = rec.pcie_info.bdf;
+            }
+
+            sink(rec);
         }
-
-        // Parse: AIS pid=<n> comm=<s> op=<n> gpu_id=<n> size_req=<n>
-        //             size_copied=<n> fd=<n> err=<n> lat_ns=<n>
-        if (strncmp(line, "AIS ", 4) != 0)
-            continue;
-
-        AisRecord rec;
-        rec.seq = ++seq;
-
-        char comm[256] = {};
-        int op = 0, err = 0, fd = 0;
-        uint64_t size_req = 0, size_copied = 0, lat_ns = 0;
-        unsigned gpu_id = 0;
-
-        int n = sscanf(line,
-                       "AIS pid=%d comm=%255s op=%d gpu_id=%u "
-                       "size_req=%lu size_copied=%lu fd=%d err=%d lat_ns=%lu",
-                       &rec.pid, comm, &op, &gpu_id, &size_req, &size_copied,
-                       &fd, &err, &lat_ns);
-        if (n < 9)
-            continue;
-
-        rec.comm = comm;
-        rec.op = (op == 1)   ? AisOp::Read
-                 : (op == 2) ? AisOp::Write
-                             : AisOp::Unknown;
-        rec.gpu_id = gpu_id;
-        rec.size_req = size_req;
-        rec.size_copied = size_copied;
-        rec.error = err;
-        rec.completed = true;
-
-        // Derive timestamps from lat_ns: place submit at (now - lat), complete
-        // at now.
-        struct timespec ts {};
-        clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-        rec.complete_ts = ts.tv_sec + ts.tv_nsec * 1e-9;
-        rec.submit_ts = rec.complete_ts - lat_ns * 1e-9;
-
-        // Resolve PCIe device info from the file descriptor in the calling
-        // process.
-        if (rec.pid > 0 && fd >= 0) {
-            rec.pcie_info = ResolvePcieDeviceInfo(rec.pid, fd);
-            rec.pcie_id = rec.pcie_info.bdf;
-        }
-
-        sink(rec);
     }
 
-    fclose(fp);
-    bpftrace_stdout_ = -1;
     running_ = false;
+    // fd == trace_pipe_fd_; Stop() owns closing it.
 }
 
 } // namespace hsasnoop

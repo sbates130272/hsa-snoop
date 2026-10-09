@@ -73,7 +73,7 @@ void Usage(const char* p) {
         "                     Port for Prometheus /metrics endpoint "
         "(default 9488)\n"
         "  --ais-snoop        Enable AMD Infinity Storage (AIS) IO snooping\n"
-        "                     via kprobe on kfd_ioctl_ais (requires bpftrace)\n"
+        "                     via kprobe on kfd_ioctl_ais\n"
         "                     AIS events are included in the trace or "
         "Prometheus\n"
         "                     output alongside HSA/SDMA events\n"
@@ -323,7 +323,7 @@ int main(int argc, char** argv) {
     // the same trace writer or prometheus exporter as AQL/SDMA events.
     std::unique_ptr<AisMonitor> ais_monitor;
     if (ais_mode) {
-        ais_monitor = std::make_unique<AisMonitor>();
+        ais_monitor = std::make_unique<AisMonitor>(tracefs);
         bool ais_ok = ais_monitor->Start([&](const AisRecord& r) {
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
             if (prom_exporter) {
@@ -355,7 +355,7 @@ int main(int argc, char** argv) {
             ais_monitor.reset();
         } else {
             fprintf(stderr, "hsa-snoop: AIS monitor armed "
-                            "(kprobe:kfd_ioctl_ais via bpftrace)\n");
+                            "(kprobe:kfd_ioctl_ais via tracefs)\n");
         }
     }
 
@@ -421,8 +421,12 @@ int main(int argc, char** argv) {
         [&](const PacketRecord& r) {
             // Memory footprint mode: for kernel dispatches, scan the kernarg
             // buffer and emit a MemRecord before the normal trace/prom path.
-            if (mem_mode && r.type == aql::PacketType::KernelDispatch &&
-                r.kernarg_address != 0) {
+            // Include VendorSpecific: on gfx1250/RDNA4 the GPU fast-reset path
+            // emits real dispatch packets as VendorSpecific type.
+            const bool is_kern_dispatch =
+                r.type == aql::PacketType::KernelDispatch ||
+                r.type == aql::PacketType::VendorSpecific;
+            if (mem_mode && is_kern_dispatch && r.kernarg_address != 0) {
                 MemRecord mr;
                 mr.queue_uid = r.queue_uid;
                 mr.dispatch_id = r.dispatch_id;
@@ -485,8 +489,10 @@ int main(int argc, char** argv) {
             }
             // Before the prometheus early-return: the dispatch log is an
             // additional sink, not an alternative one, so it must fire in every
-            // mode.
-            if (dispatch_log && r.type == aql::PacketType::KernelDispatch)
+            // mode.  On gfx1250/RDNA4 the fast-reset path emits VendorSpecific
+            // records for real kernel dispatches, so include that type too.
+            if (dispatch_log && (r.type == aql::PacketType::KernelDispatch ||
+                                 r.type == aql::PacketType::VendorSpecific))
                 dispatch_log->LogDispatch(r, queue_ctx(r.queue_uid));
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
             if (prom_exporter) {

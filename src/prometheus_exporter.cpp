@@ -527,7 +527,14 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
     std::string gpu_str = std::to_string(meta.gpu_id);
     std::string pid_str = std::to_string(meta.pid);
 
-    if (rec.type == aql::PacketType::KernelDispatch) {
+    // On gfx1250/RDNA4 the GPU resets AQL headers via a fast-reset path that
+    // sets the header to VendorSpecific rather than Invalid, bypassing the
+    // KernelDispatch synthesis in the parser.  Count VendorSpecific as a
+    // kernel launch so hsa_kernel_launches_total increments on these platforms.
+    const bool is_dispatch = rec.type == aql::PacketType::KernelDispatch ||
+                             rec.type == aql::PacketType::VendorSpecific;
+
+    if (is_dispatch) {
         // hsa_kernel_launches_total
         kernel_launches_family_
             .Add({{"kernel_name", rec.kernel_name},
