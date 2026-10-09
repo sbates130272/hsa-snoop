@@ -32,16 +32,15 @@ set(SCRAPE3 "${SCRATCH_DIR}/scrape_3.txt")
 set(ORCHESTRATE_SCRIPT "${SCRATCH_DIR}/orchestrate.sh")
 
 # Strategy:
-#  1. Start hsa-snoop --all --prometheus in background; wait for it to arm.
-#  2. Run 3 sequential gfx-test invocations (small, fast: ~0.8 s each).
-#     After each one, immediately scrape the prometheus endpoint.
-#     The endpoint stays alive between gfx-test runs because --all mode
-#     does not exit when the observed process finishes.
-#  3. Assert monotonic hsa_kernel_launches_total across the 3 scrapes.
+#  Run hsa-snoop --prometheus wrapping a long-running gfx-test workload (many
+#  iterations / loops so it stays alive for several seconds).  Concurrently
+#  poll /metrics every second and save up to 3 non-empty scrapes taken while
+#  gfx-test is still running.  hsa-snoop exits naturally when gfx-test ends.
 #
-# Using sequential gfx-test runs (not concurrent) avoids the parallel-GPU
-# scheduler bottleneck on the rocjitsu emulator.  Each run fires the kprobe
-# fresh so hsa-snoop increments the counter on each invocation.
+#  This avoids the eviction-before-scrape race: because gfx-test is a child of
+#  hsa-snoop (not a separate process), the parser can read the AQL ring while
+#  the process is alive, ensuring hsa_kernel_launches_total increments before
+#  the scrapes are collected.
 file(WRITE "${ORCHESTRATE_SCRIPT}"
 "#!/bin/sh
 HSA_SNOOP='${HSA_SNOOP}'
@@ -52,38 +51,48 @@ S1='${SCRAPE1}'
 S2='${SCRAPE2}'
 S3='${SCRAPE3}'
 
-rm -f \"\$SNOOP_LOG\"
+rm -f \"\$SNOOP_LOG\" \"\$S1\" \"\$S2\" \"\$S3\"
 
-# 1. Start hsa-snoop --all --prometheus.
-\"\$HSA_SNOOP\" --all --prometheus --prometheus-port ${PROM_PORT} \
-  --poll-us 500 > \"\$SNOOP_LOG\" 2>&1 &
+# 1. Start hsa-snoop wrapping a gfx-test workload long enough for scrapes.
+#    --loops 20 --sleep-ms 250 gives ~5+ seconds of active dispatch time,
+#    enough for 3 or more 1-second scrapes to land while the process is alive.
+\"\$HSA_SNOOP\" --prometheus --prometheus-port ${PROM_PORT} \
+  --poll-us 500 \
+  -- \"\$GFX_TEST\" --elements 128 --iters 1 --batch 3 --loops 20 \
+                   --sleep-ms 250 \
+  > \"\$SNOOP_LOG\" 2>&1 &
 SNOOP_PID=\$!
 
-# 2. Wait for kprobe armed (up to 15 s).
+# 2. Wait for prometheus endpoint to become reachable (up to 15 s).
 n=0
 while [ \"\$n\" -lt 30 ]; do
   sleep 0.5
-  grep -q 'discovery armed' \"\$SNOOP_LOG\" 2>/dev/null && break
+  curl -sf \"\$PROM_URL\" -o /dev/null 2>/dev/null && break
   n=\$((n + 1))
 done
-grep -q 'discovery armed' \"\$SNOOP_LOG\" 2>/dev/null || {
-  echo 'ERROR: hsa-snoop did not arm' >&2; kill \$SNOOP_PID; exit 1
+curl -sf \"\$PROM_URL\" -o /dev/null 2>/dev/null || {
+  echo 'ERROR: prometheus endpoint did not come up' >&2
+  kill \$SNOOP_PID 2>/dev/null; wait \$SNOOP_PID 2>/dev/null
+  cat \"\$SNOOP_LOG\" >&2
+  exit 1
 }
 
-# 3a. First gfx-test run; scrape once it finishes.
-\"\$GFX_TEST\" --elements 128 --iters 1 --batch 3 --loops 1 >/dev/null 2>&1
-curl -sf \"\$PROM_URL\" > \"\$S1\" 2>/dev/null || true
+# 3. Collect up to 3 scrapes while hsa-snoop is running; one per second.
+SCRAPED=0
+for _i in 1 2 3 4 5 6 7 8 9 10; do
+  sleep 1
+  # Stop collecting once hsa-snoop exits (gfx-test done).
+  kill -0 \"\$SNOOP_PID\" 2>/dev/null || break
+  _out=''
+  if [ \"\$SCRAPED\" -eq 0 ]; then _out=\"\$S1\"; fi
+  if [ \"\$SCRAPED\" -eq 1 ]; then _out=\"\$S2\"; fi
+  if [ \"\$SCRAPED\" -eq 2 ]; then _out=\"\$S3\"; fi
+  if [ -n \"\$_out\" ]; then
+    curl -sf \"\$PROM_URL\" > \"\$_out\" 2>/dev/null && SCRAPED=\$((SCRAPED + 1))
+  fi
+  [ \"\$SCRAPED\" -ge 3 ] && break
+done
 
-# 3b. Second gfx-test run; scrape.
-\"\$GFX_TEST\" --elements 128 --iters 1 --batch 3 --loops 1 >/dev/null 2>&1
-curl -sf \"\$PROM_URL\" > \"\$S2\" 2>/dev/null || true
-
-# 3c. Third gfx-test run; scrape.
-\"\$GFX_TEST\" --elements 128 --iters 1 --batch 3 --loops 1 >/dev/null 2>&1
-curl -sf \"\$PROM_URL\" > \"\$S3\" 2>/dev/null || true
-
-# 4. Kill hsa-snoop.
-kill \$SNOOP_PID 2>/dev/null || true
 wait \$SNOOP_PID 2>/dev/null || true
 ")
 execute_process(COMMAND chmod +x "${ORCHESTRATE_SCRIPT}")

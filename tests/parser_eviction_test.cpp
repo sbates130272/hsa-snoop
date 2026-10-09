@@ -92,7 +92,8 @@ bool TestBadQueueEvicted() {
 
     int bad_calls = 0;
     hsasnoop::RingParser parser(
-        [&](const hsasnoop::PacketRecord&) { ++bad_calls; }, {}, /*poll_us=*/500);
+        [&](const hsasnoop::PacketRecord&) { ++bad_calls; }, {},
+        /*poll_us=*/500);
 
     hsasnoop::QueueInfo queue;
     queue.pid = getpid();
@@ -101,7 +102,7 @@ bool TestBadQueueEvicted() {
     queue.wptr_addr = kUnmappedVa;
     queue.rptr_addr = kUnmappedVa;
     queue.ring_size = static_cast<uint32_t>(kRingBytes);
-    queue.qtype = 2;  // KFD_IOC_QUEUE_TYPE_COMPUTE_AQL
+    queue.qtype = 2; // KFD_IOC_QUEUE_TYPE_COMPUTE_AQL
     queue.uid = 1;
     queue.gpu_id = 0;
     parser.AddQueue(queue);

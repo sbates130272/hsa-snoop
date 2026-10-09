@@ -38,9 +38,10 @@ GFX_TEST='${GFX_TEST}'
 
 rm -f \"\$LOG\"
 
-# 1. Start hsa-snoop --all.
+# 1. Start hsa-snoop --all (no --duration: we kill it explicitly after the
+#    workloads finish so the test doesn't wait a fixed 60 s).
 \"\$HSA_SNOOP\" --all --format json --out-dir \"\$TRACE_DIR\" \
-  --poll-us 1000 --duration 60 > \"\$LOG\" 2>&1 &
+  --poll-us 1000 > \"\$LOG\" 2>&1 &
 SNOOP_PID=\$!
 echo \"hsa-snoop PID=\$SNOOP_PID\" >&2
 
@@ -117,9 +118,13 @@ foreach(trace_file IN LISTS trace_files)
   file(READ "${trace_file}" tj)
   string(REGEX MATCHALL "\"name\":\"kernel_dispatch\"" named "${tj}")
   string(REGEX MATCHALL "\"name\":\"kernel_0x[0-9a-f]+" addr "${tj}")
+  # On gfx1250/RDNA4 with large-BAR rocjitsu the GPU resets AQL headers in the
+  # fast-reset path; packets appear as vendor_specific rather than kernel_dispatch.
+  string(REGEX MATCHALL "\"name\":\"vendor_specific\"" vendor "${tj}")
   list(LENGTH named n1)
   list(LENGTH addr n2)
-  math(EXPR kevt "${n1} + ${n2}")
+  list(LENGTH vendor n3)
+  math(EXPR kevt "${n1} + ${n2} + ${n3}")
   # In --all mode hsa-snoop writes one trace file per queue; small command
   # queues (64 slots) carry no kernel dispatches, so only assert that the
   # total across all files is non-zero.

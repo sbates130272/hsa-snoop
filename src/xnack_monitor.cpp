@@ -117,9 +117,8 @@ bool XnackMonitor::Start(Sink sink) {
 }
 
 void XnackMonitor::Stop() {
-    if (!running_.exchange(false))
-        return;
-    if (bpftrace_pid_ > 0) {
+    bool was_running = running_.exchange(false);
+    if (was_running && bpftrace_pid_ > 0) {
         kill(bpftrace_pid_, SIGTERM);
         // Give bpftrace a moment to flush END block output.
         usleep(200 * 1000);
@@ -129,10 +128,11 @@ void XnackMonitor::Stop() {
         waitpid(bpftrace_pid_, nullptr, 0);
         bpftrace_pid_ = -1;
     }
-    // Do not close bpftrace_stdout_ here: ReadLoop owns it via fdopen and
-    // will fclose it (which closes the fd) when fgets returns EOF. Killing
-    // the bpftrace child above closes the write end of the pipe and causes
-    // fgets to return EOF, which unblocks ReadLoop naturally.
+    // Always join the reader thread if joinable — ReadLoop may have set
+    // running_=false on its own (bpftrace exited naturally) before Stop() was
+    // called, leaving the thread finished but un-joined.  A joinable thread
+    // in a destructor calls std::terminate(), so we must join regardless of
+    // whether we were the ones to stop the process.
     if (reader_thread_.joinable())
         reader_thread_.join();
 }

@@ -45,7 +45,7 @@ env:
   VM_NVME: '1'
   QEMU_TOOL_SRC: /var/lib/qemu-tool/src
   QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260929.g2bdbd16-qemu11.1.2-vfu.8039244
-  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260925.g12f12f8-rocjitsu.c85bb75
+  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260929.g2bdbd16-rocjitsu.f2d13fb
   ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ernic-rocjitsu:20260929.g2bdbd16-vm.resolute-ernic-rocjitsu-qm.54cc234-qcow2
 
 jobs:
@@ -56,7 +56,7 @@ jobs:
     permissions:
       contents: write
     container:
-      image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260925.g12f12f8-qemu11.1.1-vfu.8039244
+      image: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260929.g2bdbd16-qemu11.1.2-vfu.8039244
       options: --device /dev/kvm -v /var/run/docker.sock:/var/run/docker.sock -v /var/lib/qemu-tool:/var/lib/qemu-tool
 
     steps:
@@ -191,6 +191,41 @@ jobs:
       run: |
         docker pull "$ROCJITSU_IMAGE"
         docker pull "$QEMU_IMAGE"
+
+    - name: Start rocjitsu service only
+      uses: sbates130272/qemu-tool-action@v1
+      with:
+        operation: compose
+        qemu-tool-source: ./qemu-minimal/qemu
+        stack: vfio-user-rocjitsu-vm
+        vm-name: ${{ env.VM_NAME }}
+        images-dir: ${{ env.VM_IMAGES_DIR }}
+        compose-args: up --detach rocjitsu
+        wait-for-healthy: 'true'
+        wait-timeout: '60'
+
+    - name: Apply large-BAR rocjitsu config and restart
+      shell: bash
+      run: |
+        set -euo pipefail
+        # The shipped gfx1250 config has local_mem_size=432 GB but only a 256 MB
+        # vram_aperture_bytes.  The guest amdgpu driver detects the mismatch, switches
+        # to CPU-based GPU VM page-table updates (WARN at amdgpu_vm.c:2729), and then
+        # hangs every HIP kernel dispatch because CPU updates fail for allocations
+        # outside the 256 MB aperture window.  Set both to 8 GiB so the driver sees a
+        # large-BAR system and uses SDMA-based updates through the vfio-user transport.
+        #
+        # Patch the config in the running rocjitsu-only container, then stop+start it
+        # before QEMU connects.  QEMU hasn't started yet so no active fd is dropped.
+        docker exec vfio-user-rocjitsu-vm-rocjitsu-1 \
+          python3 -c 'import json; p="/usr/local/share/rocjitsu/configs/gfx1250_mi455x.json"; d=json.load(open(p)); g=8*1024**3; d["vm"]["gpu"]["device"]["local_mem_size"]=g; d["vm"]["gpu"]["pci"]["vram_aperture_bytes"]=g; open(p,"w").write(json.dumps(d,indent=2))'
+        docker stop  vfio-user-rocjitsu-vm-rocjitsu-1
+        docker start vfio-user-rocjitsu-vm-rocjitsu-1
+        for i in $(seq 1 30); do
+          docker exec vfio-user-rocjitsu-vm-rocjitsu-1 \
+            test -S /run/vfu/rocjitsu-1.sock 2>/dev/null && echo "rocjitsu healthy" && break
+          sleep 1
+        done
 
     - name: Bring up rocjitsu compose stack and wait for healthy
       uses: sbates130272/qemu-tool-action@v1

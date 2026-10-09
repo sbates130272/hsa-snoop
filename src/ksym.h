@@ -37,7 +37,8 @@ class KernelSymbolResolver {
     // 1 MB: wider than the original 4 KB to handle gfx1250/RDNA4 code objects
     // where the CPU-GPU VA gap can exceed one page. Ambiguity detection (empty
     // string for collisions) prevents false matches from the wider window.
-    static constexpr uint64_t kOffsetMask = (1ULL << 20) - 1; // 1 MB intra-object offset
+    static constexpr uint64_t kOffsetMask =
+        (1ULL << 20) - 1; // 1 MB intra-object offset
     std::unordered_map<uint64_t, std::string>
         offset_cache_; // low bits -> name (empty = ambiguous)
     int scanned_generation_ = 0;
