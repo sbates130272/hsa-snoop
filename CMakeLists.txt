@@ -227,14 +227,17 @@ if(HSA_SNOOP_HARDWARE_TESTS)
 
   # Prometheus monotonicity: scrapes /metrics five times during a 30-second
   # run and asserts that hsa_kernel_launches_total never decreases.
-  add_test(
-    NAME prometheus-monotonicity-hardware-test
-    COMMAND ${CMAKE_COMMAND}
-      -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
-      -DGFX_TEST=$<TARGET_FILE:gfx-test>
-      -DSCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/prom-monotonicity-scratch
-      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/prometheus_monotonicity_hardware_test.cmake)
-  set_tests_properties(prometheus-monotonicity-hardware-test PROPERTIES
-    LABELS "hardware;gfx;prometheus"
-    TIMEOUT 120)
+  # Requires --prometheus support in hsa-snoop.
+  if(HSA_SNOOP_PROMETHEUS)
+    add_test(
+      NAME prometheus-monotonicity-hardware-test
+      COMMAND ${CMAKE_COMMAND}
+        -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
+        -DGFX_TEST=$<TARGET_FILE:gfx-test>
+        -DSCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/prom-monotonicity-scratch
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/prometheus_monotonicity_hardware_test.cmake)
+    set_tests_properties(prometheus-monotonicity-hardware-test PROPERTIES
+      LABELS "hardware;gfx;prometheus"
+      TIMEOUT 120)
+  endif()
 endif()

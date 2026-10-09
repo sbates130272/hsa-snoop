@@ -118,13 +118,17 @@ bool XnackMonitor::Start(Sink sink) {
 
 void XnackMonitor::Stop() {
     bool was_running = running_.exchange(false);
-    if (was_running && bpftrace_pid_ > 0) {
-        kill(bpftrace_pid_, SIGTERM);
-        // Give bpftrace a moment to flush END block output.
-        usleep(200 * 1000);
-        int status;
-        waitpid(bpftrace_pid_, &status, WNOHANG);
-        kill(bpftrace_pid_, SIGKILL);
+    if (bpftrace_pid_ > 0) {
+        if (was_running) {
+            kill(bpftrace_pid_, SIGTERM);
+            // Give bpftrace a moment to flush END block output.
+            usleep(200 * 1000);
+            int status;
+            waitpid(bpftrace_pid_, &status, WNOHANG);
+            kill(bpftrace_pid_, SIGKILL);
+        }
+        // Always reap: bpftrace may have exited naturally (ReadLoop set
+        // running_=false) leaving a zombie if we only reap in the signal path.
         waitpid(bpftrace_pid_, nullptr, 0);
         bpftrace_pid_ = -1;
     }

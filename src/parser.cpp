@@ -372,6 +372,7 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
         return;
     }
 
+    qs->read_fail_count = 0; // clear on success
     uint64_t ring_dw = q.num_dwords();
     if (!ring_dw)
         return;
