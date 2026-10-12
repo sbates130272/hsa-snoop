@@ -29,6 +29,7 @@ services:
       - --web.enable-lifecycle
     volumes:
       - ${HSA_SNOOP_PROM_CONFIG:-./prometheus-live.yml}:/etc/prometheus/prometheus.yml:ro
+      - ./hsa-snoop-alerts.yml:/etc/prometheus/hsa-snoop-alerts.yml:ro
       - prometheus-live-data:/prometheus
     ports:
       - "127.0.0.1:${HSA_SNOOP_PORT_PROM:-9490}:9090"

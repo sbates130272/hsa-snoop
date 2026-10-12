@@ -129,6 +129,9 @@ if(HSA_SNOOP_PROMETHEUS)
   # /etc/default/hsa-snoop on first install with auto-detected UID/GID values.
   install(FILES systemd/hsa-snoop.conf
           DESTINATION ${CMAKE_INSTALL_DATADIR}/hsa-snoop)
+  install(FILES debian/hsa-snoop-prometheus.logrotate
+          DESTINATION etc/logrotate.d
+          RENAME hsa-snoop-prometheus)
 endif()
 install(FILES grafana/hsa-snoop-dashboard.json
         DESTINATION ${CMAKE_INSTALL_DATADIR}/hsa-snoop/grafana)

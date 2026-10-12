@@ -8,6 +8,12 @@ global:
   scrape_interval: 1s
   evaluation_interval: 1s
 
+# Disk-full alerting rules (requires node_exporter scrape target).
+# To activate: add a node_exporter scrape target below and wire an
+# alertmanager or use Grafana's built-in Prometheus alerting.
+rule_files:
+  - /etc/prometheus/hsa-snoop-alerts.yml
+
 scrape_configs:
   - job_name: hsa-snoop
     static_configs:

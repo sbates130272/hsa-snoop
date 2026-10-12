@@ -12,6 +12,9 @@ fi
 
 case "$1" in
     configure)
+        # Ensure the log directory exists with correct permissions.
+        install -d -m 0750 -o root -g root /var/log/hsa-snoop
+
         # Install /etc/default/hsa-snoop only on a fresh install (not upgrade),
         # so that admin edits survive package upgrades. dpkg protects conffiles
         # listed in debian/conffiles automatically; this guard handles the case

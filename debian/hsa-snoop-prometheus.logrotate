@@ -1,0 +1,15 @@
+/var/log/hsa-snoop/*.ndjson {
+    daily
+    maxsize 5G
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    # hsa-snoop holds its log files open on a plain FILE* with no signal
+    # handler to reopen them.  copytruncate avoids the need for a reopen:
+    # logrotate copies the current file then truncates it in place, so the
+    # service keeps writing to the same fd without interruption.
+    copytruncate
+    create 0640 root root
+}
