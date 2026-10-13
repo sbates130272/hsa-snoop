@@ -1,0 +1,92 @@
+// Grafana Alloy: live tail of hsa-snoop --log-dispatches output.
+//
+// Unlike alloy-config.alloy (replay mode), this tails from the end of each
+// file so only new events are forwarded. The timestamp pipeline is identical:
+// dispatches carry their own RFC3339 ts field, so panels stay on the same
+// time axis as the live Prometheus metrics.
+
+logging {
+  level = "warn"
+}
+
+local.file_match "dispatches" {
+  path_targets = [{
+    __path__ = env("HSA_SNOOP_DISPATCH_LOG"),
+    job      = "hsa-snoop",
+    source   = "dispatches",
+  }]
+}
+
+local.file_match "hsasnoop" {
+  path_targets = [{
+    __path__ = env("HSA_SNOOP_LOG"),
+    job      = "hsa-snoop",
+    source   = "hsa-snoop",
+  }]
+}
+
+loki.source.file "dispatches" {
+  targets       = local.file_match.dispatches.targets
+  forward_to    = [loki.process.dispatches.receiver]
+  tail_from_end = true
+}
+
+loki.process "dispatches" {
+  stage.json {
+    expressions = {
+      ts = "ts",
+      ev = "ev",
+    }
+  }
+  stage.timestamp {
+    source = "ts"
+    format = "RFC3339"
+  }
+  stage.labels {
+    values = {
+      ev = "ev",
+    }
+  }
+  stage.json {
+    expressions = {
+      gpu_id = "gpu_id",
+      pid    = "pid",
+      comm   = "comm",
+    }
+  }
+  stage.structured_metadata {
+    values = {
+      gpu_id = "gpu_id",
+      pid    = "pid",
+      comm   = "comm",
+    }
+  }
+  forward_to = [loki.write.live.receiver]
+}
+
+loki.source.file "hsasnoop" {
+  targets       = local.file_match.hsasnoop.targets
+  forward_to    = [loki.process.hsasnoop.receiver]
+  tail_from_end = true
+}
+
+loki.process "hsasnoop" {
+  stage.regex {
+    expression = "^\\[(?P<kind>[a-z]+)\\]"
+  }
+  stage.labels {
+    values = {
+      kind = "kind",
+    }
+  }
+  forward_to = [loki.write.live.receiver]
+}
+
+loki.write "live" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+  external_labels = {
+    capture = "live",
+  }
+}

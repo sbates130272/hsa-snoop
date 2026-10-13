@@ -1,0 +1,41 @@
+groups:
+  - name: hsa-snoop-disk
+    interval: 1m
+    rules:
+      # Fire when the filesystem holding /var/log/hsa-snoop is more than 80%
+      # full.  Requires node_exporter running on the target host and scraped by
+      # this Prometheus instance.  The mountpoint label selects whichever
+      # filesystem contains /var/log (usually /).
+      - alert: HsaSnoopLogDiskHigh
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|devtmpfs"}
+            /
+            node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|devtmpfs"}
+          ) < 0.20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }}: root filesystem above 80% full"
+          description: >
+            {{ $labels.instance }} root filesystem is {{ printf "%.1f" (mul (sub 1.0 $value) 100.0) }}%
+            full. /var/log/hsa-snoop may be growing unchecked — check
+            /var/log/hsa-snoop/*.ndjson sizes and logrotate status.
+
+      - alert: HsaSnoopLogDiskCritical
+        expr: |
+          (
+            node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|devtmpfs"}
+            /
+            node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|devtmpfs"}
+          ) < 0.05
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }}: root filesystem above 95% full"
+          description: >
+            {{ $labels.instance }} root filesystem is {{ printf "%.1f" (mul (sub 1.0 $value) 100.0) }}%
+            full. Immediate action required — truncate or rotate
+            /var/log/hsa-snoop/*.ndjson to prevent system instability.
