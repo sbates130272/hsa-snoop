@@ -130,7 +130,7 @@ if(HSA_SNOOP_PROMETHEUS)
   install(FILES systemd/hsa-snoop.conf
           DESTINATION ${CMAKE_INSTALL_DATADIR}/hsa-snoop)
   install(FILES debian/hsa-snoop-prometheus.logrotate
-          DESTINATION etc/logrotate.d
+          DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/logrotate.d
           RENAME hsa-snoop-prometheus)
 endif()
 install(FILES grafana/hsa-snoop-dashboard.json
