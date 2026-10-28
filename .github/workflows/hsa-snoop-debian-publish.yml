@@ -92,7 +92,7 @@ jobs:
           # Named semver release — create once, do not overwrite
           gh release create "${TAG}" \
             --title "hsa-snoop ${TAG}" \
-            --notes "Release ${TAG}." \
+            --generate-notes \
             "${DEB_FILE}"
         else
           # Rolling latest pre-release for every main push
