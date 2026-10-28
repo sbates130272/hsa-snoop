@@ -14,6 +14,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 
 namespace hsasnoop {
 namespace {
@@ -120,13 +121,47 @@ std::string FindLibrocdxg() {
     return {};
 }
 
+std::string FindLibhsa() {
+    // Same resolution strategy as FindLibrocdxg: we need the real .so.* file
+    // (not a symlink) because the kernel uprobe infrastructure resolves paths
+    // to inodes. The ROCm install layout is:
+    //   /opt/rocm/lib/libhsa-runtime64.so -> .so.1 -> .so.1.X.Y
+    static const char* kCandidates[] = {
+        "/opt/rocm/lib/libhsa-runtime64.so",
+        "/opt/rocm/lib/libhsa-runtime64.so.1",
+        nullptr,
+    };
+    for (const char** p = kCandidates; *p; ++p) {
+        std::string real = Realpath(*p);
+        if (FileExists(real))
+            return real;
+    }
+    FILE* fp = popen("find /opt -maxdepth 5 -name 'libhsa-runtime64.so.*'"
+                     " -not -type l -print -quit 2>/dev/null",
+                     "r");
+    if (fp) {
+        char buf[512] = {};
+        if (fgets(buf, sizeof(buf) - 1, fp)) {
+            buf[strcspn(buf, "\n")] = '\0';
+            pclose(fp);
+            if (buf[0])
+                return buf;
+        } else {
+            pclose(fp);
+        }
+    }
+    return {};
+}
+
 // ---------------------------------------------------------------------------
 // Discovery
 
 Discovery::Discovery(std::string tracefs_root, int pid_filter,
-                     DiscoveryMode mode, std::string librocdxg_path)
+                     DiscoveryMode mode, std::string librocdxg_path,
+                     std::string libhsa_path)
     : tracefs_(std::move(tracefs_root)), pid_filter_(pid_filter), mode_(mode),
       librocdxg_path_(std::move(librocdxg_path)),
+      libhsa_path_(std::move(libhsa_path)),
       probe_name_("hsasnoop_cq_" + std::to_string(getpid())) {}
 
 Discovery::~Discovery() { Stop(); }
@@ -138,6 +173,13 @@ bool Discovery::Start(Callback cb) {
             return false;
         running_ = true;
         thread_ = std::thread(&Discovery::RunBpftrace, this);
+        return true;
+    }
+    if (mode_ == DiscoveryMode::kKfdUprobe) {
+        if (!StartKfdUprobe())
+            return false;
+        running_ = true;
+        thread_ = std::thread(&Discovery::RunKfdUprobe, this);
         return true;
     }
     if (!InstallKprobe())
@@ -156,7 +198,7 @@ bool Discovery::Start(Callback cb) {
 }
 
 void Discovery::Stop() {
-    if (mode_ == DiscoveryMode::kBpftrace) {
+    if (mode_ == DiscoveryMode::kBpftrace || mode_ == DiscoveryMode::kKfdUprobe) {
         if (!running_.exchange(false))
             return;
         // Kill bpftrace. It will exit and close the pipe write-end, causing
@@ -328,6 +370,197 @@ void Discovery::RunKprobe() {
 }
 
 // ---------------------------------------------------------------------------
+// kfd-uprobe mode: uprobe on hsa_queue_add_write_index_screlease in
+// libhsa-runtime64.so. Fires per dispatch (not per queue create), but does
+// not use process_vm_readv so it is safe on emulated GPU devices.
+//
+// Strategy: deduplicate by ring_base — call the callback only once per unique
+// queue ring (first dispatch seen), matching the kprobe one-event-per-queue
+// contract that the rest of the pipeline expects.
+//
+
+static std::string BuildKfdUprobeScript(const std::string& so_path) {
+    std::ostringstream s;
+    // hsa_queue_add_write_index_screlease is the variant that fires in
+    // practice on ROCm 10.1. The acq_rel and release variants are zero-size
+    // aliases (same address) and bpftrace cannot attach to them without
+    // --unsafe. Probing screlease alone is sufficient.
+    for (const char* fn : {
+             "hsa_queue_add_write_index_screlease",
+         }) {
+        s << "uprobe:" << so_path << ":" << fn << "\n{\n";
+        // arg0 = const hsa_queue_t*. Public hsa_queue_t layout (HSA 1.2 spec):
+        //   +0  type (u32), +4 features (u32)
+        //   +8  base_address (void*) — ring buffer VA
+        //   +16 doorbell_signal (hsa_signal_t = u64 handle)
+        //   +24 size (u32) — number of AQL slots
+        s << "  $q    = (uint64)arg0;\n";
+        s << "  $ring = *(uint64*)($q + 8);\n";  // base_address
+        s << "  $slots = *(uint32*)($q + 24);\n"; // size in slots
+        // Only emit lines when the queue pointer looks valid.
+        s << "  if ($ring == 0) { return; }\n";
+        s << "  printf(\"DISPATCH pid=%d comm=%s ring=0x%lx slots=%u\\n\",\n";
+        s << "         pid, comm, $ring, $slots);\n";
+        s << "}\n";
+    }
+    s << "interval:ms:10 { printf(\"\"); }\n";
+    return s.str();
+}
+
+bool Discovery::StartKfdUprobe() {
+    if (libhsa_path_.empty()) {
+        fprintf(stderr, "hsa-snoop: kfd-uprobe mode requires libhsa-runtime64 "
+                        "(set --libhsa or use auto-detect)\n");
+        return false;
+    }
+    if (!FileExists(libhsa_path_)) {
+        fprintf(stderr, "hsa-snoop: libhsa-runtime64 not found at %s\n",
+                libhsa_path_.c_str());
+        return false;
+    }
+
+    char tmppath[] = "/tmp/hsa-snoop-kfd-XXXXXX.bt";
+    int tmpfd = mkstemps(tmppath, 3);
+    if (tmpfd < 0) {
+        fprintf(stderr, "hsa-snoop: cannot create temp script: %s\n",
+                strerror(errno));
+        return false;
+    }
+    std::string script = BuildKfdUprobeScript(libhsa_path_);
+    if (write(tmpfd, script.data(), script.size()) !=
+        static_cast<ssize_t>(script.size())) {
+        fprintf(stderr, "hsa-snoop: cannot write kfd-uprobe script\n");
+        close(tmpfd);
+        unlink(tmppath);
+        return false;
+    }
+    close(tmpfd);
+    bpf_outpath_ = tmppath;
+
+    int fds[2];
+    if (pipe(fds) < 0) {
+        fprintf(stderr, "hsa-snoop: pipe: %s\n", strerror(errno));
+        unlink(tmppath);
+        return false;
+    }
+
+    bpf_pid_ = fork();
+    if (bpf_pid_ < 0) {
+        fprintf(stderr, "hsa-snoop: fork: %s\n", strerror(errno));
+        close(fds[0]);
+        close(fds[1]);
+        unlink(tmppath);
+        return false;
+    }
+    if (bpf_pid_ == 0) {
+        close(fds[0]);
+        dup2(fds[1], STDOUT_FILENO);
+        close(fds[1]);
+        execlp("bpftrace", "bpftrace", "-B", "none", tmppath, nullptr);
+        _exit(127);
+    }
+    close(fds[1]);
+    pipe_fd_ = fds[0];
+
+    // Wait up to 20 s for "Attaching" on the pipe confirming probes are armed.
+    std::string pre;
+    pre.reserve(4096);
+    char c;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (std::chrono::steady_clock::now() < deadline) {
+        fd_set rd;
+        FD_ZERO(&rd);
+        FD_SET(pipe_fd_, &rd);
+        struct timeval tv{0, 50000};
+        if (select(pipe_fd_ + 1, &rd, nullptr, nullptr, &tv) > 0) {
+            ssize_t n = read(pipe_fd_, &c, 1);
+            if (n > 0) {
+                pre += c;
+                if (pre.find("Attaching") != std::string::npos)
+                    break;
+            } else if (n == 0) {
+                fprintf(stderr, "hsa-snoop: bpftrace exited before arming\n");
+                close(pipe_fd_);
+                pipe_fd_ = -1;
+                return false;
+            }
+        }
+    }
+    bpf_prebuf_ = std::move(pre);
+    // Switch to blocking reads for RunKfdUprobe.
+    int fl = fcntl(pipe_fd_, F_GETFL);
+    fcntl(pipe_fd_, F_SETFL, fl & ~O_NONBLOCK);
+    fprintf(stderr, "hsa-snoop: kfd-uprobe armed on %s\n",
+            libhsa_path_.c_str());
+    return true;
+}
+
+void Discovery::RunKfdUprobe() {
+    std::string buf = std::move(bpf_prebuf_);
+    char chunk[8192];
+    bool eof = false;
+    // Seen ring_base values — we call cb_ only on the first dispatch per ring
+    // so that downstream code receives one event per queue (matching kprobe).
+    std::unordered_set<uint64_t> seen;
+
+    auto get_u64 = [](const std::string& line, const char* key) -> uint64_t {
+        std::string needle = std::string(" ") + key + "=";
+        size_t p = line.find(needle);
+        if (p == std::string::npos) return 0;
+        p += needle.size();
+        return strtoull(line.c_str() + p, nullptr, 0);
+    };
+    auto get_str = [](const std::string& line, const char* key) -> std::string {
+        std::string needle = std::string(" ") + key + "=";
+        size_t p = line.find(needle);
+        if (p == std::string::npos) return {};
+        p += needle.size();
+        size_t end = line.find(' ', p);
+        return line.substr(p, end == std::string::npos ? end : end - p);
+    };
+
+    static uint64_t next_uid = 1;
+
+    while (!eof) {
+        if (buf.empty()) {
+            ssize_t n = read(pipe_fd_, chunk, sizeof(chunk));
+            if (n > 0) buf.append(chunk, n);
+            else if (n == 0) { eof = true; break; }
+            else { if (errno == EINTR) continue; break; }
+        }
+        size_t nl;
+        while ((nl = buf.find('\n')) != std::string::npos) {
+            std::string line = buf.substr(0, nl);
+            buf.erase(0, nl + 1);
+            if (line.find("DISPATCH ") != 0) continue;
+
+            uint64_t ring  = get_u64(line, "ring");
+            uint32_t slots = static_cast<uint32_t>(get_u64(line, "slots"));
+            if (!ring || !slots) continue;
+
+            if (!seen.insert(ring).second) continue; // already registered
+
+            QueueInfo q{};
+            q.pid       = static_cast<int>(get_u64(line, "pid"));
+            q.comm      = get_str(line, "comm");
+            q.ring_base = ring;
+            q.ring_size = static_cast<uint64_t>(slots) * 64; // AQL packet = 64 B
+            q.wptr_addr = 0; // not available without reading hsa_queue_t internals
+            q.rptr_addr = 0;
+            q.qtype     = 2; // HSA_QUEUE_TYPE_MULTI (AQL compute)
+            q.gpu_id    = 0; // not available from this hook
+            q.uid       = next_uid++;
+            struct timespec ts{};
+            clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+            q.create_ts = ts.tv_sec + ts.tv_nsec * 1e-9;
+
+            if (pid_filter_ && q.pid != pid_filter_) continue;
+            cb_(q);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // bpftrace mode (WSL2 / librocdxg)
 //
 // We fork bpftrace with a script that uprobes hsaKmtCreateQueueExt in
@@ -386,9 +619,10 @@ static std::string BuildBpftraceScript(const std::string& so_path,
     s << "         pid, comm, (uint64)arg5, $wptr, $rptr, $size, "
          "(uint32)arg0);\n";
     s << "}\n";
-    // An interval probe fires periodically and triggers a buffer flush,
-    // providing real-time printf output delivery. Use 1ms for minimal latency.
-    s << "interval:ms:1 { }\n";
+    // An interval probe with a printf (even an empty string) drains the BPF
+    // ring buffer, providing real-time output delivery through a pipe. An
+    // empty body { } does NOT drain the buffer reliably.
+    s << "interval:ms:10 { printf(\"\"); }\n";
     return s.str();
 }
 

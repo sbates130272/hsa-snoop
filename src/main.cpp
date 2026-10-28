@@ -59,12 +59,17 @@ void Usage(const char* p) {
         "  --duration <sec>   Auto-stop after N seconds (0 = until "
         "Ctrl-C/exit)\n"
         "  --tracefs <path>   tracefs mount (default /sys/kernel/tracing)\n"
-        "  --mode <mode>      kprobe (default) | bpftrace\n"
+        "  --mode <mode>      kprobe (default) | bpftrace | kfd-uprobe\n"
         "                     bpftrace: for WSL2/librocdxg systems without "
         "KFD\n"
         "                     auto-selected when running in WSL2\n"
+        "                     kfd-uprobe: uprobe on hsa_queue_add_write_index\n"
+        "                     in libhsa-runtime64.so — no process_vm_readv,\n"
+        "                     safe on emulated GPUs (rocjitsu/vfio-user)\n"
         "  --librocdxg <path> Path to librocdxg.so.* (bpftrace mode; "
         "auto-detected)\n"
+        "  --libhsa <path>    Path to libhsa-runtime64.so.* (kfd-uprobe mode;"
+        " auto-detected)\n"
         "  --prometheus       Expose metrics via Prometheus HTTP endpoint\n"
         "                     instead of writing trace files\n"
         "                     (requires -DHSA_SNOOP_PROMETHEUS=ON at build "
@@ -127,7 +132,7 @@ int main(int argc, char** argv) {
     uint16_t prometheus_port = 9488;
 #endif
     std::string out, out_dir, tracefs = "/sys/kernel/tracing";
-    std::string mode_str, librocdxg_path, dispatch_log_path;
+    std::string mode_str, librocdxg_path, libhsa_path, dispatch_log_path;
     Format fmt = Format::kPerfetto;
     std::vector<char*> child_cmd;
 
@@ -151,6 +156,8 @@ int main(int argc, char** argv) {
             mode_str = argv[++i];
         else if (a == "--librocdxg" && i + 1 < argc)
             librocdxg_path = argv[++i];
+        else if (a == "--libhsa" && i + 1 < argc)
+            libhsa_path = argv[++i];
         else if (a == "--prometheus")
             prometheus_mode = true;
         else if (a == "--ais-snoop")
@@ -185,16 +192,30 @@ int main(int argc, char** argv) {
     // Determine discovery mode: explicit --mode overrides, otherwise
     // auto-detect.
     DiscoveryMode disc_mode = DiscoveryMode::kKprobe;
-    if (mode_str == "bpftrace") {
+    if (mode_str == "kfd-uprobe") {
+        disc_mode = DiscoveryMode::kKfdUprobe;
+    } else if (mode_str == "bpftrace") {
         disc_mode = DiscoveryMode::kBpftrace;
     } else if (mode_str.empty() && IsWsl2()) {
         disc_mode = DiscoveryMode::kBpftrace;
         fprintf(stderr,
                 "hsa-snoop: WSL2 detected, switching to bpftrace mode\n");
     } else if (!mode_str.empty() && mode_str != "kprobe") {
-        fprintf(stderr, "hsa-snoop: unknown --mode '%s' (kprobe|bpftrace)\n",
+        fprintf(stderr, "hsa-snoop: unknown --mode '%s' (kprobe|bpftrace|kfd-uprobe)\n",
                 mode_str.c_str());
         return 2;
+    }
+
+    // In kfd-uprobe mode, find libhsa-runtime64 if not supplied explicitly.
+    if (disc_mode == DiscoveryMode::kKfdUprobe && libhsa_path.empty()) {
+        libhsa_path = FindLibhsa();
+        if (libhsa_path.empty()) {
+            fprintf(stderr, "hsa-snoop: cannot locate libhsa-runtime64.so; "
+                            "specify --libhsa <path>\n");
+            return 1;
+        }
+        fprintf(stderr, "hsa-snoop: using libhsa-runtime64 at %s\n",
+                libhsa_path.c_str());
     }
 
     // In bpftrace mode, find librocdxg if not supplied explicitly.
@@ -271,7 +292,9 @@ int main(int argc, char** argv) {
     std::unique_ptr<PrometheusExporter> prom_exporter;
     if (prometheus_mode) {
         const std::string disc_label =
-            disc_mode == DiscoveryMode::kBpftrace ? "dxg" : "kprobe";
+            disc_mode == DiscoveryMode::kBpftrace ? "dxg"
+            : disc_mode == DiscoveryMode::kKfdUprobe ? "kfd-uprobe"
+            : "kprobe";
         try {
             prom_exporter = std::make_unique<PrometheusExporter>(
                 prometheus_port, 10.0, disc_label);
@@ -612,7 +635,7 @@ int main(int argc, char** argv) {
     }
 
     int queue_count = 0;
-    Discovery discovery(tracefs, pid_filter, disc_mode, librocdxg_path);
+    Discovery discovery(tracefs, pid_filter, disc_mode, librocdxg_path, libhsa_path);
     auto on_queue = [&](const QueueInfo& q_in) {
         QueueInfo q = q_in;
         if (!q.is_traced())
