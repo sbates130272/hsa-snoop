@@ -198,7 +198,8 @@ bool Discovery::Start(Callback cb) {
 }
 
 void Discovery::Stop() {
-    if (mode_ == DiscoveryMode::kBpftrace || mode_ == DiscoveryMode::kKfdUprobe) {
+    if (mode_ == DiscoveryMode::kBpftrace ||
+        mode_ == DiscoveryMode::kKfdUprobe) {
         if (!running_.exchange(false))
             return;
         // Kill bpftrace. It will exit and close the pipe write-end, causing
@@ -395,7 +396,7 @@ static std::string BuildKfdUprobeScript(const std::string& so_path) {
         //   +16 doorbell_signal (hsa_signal_t = u64 handle)
         //   +24 size (u32) — number of AQL slots
         s << "  $q    = (uint64)arg0;\n";
-        s << "  $ring = *(uint64*)($q + 8);\n";  // base_address
+        s << "  $ring = *(uint64*)($q + 8);\n";   // base_address
         s << "  $slots = *(uint32*)($q + 24);\n"; // size in slots
         // Only emit lines when the queue pointer looks valid.
         s << "  if ($ring == 0) { return; }\n";
@@ -471,7 +472,9 @@ bool Discovery::StartKfdUprobe() {
         fd_set rd;
         FD_ZERO(&rd);
         FD_SET(pipe_fd_, &rd);
-        struct timeval tv{0, 50000};
+        struct timeval tv {
+            0, 50000
+        };
         if (select(pipe_fd_ + 1, &rd, nullptr, nullptr, &tv) > 0) {
             ssize_t n = read(pipe_fd_, &c, 1);
             if (n > 0) {
@@ -506,14 +509,16 @@ void Discovery::RunKfdUprobe() {
     auto get_u64 = [](const std::string& line, const char* key) -> uint64_t {
         std::string needle = std::string(" ") + key + "=";
         size_t p = line.find(needle);
-        if (p == std::string::npos) return 0;
+        if (p == std::string::npos)
+            return 0;
         p += needle.size();
         return strtoull(line.c_str() + p, nullptr, 0);
     };
     auto get_str = [](const std::string& line, const char* key) -> std::string {
         std::string needle = std::string(" ") + key + "=";
         size_t p = line.find(needle);
-        if (p == std::string::npos) return {};
+        if (p == std::string::npos)
+            return {};
         p += needle.size();
         size_t end = line.find(' ', p);
         return line.substr(p, end == std::string::npos ? end : end - p);
@@ -524,37 +529,50 @@ void Discovery::RunKfdUprobe() {
     while (!eof) {
         if (buf.empty()) {
             ssize_t n = read(pipe_fd_, chunk, sizeof(chunk));
-            if (n > 0) buf.append(chunk, n);
-            else if (n == 0) { eof = true; break; }
-            else { if (errno == EINTR) continue; break; }
+            if (n > 0)
+                buf.append(chunk, n);
+            else if (n == 0) {
+                eof = true;
+                break;
+            } else {
+                if (errno == EINTR)
+                    continue;
+                break;
+            }
         }
         size_t nl;
         while ((nl = buf.find('\n')) != std::string::npos) {
             std::string line = buf.substr(0, nl);
             buf.erase(0, nl + 1);
-            if (line.find("DISPATCH ") != 0) continue;
+            if (line.find("DISPATCH ") != 0)
+                continue;
 
-            uint64_t ring  = get_u64(line, "ring");
+            uint64_t ring = get_u64(line, "ring");
             uint32_t slots = static_cast<uint32_t>(get_u64(line, "slots"));
-            if (!ring || !slots) continue;
+            if (!ring || !slots)
+                continue;
 
-            if (!seen.insert(ring).second) continue; // already registered
+            if (!seen.insert(ring).second)
+                continue; // already registered
 
             QueueInfo q{};
-            q.pid       = static_cast<int>(get_u64(line, "pid"));
-            q.comm      = get_str(line, "comm");
+            q.pid = static_cast<int>(get_u64(line, "pid"));
+            q.comm = get_str(line, "comm");
             q.ring_base = ring;
-            q.ring_size = static_cast<uint64_t>(slots) * 64; // AQL packet = 64 B
-            q.wptr_addr = 0; // not available without reading hsa_queue_t internals
+            q.ring_size =
+                static_cast<uint64_t>(slots) * 64; // AQL packet = 64 B
+            q.wptr_addr =
+                0; // not available without reading hsa_queue_t internals
             q.rptr_addr = 0;
-            q.qtype     = 2; // HSA_QUEUE_TYPE_MULTI (AQL compute)
-            q.gpu_id    = 0; // not available from this hook
-            q.uid       = next_uid++;
-            struct timespec ts{};
+            q.qtype = 2;  // HSA_QUEUE_TYPE_MULTI (AQL compute)
+            q.gpu_id = 0; // not available from this hook
+            q.uid = next_uid++;
+            struct timespec ts {};
             clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
             q.create_ts = ts.tv_sec + ts.tv_nsec * 1e-9;
 
-            if (pid_filter_ && q.pid != pid_filter_) continue;
+            if (pid_filter_ && q.pid != pid_filter_)
+                continue;
             cb_(q);
         }
     }

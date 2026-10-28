@@ -14,7 +14,8 @@ enum class DiscoveryMode {
     kKprobe,    // default: kfd_ioctl_create_queue kprobe via tracefs
     kBpftrace,  // WSL2/librocdxg: uprobe on hsaKmtCreateQueueExt via bpftrace
     kKfdUprobe, // KFD/Linux: uprobe on hsa_queue_add_write_index_screlease in
-                // libhsa-runtime64.so — safe on emulated GPUs (no process_vm_readv)
+                // libhsa-runtime64.so — safe on emulated GPUs (no
+                // process_vm_readv)
 };
 
 // Returns true when running inside a WSL2 environment.

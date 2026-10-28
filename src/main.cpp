@@ -201,7 +201,8 @@ int main(int argc, char** argv) {
         fprintf(stderr,
                 "hsa-snoop: WSL2 detected, switching to bpftrace mode\n");
     } else if (!mode_str.empty() && mode_str != "kprobe") {
-        fprintf(stderr, "hsa-snoop: unknown --mode '%s' (kprobe|bpftrace|kfd-uprobe)\n",
+        fprintf(stderr,
+                "hsa-snoop: unknown --mode '%s' (kprobe|bpftrace|kfd-uprobe)\n",
                 mode_str.c_str());
         return 2;
     }
@@ -292,9 +293,9 @@ int main(int argc, char** argv) {
     std::unique_ptr<PrometheusExporter> prom_exporter;
     if (prometheus_mode) {
         const std::string disc_label =
-            disc_mode == DiscoveryMode::kBpftrace ? "dxg"
+            disc_mode == DiscoveryMode::kBpftrace    ? "dxg"
             : disc_mode == DiscoveryMode::kKfdUprobe ? "kfd-uprobe"
-            : "kprobe";
+                                                     : "kprobe";
         try {
             prom_exporter = std::make_unique<PrometheusExporter>(
                 prometheus_port, 10.0, disc_label);
@@ -635,7 +636,8 @@ int main(int argc, char** argv) {
     }
 
     int queue_count = 0;
-    Discovery discovery(tracefs, pid_filter, disc_mode, librocdxg_path, libhsa_path);
+    Discovery discovery(tracefs, pid_filter, disc_mode, librocdxg_path,
+                        libhsa_path);
     auto on_queue = [&](const QueueInfo& q_in) {
         QueueInfo q = q_in;
         if (!q.is_traced())
