@@ -11,8 +11,11 @@
 namespace hsasnoop {
 
 enum class DiscoveryMode {
-    kKprobe,   // default: kfd_ioctl_create_queue kprobe via tracefs
-    kBpftrace, // WSL2/librocdxg: uprobe on hsaKmtCreateQueueExt via bpftrace
+    kKprobe,    // default: kfd_ioctl_create_queue kprobe via tracefs
+    kBpftrace,  // WSL2/librocdxg: uprobe on hsaKmtCreateQueueExt via bpftrace
+    kKfdUprobe, // KFD/Linux: uprobe on hsa_queue_add_write_index_screlease in
+                // libhsa-runtime64.so — safe on emulated GPUs (no
+                // process_vm_readv)
 };
 
 // Returns true when running inside a WSL2 environment.
@@ -21,6 +24,10 @@ bool IsWsl2();
 // Finds the real (non-symlink) path of librocdxg.so installed on the system,
 // or returns empty string if not found.
 std::string FindLibrocdxg();
+
+// Finds the real (non-symlink) path of libhsa-runtime64.so installed on the
+// system, or returns empty string if not found. Used by kKfdUprobe mode.
+std::string FindLibhsa();
 
 class Discovery {
   public:
@@ -31,7 +38,8 @@ class Discovery {
     explicit Discovery(std::string tracefs_root = "/sys/kernel/tracing",
                        int pid_filter = 0,
                        DiscoveryMode mode = DiscoveryMode::kKprobe,
-                       std::string librocdxg_path = "");
+                       std::string librocdxg_path = "",
+                       std::string libhsa_path = "");
     ~Discovery();
 
     // Install the probe and start streaming. cb is invoked for each AQL queue.
@@ -44,14 +52,20 @@ class Discovery {
     bool InstallKprobe();
     void RemoveKprobe();
 
-    // bpftrace path
+    // bpftrace path (WSL2/librocdxg)
     void RunBpftrace();
     bool StartBpftrace();
+
+    // kfd-uprobe path: uprobe on hsa_queue_add_write_index_screlease in
+    // libhsa-runtime64.so — no process_vm_readv, safe on emulated devices
+    void RunKfdUprobe();
+    bool StartKfdUprobe();
 
     std::string tracefs_;
     int pid_filter_;
     DiscoveryMode mode_;
     std::string librocdxg_path_;
+    std::string libhsa_path_;
     std::string probe_name_;
     Callback cb_;
     std::thread thread_;

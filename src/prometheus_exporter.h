@@ -71,6 +71,10 @@ class PrometheusExporter {
     // --xnack-snoop was requested.
     void SetXnackArmed(bool armed);
 
+    // Returns the current /metrics payload as a UTF-8 string, using the same
+    // text format served by the HTTP endpoint.
+    std::string Snapshot() const;
+
     PrometheusExporter(const PrometheusExporter&) = delete;
     PrometheusExporter& operator=(const PrometheusExporter&) = delete;
 

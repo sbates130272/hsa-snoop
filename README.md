@@ -270,10 +270,14 @@ Options:
   --poll-us <n>      Ring poll interval in microseconds (default 20)
   --duration <sec>   Auto-stop after N seconds (0 = until Ctrl-C / child exit)
   --tracefs <path>   tracefs mount (default /sys/kernel/tracing)
-  --mode <mode>      kprobe (default) | bpftrace
-                     bpftrace: for WSL2/librocdxg systems without KFD;
-                     auto-selected when running inside WSL2
+  --mode <mode>      kprobe (default) | bpftrace | kfd-uprobe
+                     bpftrace:   for WSL2/librocdxg systems without KFD;
+                                 auto-selected when running inside WSL2
+                     kfd-uprobe: uprobe on hsa_queue_add_write_index in
+                                 libhsa-runtime64.so; no process_vm_readv,
+                                 safe on emulated GPUs (rocjitsu/vfio-user)
   --librocdxg <path> Path to librocdxg.so.* (bpftrace mode; auto-detected)
+  --libhsa <path>    Path to libhsa-runtime64.so.* (kfd-uprobe mode; auto-detected)
   --prometheus       Expose metrics via Prometheus HTTP endpoint instead of
                      writing trace files (requires -DHSA_SNOOP_PROMETHEUS=ON)
   --prometheus-port <n>
@@ -328,6 +332,32 @@ In bpftrace mode, hsa-snoop forks a `bpftrace` child that attaches a uprobe
 to `hsaKmtCreateQueueExt` in `librocdxg.so`. The library path is
 auto-detected via `/opt/rocm/lib/librocdxg.so`; pass `--librocdxg <path>` to
 override. `bpftrace` must be installed and the process must run as root.
+
+### KFD uprobe mode (emulated GPU / no process_vm_readv)
+
+On systems with emulated GPU devices (e.g. rocjitsu served over vfio-user),
+`kprobe` mode will deadlock GPU dispatch because `process_vm_readv` on the
+vfio-user shared memfd competes with the emulator's memory access. Use
+`kfd-uprobe` mode instead:
+
+```
+sudo ./hsa-snoop --mode kfd-uprobe --all --prometheus
+```
+
+`kfd-uprobe` forks a `bpftrace` child that attaches a uprobe to
+`hsa_queue_add_write_index_screlease` in `libhsa-runtime64.so`. This fires
+on every AQL dispatch without reading ring buffer memory, so it is safe on
+emulated devices. `bpftrace` must be installed and the process must run as
+root.
+
+The libhsa-runtime64 path is auto-detected from `/opt/rocm/lib/`; pass
+`--libhsa <path>` to override.
+
+**Current limitations vs kprobe mode:**
+- `hsa_kernel_launches_total` and `hsa_active_queues` are not populated
+  (wptr/rptr addresses not available from this hook; ring parser cannot run)
+- Kernel names report as address strings rather than demangled symbols
+- `gpu_id` is always 0
 
 ### Prometheus exporter mode
 
@@ -526,7 +556,7 @@ created after the first error.
 src/aql.{h,cpp}                    AQL packet formats (mirrors <hsa/hsa.h>)
 src/sdma.{h,cpp}                   SDMA microcode packet formats + length decode
 src/model.h                        QueueInfo / PacketRecord / SdmaRecord data model
-src/discovery.{h,cpp}              queue discovery: kprobe (native) or bpftrace (WSL2)
+src/discovery.{h,cpp}              queue discovery: kprobe (native), bpftrace (WSL2/librocdxg), kfd-uprobe (emulated GPU)
 src/proc_mem.{h,cpp}               process_vm_readv + pagemap (VA->phys)
 src/ksym.{h,cpp}                   kernel_object -> demangled name via code-object ELFs
 src/parser.{h,cpp}                 per-queue ring poller / AQL + SDMA decoder / timing

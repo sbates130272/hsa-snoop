@@ -1,6 +1,9 @@
 if(NOT DEFINED HSA_SNOOP OR NOT DEFINED GFX_TEST OR NOT DEFINED SCRATCH_DIR)
   message(FATAL_ERROR "hardware test paths were not supplied")
 endif()
+if(NOT DEFINED PROM_SNAPSHOT)
+  set(PROM_SNAPSHOT "")
+endif()
 
 execute_process(
   COMMAND id -u
@@ -41,6 +44,11 @@ set(ORCHESTRATE_SCRIPT "${SCRATCH_DIR}/orchestrate.sh")
 #  hsa-snoop (not a separate process), the parser can read the AQL ring while
 #  the process is alive, ensuring hsa_kernel_launches_total increments before
 #  the scrapes are collected.
+set(SNAPSHOT_ARG "")
+if(NOT PROM_SNAPSHOT STREQUAL "")
+  set(SNAPSHOT_ARG "--prometheus-snapshot '${PROM_SNAPSHOT}'")
+endif()
+
 file(WRITE "${ORCHESTRATE_SCRIPT}"
 "#!/bin/sh
 HSA_SNOOP='${HSA_SNOOP}'
@@ -57,6 +65,7 @@ rm -f \"\$SNOOP_LOG\" \"\$S1\" \"\$S2\" \"\$S3\"
 #    --loops 20 --sleep-ms 250 gives ~5+ seconds of active dispatch time,
 #    enough for 3 or more 1-second scrapes to land while the process is alive.
 \"\$HSA_SNOOP\" --prometheus --prometheus-port ${PROM_PORT} \
+  ${SNAPSHOT_ARG} \
   --poll-us 500 \
   -- \"\$GFX_TEST\" --elements 128 --iters 1 --batch 3 --loops 20 \
                    --sleep-ms 250 \

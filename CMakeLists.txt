@@ -214,6 +214,20 @@ if(HSA_SNOOP_HARDWARE_TESTS)
     LABELS "hardware;gfx"
     TIMEOUT 180)
 
+  # kfd-uprobe mode: verifies GPU does NOT deadlock when kfd-uprobe is active
+  # alongside a gfx workload. Uses process_vm_readv-free queue discovery, which
+  # is required on emulated GPU devices (rocjitsu/vfio-user).
+  add_test(
+    NAME kfd-uprobe-hardware-test
+    COMMAND ${CMAKE_COMMAND}
+      -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
+      -DGFX_TEST=$<TARGET_FILE:gfx-test>
+      -DTRACE_DIR=${CMAKE_CURRENT_BINARY_DIR}/kfd-uprobe-traces
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/kfd_uprobe_hardware_test.cmake)
+  set_tests_properties(kfd-uprobe-hardware-test PROPERTIES
+    LABELS "hardware;gfx;kfd-uprobe"
+    TIMEOUT 120)
+
   # SDMA stress: two streams × 4 MB, validates deeper decode than the basic
   # sdma-hardware-test (more copy_linear events, both H2D and D2D directions).
   add_test(
@@ -238,6 +252,7 @@ if(HSA_SNOOP_HARDWARE_TESTS)
         -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
         -DGFX_TEST=$<TARGET_FILE:gfx-test>
         -DSCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/prom-monotonicity-scratch
+        -DPROM_SNAPSHOT=${CMAKE_CURRENT_BINARY_DIR}/hsa-snoop-prometheus.txt
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/prometheus_monotonicity_hardware_test.cmake)
     set_tests_properties(prometheus-monotonicity-hardware-test PROPERTIES
       LABELS "hardware;gfx;prometheus"
