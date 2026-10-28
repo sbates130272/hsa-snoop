@@ -39,9 +39,9 @@ runs:
           exit 0
         fi
 
-        python3 ci/report/publish-perf.py \
+        python3 hsa-snoop/ci/report/publish-perf.py \
           --prometheus-file "$PROMETHEUS_FILE" \
-          --docs-dir docs \
+          --docs-dir hsa-snoop/docs \
           --runner "$RUNNER_CLASS"
 
         bail() { echo "::warning::$1; trends not published"; exit 0; }
@@ -59,25 +59,25 @@ runs:
 
         # Seed the working copy from the published data so each run appends
         # to the real record, not to the empty placeholder committed to main.
-        mkdir -p docs/perf-history
-        cp "$pages/perf/history.jsonl" docs/perf-history/history.jsonl 2>/dev/null || true
-        cp "$pages"/perf/badge-*.json  docs/perf-history/ 2>/dev/null || true
+        mkdir -p hsa-snoop/docs/perf-history
+        cp "$pages/perf/history.jsonl" hsa-snoop/docs/perf-history/history.jsonl 2>/dev/null || true
+        cp "$pages"/perf/badge-*.json  hsa-snoop/docs/perf-history/ 2>/dev/null || true
 
         # Re-run with the seeded history so the HTML reflects all prior runs;
         # also render the full Prometheus snapshot for prom/
-        python3 ci/report/publish-perf.py \
+        python3 hsa-snoop/ci/report/publish-perf.py \
           --prometheus-file "$PROMETHEUS_FILE" \
-          --docs-dir docs \
+          --docs-dir hsa-snoop/docs \
           --runner "$RUNNER_CLASS" \
-          --snapshot-output docs/prom-snapshot/index.html
+          --snapshot-output hsa-snoop/docs/prom-snapshot/index.html
 
         pushed=""
         for attempt in 1 2 3; do
           mkdir -p "$pages/perf" "$pages/prom"
-          cp docs/perf-history/history.jsonl "$pages/perf/" || bail "could not stage history"
-          cp docs/perf-history/badge-*.json  "$pages/perf/" 2>/dev/null || true
-          cp docs/perf-history/index.html    "$pages/perf/" || bail "could not stage perf index"
-          cp docs/prom-snapshot/index.html   "$pages/prom/" 2>/dev/null \
+          cp hsa-snoop/docs/perf-history/history.jsonl "$pages/perf/" || bail "could not stage history"
+          cp hsa-snoop/docs/perf-history/badge-*.json  "$pages/perf/" 2>/dev/null || true
+          cp hsa-snoop/docs/perf-history/index.html    "$pages/perf/" || bail "could not stage perf index"
+          cp hsa-snoop/docs/prom-snapshot/index.html   "$pages/prom/" 2>/dev/null \
             || echo "::notice::no snapshot page to stage (prometheus file may be empty)"
 
           git -C "$pages" add perf prom || bail "could not stage perf/ prom/"
