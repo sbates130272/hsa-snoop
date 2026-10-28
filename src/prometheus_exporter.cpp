@@ -16,6 +16,7 @@
 #include <prometheus/counter.h>
 #include <prometheus/gauge.h>
 #include <prometheus/histogram.h>
+#include <prometheus/text_serializer.h>
 
 namespace hsasnoop {
 
@@ -912,6 +913,13 @@ void PrometheusExporter::SetXnackArmed(bool armed) {
     if (!xnack_snoop_armed_gauge_)
         xnack_snoop_armed_gauge_ = &xnack_snoop_armed_family_.Add({});
     xnack_snoop_armed_gauge_->Set(armed ? 1.0 : 0.0);
+}
+
+std::string PrometheusExporter::Snapshot() const {
+    prometheus::TextSerializer ser;
+    std::ostringstream oss;
+    ser.Serialize(oss, registry_->Collect());
+    return oss.str();
 }
 
 } // namespace hsasnoop

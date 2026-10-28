@@ -252,6 +252,7 @@ if(HSA_SNOOP_HARDWARE_TESTS)
         -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
         -DGFX_TEST=$<TARGET_FILE:gfx-test>
         -DSCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/prom-monotonicity-scratch
+        -DPROM_SNAPSHOT=${CMAKE_CURRENT_BINARY_DIR}/hsa-snoop-prometheus.txt
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/prometheus_monotonicity_hardware_test.cmake)
     set_tests_properties(prometheus-monotonicity-hardware-test PROPERTIES
       LABELS "hardware;gfx;prometheus"

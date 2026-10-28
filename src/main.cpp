@@ -77,6 +77,9 @@ void Usage(const char* p) {
         "  --prometheus-port <n>\n"
         "                     Port for Prometheus /metrics endpoint "
         "(default 9488)\n"
+        "  --prometheus-snapshot <path>\n"
+        "                     Write a final /metrics snapshot to <path> on "
+        "exit\n"
         "  --ais-snoop        Enable AMD Infinity Storage (AIS) IO snooping\n"
         "                     via kprobe on kfd_ioctl_ais\n"
         "                     AIS events are included in the trace or "
@@ -130,6 +133,7 @@ int main(int argc, char** argv) {
     bool mem_mode = false;
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
     uint16_t prometheus_port = 9488;
+    std::string prometheus_snapshot_path;
 #endif
     std::string out, out_dir, tracefs = "/sys/kernel/tracing";
     std::string mode_str, librocdxg_path, libhsa_path, dispatch_log_path;
@@ -171,6 +175,8 @@ int main(int argc, char** argv) {
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
         else if (a == "--prometheus-port" && i + 1 < argc)
             prometheus_port = static_cast<uint16_t>(atoi(argv[++i]));
+        else if (a == "--prometheus-snapshot" && i + 1 < argc)
+            prometheus_snapshot_path = argv[++i];
 #endif
         else if (a == "--format" && i + 1 < argc)
             fmt = std::string(argv[++i]) == "json" ? Format::kJson
@@ -749,6 +755,20 @@ int main(int argc, char** argv) {
 
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
     if (prometheus_mode) {
+        if (!prometheus_snapshot_path.empty() && prom_exporter) {
+            std::string snap = prom_exporter->Snapshot();
+            FILE* f = fopen(prometheus_snapshot_path.c_str(), "w");
+            if (f) {
+                fwrite(snap.data(), 1, snap.size(), f);
+                fclose(f);
+                fprintf(stderr, "hsa-snoop: Prometheus snapshot → %s\n",
+                        prometheus_snapshot_path.c_str());
+            } else {
+                fprintf(stderr,
+                        "hsa-snoop: failed to write snapshot to %s: %s\n",
+                        prometheus_snapshot_path.c_str(), strerror(errno));
+            }
+        }
         fprintf(stderr,
                 "hsa-snoop: %d queue(s) observed. "
                 "Prometheus mode — no trace files written.\n",
