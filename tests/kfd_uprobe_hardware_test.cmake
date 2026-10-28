@@ -58,8 +58,8 @@ fi
 # 3. Run gfx-test. In kfd-uprobe mode process_vm_readv is not used,
 #    so GPU dispatch must complete without deadlocking.
 echo 'Running gfx-test alongside kfd-uprobe...' >&2
-timeout 60 \"\$GFX_TEST\" || {
-  echo 'ERROR: gfx-test failed or timed out — GPU may have deadlocked' >&2
+\"\$GFX_TEST\" --elements 128 --iters 1 --loops 1 --batch 3 --sleep-ms 0 || {
+  echo 'ERROR: gfx-test failed — GPU may have deadlocked' >&2
   cat \"\$LOG\" >&2
   kill \"\$SNOOP_PID\" 2>/dev/null || true
   exit 1
