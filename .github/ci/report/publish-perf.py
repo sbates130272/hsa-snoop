@@ -40,6 +40,7 @@ from pathlib import Path
 METRICS = [
     {
         "key": "kernel_launches",
+        "badge_label": "Kernel Dispatches",
         "metric": "hsa_kernel_launches_total",
         "label": None,
         "unit": "dispatches",
@@ -48,6 +49,7 @@ METRICS = [
     },
     {
         "key": "sdma_copies",
+        "badge_label": "SDMA Copies",
         "metric": "hsa_sdma_copies_total",
         "label": None,
         "unit": "copies",
@@ -56,6 +58,7 @@ METRICS = [
     },
     {
         "key": "ais_rx_bytes",
+        "badge_label": "AIS RX Bytes",
         "metric": "ais_rx_bytes_total",
         "label": None,
         "unit": "bytes",
@@ -64,6 +67,7 @@ METRICS = [
     },
     {
         "key": "ais_tx_bytes",
+        "badge_label": "AIS TX Bytes",
         "metric": "ais_tx_bytes_total",
         "label": None,
         "unit": "bytes",
@@ -132,11 +136,12 @@ def write_badges(history: list[dict], out_dir: Path) -> None:
     for m in METRICS:
         badge_path = out_dir / f"badge-{m['key']}.json"
         val = latest_metrics.get(m["key"])
+        bl = m.get("badge_label", m["key"])
         if val is None:
-            badge_path.write_text(json.dumps(no_data_badge_json(m["key"])))
+            badge_path.write_text(json.dumps(no_data_badge_json(bl)))
             continue
         badge_path.write_text(json.dumps(
-            badge_json(m["key"], val, m["unit"], m["decimals"])))
+            badge_json(bl, val, m["unit"], m["decimals"])))
 
 
 def render_snapshot_html(prom_text: str, out_path: Path, sha: str, run_id: str, runner: str) -> None:

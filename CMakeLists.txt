@@ -201,6 +201,18 @@ if(HSA_SNOOP_HARDWARE_TESTS)
     LABELS "hardware;ais"
     TIMEOUT 120)
 
+  add_test(
+    NAME ais-write-hardware-test
+    COMMAND ${CMAKE_COMMAND}
+      -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
+      -DAIS_TEST=$<TARGET_FILE:ais-test>
+      -DTRACE_OUTPUT=${CMAKE_CURRENT_BINARY_DIR}/ais-write-hardware-test.json
+      -DAIS_TARGET=${_ais_target_arg}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/ais_write_hardware_test.cmake)
+  set_tests_properties(ais-write-hardware-test PROPERTIES
+    LABELS "hardware;ais"
+    TIMEOUT 120)
+
   # --all mode: launches two concurrent gfx-test processes and verifies that
   # hsa-snoop produces one trace file per process with kernel events in each.
   add_test(
@@ -257,6 +269,7 @@ if(HSA_SNOOP_HARDWARE_TESTS)
         -DGFX_TEST=$<TARGET_FILE:gfx-test>
         -DSDMA_TRACE=${CMAKE_CURRENT_BINARY_DIR}/sdma-hardware-test.json
         -DAIS_TRACE=${CMAKE_CURRENT_BINARY_DIR}/ais-hardware-test.json
+        -DAIS_WRITE_TRACE=${CMAKE_CURRENT_BINARY_DIR}/ais-write-hardware-test.json
         -DSCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/prom-monotonicity-scratch
         -DPROM_SNAPSHOT=${CMAKE_CURRENT_BINARY_DIR}/hsa-snoop-prometheus.txt
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/prometheus_monotonicity_hardware_test.cmake)
