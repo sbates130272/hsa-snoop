@@ -63,7 +63,11 @@ jobs:
               --exclude 'perf-history/' \
               --exclude 'prom/' \
               --exclude 'prom-snapshot/' \
+              --exclude 'website/' \
               docs/ ../gh-pages/
+            # Promote docs/website/ contents to gh-pages root so that
+            # index.html and site.css are served at the site root.
+            rsync -a docs/website/ ../gh-pages/
 
             touch ../gh-pages/.nojekyll
 

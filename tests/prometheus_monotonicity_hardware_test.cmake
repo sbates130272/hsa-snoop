@@ -246,10 +246,12 @@ if ais_trace:
     try:
         data = json.loads(pathlib.Path(ais_trace).read_text())
         events = data if isinstance(data, list) else data.get('traceEvents', [])
-        rx = sum(e.get('args', {}).get('bytes', 0)
-                 for e in events if e.get('name') == 'ais/read')
-        tx = sum(e.get('args', {}).get('bytes', 0)
-                 for e in events if e.get('name') == 'ais/write')
+        # AIS events: name is 'ais/read [pcie_id]' or 'ais/write [pcie_id]'.
+        # Byte count is in args['size_copied'], not args['bytes'].
+        rx = sum(e.get('args', {}).get('size_copied', 0)
+                 for e in events if e.get('name', '').startswith('ais/read'))
+        tx = sum(e.get('args', {}).get('size_copied', 0)
+                 for e in events if e.get('name', '').startswith('ais/write'))
         if rx > 0:
             lines.append(f'ais_rx_bytes_total {rx}')
             print(f'synthesised ais_rx_bytes_total={rx} from ais trace')
