@@ -15,6 +15,10 @@ endif()
 if(NOT DEFINED AIS_TRACE)
   set(AIS_TRACE "")
 endif()
+# Optional: trace from ais-write-hardware-test (VRAM->file) for TX bytes.
+if(NOT DEFINED AIS_WRITE_TRACE)
+  set(AIS_WRITE_TRACE "")
+endif()
 
 execute_process(
   COMMAND id -u
@@ -226,8 +230,23 @@ if(NOT PROM_SNAPSHOT STREQUAL "")
 import json, pathlib, sys
 
 snapshot = pathlib.Path(sys.argv[1])
-sdma_trace = sys.argv[2] if len(sys.argv) > 2 else ''
-ais_trace  = sys.argv[3] if len(sys.argv) > 3 else ''
+sdma_trace      = sys.argv[2] if len(sys.argv) > 2 else ''
+ais_trace       = sys.argv[3] if len(sys.argv) > 3 else ''
+ais_write_trace = sys.argv[4] if len(sys.argv) > 4 else ''
+
+def ais_bytes(trace_path, direction):
+    if not trace_path:
+        return 0
+    try:
+        data = json.loads(pathlib.Path(trace_path).read_text())
+        events = data if isinstance(data, list) else data.get('traceEvents', [])
+        # AIS event names: 'ais/read [pcie_id]' or 'ais/write [pcie_id]'.
+        # Byte count is in args['size_copied'].
+        return sum(e.get('args', {}).get('size_copied', 0)
+                   for e in events if e.get('name', '').startswith(f'ais/{direction}'))
+    except Exception as ex:
+        print(f'warning: could not parse ais trace {trace_path}: {ex}', file=sys.stderr)
+        return 0
 
 lines = []
 
@@ -242,24 +261,17 @@ if sdma_trace:
     except Exception as e:
         print(f'warning: could not parse sdma trace: {e}', file=sys.stderr)
 
-if ais_trace:
-    try:
-        data = json.loads(pathlib.Path(ais_trace).read_text())
-        events = data if isinstance(data, list) else data.get('traceEvents', [])
-        # AIS events: name is 'ais/read [pcie_id]' or 'ais/write [pcie_id]'.
-        # Byte count is in args['size_copied'], not args['bytes'].
-        rx = sum(e.get('args', {}).get('size_copied', 0)
-                 for e in events if e.get('name', '').startswith('ais/read'))
-        tx = sum(e.get('args', {}).get('size_copied', 0)
-                 for e in events if e.get('name', '').startswith('ais/write'))
-        if rx > 0:
-            lines.append(f'ais_rx_bytes_total {rx}')
-            print(f'synthesised ais_rx_bytes_total={rx} from ais trace')
-        if tx > 0:
-            lines.append(f'ais_tx_bytes_total {tx}')
-            print(f'synthesised ais_tx_bytes_total={tx} from ais trace')
-    except Exception as e:
-        print(f'warning: could not parse ais trace: {e}', file=sys.stderr)
+rx = ais_bytes(ais_trace, 'read')
+# TX bytes come from the dedicated write-direction trace; fall back to the
+# read trace in case it also captured write events.
+tx = ais_bytes(ais_write_trace, 'write') or ais_bytes(ais_trace, 'write')
+
+if rx > 0:
+    lines.append(f'ais_rx_bytes_total {rx}')
+    print(f'synthesised ais_rx_bytes_total={rx} from ais trace')
+if tx > 0:
+    lines.append(f'ais_tx_bytes_total {tx}')
+    print(f'synthesised ais_tx_bytes_total={tx} from ais write trace')
 
 if lines:
     with open(snapshot, 'a') as f:
@@ -271,6 +283,7 @@ if lines:
       "${PROM_SNAPSHOT}"
       "${SDMA_TRACE}"
       "${AIS_TRACE}"
+      "${AIS_WRITE_TRACE}"
     RESULT_VARIABLE synth_result
     OUTPUT_VARIABLE synth_stdout
     ERROR_VARIABLE synth_stderr)
