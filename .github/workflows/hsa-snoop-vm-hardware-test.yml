@@ -11,7 +11,7 @@ on:
       - '**.h'
       - '**.hip'
       - 'CMakeLists.txt'
-      - 'examples/**'
+      - 'deploy/examples/**'
       - 'src/**'
       - 'tests/**'
       - '.github/workflows/hsa-snoop-vm-hardware-test.yml'
@@ -23,7 +23,7 @@ on:
       - '**.h'
       - '**.hip'
       - 'CMakeLists.txt'
-      - 'examples/**'
+      - 'deploy/examples/**'
       - 'src/**'
       - 'tests/**'
       - '.github/workflows/hsa-snoop-vm-hardware-test.yml'
@@ -373,7 +373,7 @@ jobs:
         scp -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -P 2222 "$VM_USERNAME"@qemu:/tmp/hsa-snoop/build/hsa-snoop-prometheus.txt \
           ./artifacts/prometheus.txt 2>/dev/null || true
-        test -s ./artifacts/prometheus.txt || echo "No Prometheus snapshot (gfx-hardware-test not wired to --prometheus yet)" >&2
+        test -s ./artifacts/prometheus.txt || echo "::warning::Prometheus snapshot not collected — prometheus-monotonicity-hardware-test may have been skipped or failed" >&2
 
     - name: Publish performance trends to gh-pages
       if: >-

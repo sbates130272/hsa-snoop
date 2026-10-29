@@ -11,9 +11,9 @@ on:
       - '**.h'
       - '**.hip'
       - 'CMakeLists.txt'
-      - 'examples/**'
+      - 'deploy/examples/**'
       - 'src/**'
-      - 'systemd/**'
+      - 'deploy/systemd/**'
       - '.github/workflows/hsa-snoop-build-check.yml'
 
 permissions:

@@ -113,7 +113,7 @@ endif()
 
 if(HSA_SNOOP_PROMETHEUS)
   set(HSA_SNOOP_EXECUTABLE "${CMAKE_INSTALL_FULL_BINDIR}/hsa-snoop")
-  configure_file(systemd/hsa-snoop-prometheus.service
+  configure_file(deploy/systemd/hsa-snoop-prometheus.service
                  "${CMAKE_CURRENT_BINARY_DIR}/hsa-snoop-prometheus.service"
                  @ONLY)
   target_compile_definitions(hsa-snoop PRIVATE HSA_SNOOP_PROMETHEUS_ENABLED)
@@ -127,27 +127,27 @@ if(HSA_SNOOP_PROMETHEUS)
           DESTINATION lib/systemd/system)
   # Install the config template to share/hsa-snoop/; postinst copies it to
   # /etc/default/hsa-snoop on first install with auto-detected UID/GID values.
-  install(FILES systemd/hsa-snoop.conf
+  install(FILES deploy/systemd/hsa-snoop.conf
           DESTINATION ${CMAKE_INSTALL_DATADIR}/hsa-snoop)
   install(FILES debian/hsa-snoop-prometheus.logrotate
           DESTINATION ${CMAKE_INSTALL_FULL_SYSCONFDIR}/logrotate.d
           RENAME hsa-snoop-prometheus)
 endif()
-install(FILES grafana/hsa-snoop-dashboard.json
+install(FILES deploy/grafana/hsa-snoop-dashboard.json
         DESTINATION ${CMAKE_INSTALL_DATADIR}/hsa-snoop/grafana)
 
 # ais-test uses raw KFD ioctls only — no HIP runtime dependency.
-add_executable(ais-test examples/ais-test.hip)
-set_source_files_properties(examples/ais-test.hip PROPERTIES LANGUAGE CXX)
-target_include_directories(ais-test PRIVATE examples)
+add_executable(ais-test deploy/examples/ais-test.hip)
+set_source_files_properties(deploy/examples/ais-test.hip PROPERTIES LANGUAGE CXX)
+target_include_directories(ais-test PRIVATE deploy/examples)
 
 list(APPEND CMAKE_PREFIX_PATH /opt/rocm)
 find_package(hip QUIET)
 if(hip_FOUND)
-  message(STATUS "ROCm HIP found — building examples/")
-  add_subdirectory(examples)
+  message(STATUS "ROCm HIP found — building deploy/examples/")
+  add_subdirectory(deploy/examples)
 else()
-  message(STATUS "ROCm HIP not found — skipping HIP examples (gfx-test, sdma-test)")
+  message(STATUS "ROCm HIP not found — skipping HIP examples (gfx-test, sdma-test) in deploy/examples/")
 endif()
 
 if(HSA_SNOOP_HARDWARE_TESTS)
@@ -242,20 +242,25 @@ if(HSA_SNOOP_HARDWARE_TESTS)
     LABELS "hardware;sdma"
     TIMEOUT 90)
 
-  # Prometheus monotonicity: scrapes /metrics five times during a 30-second
-  # run and asserts that hsa_kernel_launches_total never decreases.
-  # Requires --prometheus support in hsa-snoop.
+  # Prometheus monotonicity + snapshot: runs gfx-test, sdma-test, and ais-test
+  # sequentially under one hsa-snoop --prometheus session.  Asserts that
+  # hsa_kernel_launches_total is monotonically increasing during the gfx-test
+  # window, and that sdma_copies and ais_*_bytes are non-zero in the final
+  # snapshot.  Requires --prometheus support in hsa-snoop.
   if(HSA_SNOOP_PROMETHEUS)
     add_test(
       NAME prometheus-monotonicity-hardware-test
       COMMAND ${CMAKE_COMMAND}
         -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
         -DGFX_TEST=$<TARGET_FILE:gfx-test>
+        -DSDMA_TEST=$<TARGET_FILE:sdma-test>
+        -DAIS_TEST=$<TARGET_FILE:ais-test>
+        -DAIS_TARGET=/mnt/nvme/ais-test.bin
         -DSCRATCH_DIR=${CMAKE_CURRENT_BINARY_DIR}/prom-monotonicity-scratch
         -DPROM_SNAPSHOT=${CMAKE_CURRENT_BINARY_DIR}/hsa-snoop-prometheus.txt
         -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/prometheus_monotonicity_hardware_test.cmake)
     set_tests_properties(prometheus-monotonicity-hardware-test PROPERTIES
-      LABELS "hardware;gfx;prometheus"
-      TIMEOUT 120)
+      LABELS "hardware;gfx;sdma;ais;prometheus"
+      TIMEOUT 180)
   endif()
 endif()

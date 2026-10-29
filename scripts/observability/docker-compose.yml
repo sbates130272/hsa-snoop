@@ -87,7 +87,7 @@ services:
       GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 1s
     volumes:
       - ./provisioning:/etc/grafana/provisioning:ro
-      # Staged by stack.sh, not grafana/ directly: the checked-in dashboard is a
+      # Staged by stack.sh, not deploy/grafana/ directly: the checked-in dashboard is a
       # grafana.com export whose ${DS_PROMETHEUS} placeholders file provisioning
       # cannot resolve.
       - ${HSA_SNOOP_DASHBOARDS}:/var/lib/grafana-dashboards:ro

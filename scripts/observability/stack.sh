@@ -4,7 +4,7 @@
 # hsa-snoop data without holding a GPU allocation.
 #
 #   scripts/observability/stack.sh up <results-dir|capture-dir>
-#   scripts/observability/stack.sh reload           # re-provision grafana/*.json only
+#   scripts/observability/stack.sh reload           # re-provision deploy/grafana/*.json only
 #   scripts/observability/stack.sh down
 #   scripts/observability/stack.sh status
 #   scripts/observability/stack.sh logs [service]
@@ -121,7 +121,7 @@ stage_dashboards() {
     # stack is restarted, which defeats the point of `reload`.
     mkdir -p "$dest"
     rm -f "$dest"/*.json
-    python3 - "$REPO_ROOT/grafana" "$dest" <<'PY'
+    python3 - "$REPO_ROOT/deploy/grafana" "$dest" <<'PY'
 import json, pathlib, sys
 
 src, dest = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
@@ -253,7 +253,7 @@ cmd_up() {
     [[ -n $span ]] && log "prometheus sees hsa_snoop_up: $(echo "$span" | head -c 200)"
 }
 
-# Restage grafana/*.json into the running stack without touching Prometheus or
+# Restage deploy/grafana/*.json into the running stack without touching Prometheus or
 # re-ingesting Loki. This is the inner loop of dashboard work: a full `up` costs
 # a Loki re-ingest and a TSDB recopy for a change to one JSON file.
 cmd_reload() {

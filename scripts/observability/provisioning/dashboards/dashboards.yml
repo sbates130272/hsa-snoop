@@ -6,7 +6,7 @@ providers:
     folder: hsa-snoop
     type: file
     # false: the point of this stack is to edit the dashboard in the UI and
-    # export the result back to grafana/. allowUiUpdates=false would make every
+    # export the result back to deploy/grafana/. allowUiUpdates=false would make every
     # panel read-only.
     disableDeletion: false
     allowUiUpdates: true

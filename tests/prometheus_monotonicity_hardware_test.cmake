@@ -4,6 +4,15 @@ endif()
 if(NOT DEFINED PROM_SNAPSHOT)
   set(PROM_SNAPSHOT "")
 endif()
+if(NOT DEFINED SDMA_TEST)
+  set(SDMA_TEST "")
+endif()
+if(NOT DEFINED AIS_TEST)
+  set(AIS_TEST "")
+endif()
+if(NOT DEFINED AIS_TARGET)
+  set(AIS_TARGET "")
+endif()
 
 execute_process(
   COMMAND id -u
@@ -24,6 +33,15 @@ if(NOT curl_result EQUAL 0)
   message(FATAL_ERROR "curl is required for prometheus-monotonicity-hardware-test")
 endif()
 
+# Hard-fail if AIS is requested but the NVMe target file is missing.
+# The CI VM always has an emulated NVMe; absence indicates a setup regression.
+if(NOT AIS_TEST STREQUAL "" AND NOT AIS_TARGET STREQUAL "")
+  if(NOT EXISTS "${AIS_TARGET}")
+    message(FATAL_ERROR
+      "AIS_TARGET '${AIS_TARGET}' not found — NVMe setup must succeed before this test runs")
+  endif()
+endif()
+
 file(MAKE_DIRECTORY "${SCRATCH_DIR}")
 
 set(PROM_PORT "9489")
@@ -33,26 +51,91 @@ set(SCRAPE1 "${SCRATCH_DIR}/scrape_1.txt")
 set(SCRAPE2 "${SCRATCH_DIR}/scrape_2.txt")
 set(SCRAPE3 "${SCRATCH_DIR}/scrape_3.txt")
 set(ORCHESTRATE_SCRIPT "${SCRATCH_DIR}/orchestrate.sh")
+set(WORKLOAD_SCRIPT "${SCRATCH_DIR}/workload.sh")
+
+# Build the --ais-snoop flag conditionally.
+set(AIS_SNOOP_ARG "")
+if(NOT AIS_TEST STREQUAL "")
+  set(AIS_SNOOP_ARG "--ais-snoop")
+endif()
 
 # Strategy:
-#  Run hsa-snoop --prometheus wrapping a long-running gfx-test workload (many
-#  iterations / loops so it stays alive for several seconds).  Concurrently
-#  poll /metrics every second and save up to 3 non-empty scrapes taken while
-#  gfx-test is still running.  hsa-snoop exits naturally when gfx-test ends.
+#  Run hsa-snoop --prometheus wrapping a workload sequence:
+#    1. gfx-test (long-running, for monotonicity scrapes)
+#    2. sdma-test (if SDMA_TEST supplied)
+#    3. ais-test  (if AIS_TEST / AIS_TARGET supplied)
+#  hsa-snoop exits naturally when the workload wrapper exits.
 #
-#  This avoids the eviction-before-scrape race: because gfx-test is a child of
-#  hsa-snoop (not a separate process), the parser can read the AQL ring while
-#  the process is alive, ensuring hsa_kernel_launches_total increments before
-#  the scrapes are collected.
+#  Scrapes are collected during the gfx-test portion to verify
+#  hsa_kernel_launches_total is monotonically increasing.
+#  The snapshot written at exit captures the full combined totals,
+#  which are then checked for non-zero SDMA and AIS counts.
 set(SNAPSHOT_ARG "")
 if(NOT PROM_SNAPSHOT STREQUAL "")
   set(SNAPSHOT_ARG "--prometheus-snapshot '${PROM_SNAPSHOT}'")
 endif()
 
+# Build the sequential workload script.
+set(workload_content
+"#!/bin/sh
+set -e
+GFX_TEST='${GFX_TEST}'
+\"$GFX_TEST\" --elements 128 --iters 1 --batch 3 --loops 20 --sleep-ms 250
+")
+if(NOT SDMA_TEST STREQUAL "")
+  string(APPEND workload_content
+"SDMA_TEST='${SDMA_TEST}'
+\"$SDMA_TEST\" --streams 1 --buf-mb 1 --iters 20 --report 0
+")
+endif()
+if(NOT AIS_TEST STREQUAL "" AND NOT AIS_TARGET STREQUAL "")
+  string(APPEND workload_content
+"AIS_TEST='${AIS_TEST}'
+\"$AIS_TEST\" --iters 10 --duration 10 '${AIS_TARGET}'
+")
+endif()
+file(WRITE "${WORKLOAD_SCRIPT}" "${workload_content}")
+execute_process(COMMAND chmod +x "${WORKLOAD_SCRIPT}")
+
+# Embed the post-test snapshot verification as a shell fragment that
+# the orchestrate script runs after hsa-snoop exits.
+set(VERIFY_SDMA "")
+if(NOT SDMA_TEST STREQUAL "")
+  set(VERIFY_SDMA "
+# Verify sdma_copies is non-zero in the snapshot.
+if [ -f '${PROM_SNAPSHOT}' ]; then
+  sdma_val=\$(grep -m1 '^hsa_sdma_copies_total ' '${PROM_SNAPSHOT}' | awk '{print \$2}' || echo 0)
+  sdma_int=\${sdma_val%%.*}
+  if [ -z \"\$sdma_int\" ] || [ \"\$sdma_int\" -eq 0 ] 2>/dev/null; then
+    echo 'ERROR: hsa_sdma_copies_total is 0 or absent in snapshot' >&2
+    exit 1
+  fi
+  echo \"hsa_sdma_copies_total=\$sdma_val (ok)\"
+fi
+")
+endif()
+set(VERIFY_AIS "")
+if(NOT AIS_TEST STREQUAL "")
+  set(VERIFY_AIS "
+# Verify ais bytes are non-zero in the snapshot.
+if [ -f '${PROM_SNAPSHOT}' ]; then
+  rx_val=\$(grep -m1 '^ais_rx_bytes_total ' '${PROM_SNAPSHOT}' | awk '{print \$2}' || echo 0)
+  tx_val=\$(grep -m1 '^ais_tx_bytes_total ' '${PROM_SNAPSHOT}' | awk '{print \$2}' || echo 0)
+  rx_int=\${rx_val%%.*}; tx_int=\${tx_val%%.*}
+  if { [ -z \"\$rx_int\" ] || [ \"\$rx_int\" -eq 0 ] 2>/dev/null; } &&
+     { [ -z \"\$tx_int\" ] || [ \"\$tx_int\" -eq 0 ] 2>/dev/null; }; then
+    echo 'ERROR: both ais_rx_bytes_total and ais_tx_bytes_total are 0 or absent in snapshot' >&2
+    exit 1
+  fi
+  echo \"ais_rx_bytes_total=\$rx_val ais_tx_bytes_total=\$tx_val (ok)\"
+fi
+")
+endif()
+
 file(WRITE "${ORCHESTRATE_SCRIPT}"
 "#!/bin/sh
 HSA_SNOOP='${HSA_SNOOP}'
-GFX_TEST='${GFX_TEST}'
+WORKLOAD='${WORKLOAD_SCRIPT}'
 SNOOP_LOG='${SNOOP_LOG}'
 PROM_URL='${PROM_URL}'
 S1='${SCRAPE1}'
@@ -61,14 +144,14 @@ S3='${SCRAPE3}'
 
 rm -f \"\$SNOOP_LOG\" \"\$S1\" \"\$S2\" \"\$S3\"
 
-# 1. Start hsa-snoop wrapping a gfx-test workload long enough for scrapes.
-#    --loops 20 --sleep-ms 250 gives ~5+ seconds of active dispatch time,
-#    enough for 3 or more 1-second scrapes to land while the process is alive.
+# 1. Start hsa-snoop wrapping the sequential workload.
+#    gfx-test runs first with --loops 20 --sleep-ms 250 (~5 s), giving time
+#    to collect monotonicity scrapes before sdma-test and ais-test run.
 \"\$HSA_SNOOP\" --prometheus --prometheus-port ${PROM_PORT} \
   ${SNAPSHOT_ARG} \
+  ${AIS_SNOOP_ARG} \
   --poll-us 500 \
-  -- \"\$GFX_TEST\" --elements 128 --iters 1 --batch 3 --loops 20 \
-                   --sleep-ms 250 \
+  -- \"\$WORKLOAD\" \
   > \"\$SNOOP_LOG\" 2>&1 &
 SNOOP_PID=\$!
 
@@ -86,11 +169,10 @@ curl -sf \"\$PROM_URL\" -o /dev/null 2>/dev/null || {
   exit 1
 }
 
-# 3. Collect up to 3 scrapes while hsa-snoop is running; one per second.
+# 3. Collect up to 3 scrapes during the gfx-test window.
 SCRAPED=0
 for _i in 1 2 3 4 5 6 7 8 9 10; do
   sleep 1
-  # Stop collecting once hsa-snoop exits (gfx-test done).
   kill -0 \"\$SNOOP_PID\" 2>/dev/null || break
   _out=''
   if [ \"\$SCRAPED\" -eq 0 ]; then _out=\"\$S1\"; fi
@@ -102,7 +184,12 @@ for _i in 1 2 3 4 5 6 7 8 9 10; do
   [ \"\$SCRAPED\" -ge 3 ] && break
 done
 
+# 4. Wait for all workloads to finish.
 wait \$SNOOP_PID 2>/dev/null || true
+
+# 5. Verify SDMA and AIS counts in the snapshot.
+${VERIFY_SDMA}
+${VERIFY_AIS}
 ")
 execute_process(COMMAND chmod +x "${ORCHESTRATE_SCRIPT}")
 
@@ -111,7 +198,7 @@ execute_process(
   RESULT_VARIABLE orch_result
   OUTPUT_VARIABLE orch_stdout
   ERROR_VARIABLE orch_stderr
-  TIMEOUT 90)
+  TIMEOUT 120)
 
 if(NOT orch_result EQUAL 0)
   if(EXISTS "${SNOOP_LOG}")
@@ -204,6 +291,14 @@ if(NOT up_found)
   message(FATAL_ERROR "hsa_snoop_up was never 1 in any scrape")
 endif()
 
+set(extra_info "")
+if(NOT SDMA_TEST STREQUAL "")
+  string(APPEND extra_info " sdma-test=yes")
+endif()
+if(NOT AIS_TEST STREQUAL "")
+  string(APPEND extra_info " ais-test=yes")
+endif()
+
 message(STATUS
   "prometheus-monotonicity-hardware-test: ${value_count} scrape(s), "
-  "final hsa_kernel_launches_total=${final_val} (monotonic)")
+  "final hsa_kernel_launches_total=${final_val} (monotonic)${extra_info}")

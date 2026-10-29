@@ -11,6 +11,9 @@
 [![SDMA copies](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-sdma_copies.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)
 [![AIS RX bytes](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_rx_bytes.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)
 [![AIS TX bytes](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_tx_bytes.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)
+[![grafana-screenshot](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-grafana-screenshot.yml/badge.svg?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-grafana-screenshot.yml)
+[![Grafana Dashboard](https://img.shields.io/badge/Grafana-Dashboard-F46800?logo=grafana)](https://github.com/sbates130272/hsa-snoop/blob/main/deploy/grafana/hsa-snoop-dashboard.json)
+[![Perfetto Tracing](https://img.shields.io/badge/Perfetto-Traces-blueviolet)](https://ui.perfetto.dev)
 
 `hsa-snoop` detects the HSA **AQL queues** and **SDMA copy queues** an
 application uses to talk to an AMD GPU, tracks their ring-buffer addresses
@@ -201,7 +204,7 @@ cmake --build build --parallel $(nproc)
 Requires a C++17 compiler and CMake 3.21+. No third-party libraries. `protoc`
 is optional (only used to sanity-check the emitted trace).
 
-If ROCm is installed, the HIP examples under `examples/` (`gfx-test`,
+If ROCm is installed, the HIP examples under `deploy/examples/` (`gfx-test`,
 `sdma-test`) are built automatically. GPU targets are auto-detected via
 `rocm_agent_enumerator`; pass `-DGPU_TARGETS=gfxNNNN` to override.
 
@@ -278,10 +281,20 @@ Options:
                                  safe on emulated GPUs (rocjitsu/vfio-user)
   --librocdxg <path> Path to librocdxg.so.* (bpftrace mode; auto-detected)
   --libhsa <path>    Path to libhsa-runtime64.so.* (kfd-uprobe mode; auto-detected)
+  --ais-snoop        Monitor AMD Infinity Storage (AIS) P2P DMA ioctls via
+                     kprobe on the amdgpu driver. Adds ais_* metrics (Prometheus
+                     mode) or AIS events to the trace.
+  --log-dispatches <file>
+                     Write one NDJSON line per event (dispatch, queue, AIS) to
+                     <file>; use '-' for stderr. Supplements both trace and
+                     Prometheus modes with per-event timestamps.
   --prometheus       Expose metrics via Prometheus HTTP endpoint instead of
                      writing trace files (requires -DHSA_SNOOP_PROMETHEUS=ON)
   --prometheus-port <n>
                      Port for the Prometheus /metrics endpoint (default 9488)
+  --prometheus-snapshot <file>
+                     Write a Prometheus text snapshot to <file> on exit.
+                     Used by CI to capture a point-in-time metric reading.
   --xnack-snoop      Count GPU page-fault retry (XNACK) events via
                      kprobe:kfd_process_vm_fault (requires bpftrace and root).
                      Prometheus: increments hsa_xnack_total per pasid.
@@ -507,7 +520,13 @@ sudo systemctl daemon-reload && sudo systemctl restart hsa-snoop-prometheus
 
 ## Grafana dashboard
 
-`grafana/hsa-snoop-dashboard.json` is the reference dashboard. It reads from
+[![Grafana Dashboard](https://sbates130272.github.io/hsa-snoop/images/grafana-dashboard.png)](https://github.com/sbates130272/hsa-snoop/blob/main/deploy/grafana/hsa-snoop-dashboard.json)
+
+> Screenshot updated automatically by the `grafana-screenshot` CI workflow after
+> each successful hardware-test run. Import `deploy/grafana/hsa-snoop-dashboard.json`
+> via Grafana's **Dashboards → Import** to see live data.
+
+`deploy/grafana/hsa-snoop-dashboard.json` is the reference dashboard. It reads from
 two datasources:
 
 * **Prometheus** — everything under Overview, Throughput, Duration, Queue,
@@ -535,7 +554,7 @@ scripts/slurm/submit-obs.sh my-run
 #    Grafana + Prometheus + Loki stack.
 scripts/observability/stack.sh up results/my-run
 
-# 3. Edit grafana/hsa-snoop-dashboard.json, then re-provision without
+# 3. Edit deploy/grafana/hsa-snoop-dashboard.json, then re-provision without
 #    re-ingesting anything.
 scripts/observability/stack.sh reload
 
@@ -568,9 +587,9 @@ scripts/hsa-snoop.bt               zero-build discovery via bpftrace
 scripts/slurm/                     multi-GFX Slurm validation + capture harness
 scripts/slurm/obs-job.sh           capture a replayable Prometheus+log dataset
 scripts/observability/             offline Grafana/Prometheus/Loki replay stack
-grafana/hsa-snoop-dashboard.json   reference Grafana dashboard
-systemd/hsa-snoop-prometheus.service  systemd unit (Prometheus exporter daemon)
-systemd/hsa-snoop.conf             runtime configuration (extra ExecStart arguments)
+deploy/grafana/hsa-snoop-dashboard.json   reference Grafana dashboard
+deploy/systemd/hsa-snoop-prometheus.service  systemd unit (Prometheus exporter daemon)
+deploy/systemd/hsa-snoop.conf             runtime configuration (extra ExecStart arguments)
 ```
 
 ## Limitations & notes

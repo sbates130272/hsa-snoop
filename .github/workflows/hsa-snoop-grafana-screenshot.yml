@@ -1,0 +1,226 @@
+name: hsa-snoop - grafana-screenshot
+
+# Renders a screenshot of the HSA Snoop Grafana dashboard, seeded with the
+# published performance history, and pushes it to gh-pages so the README can
+# embed a live image.
+
+on:
+  workflow_run:
+    workflows: ["hsa-snoop - vm-hardware-test"]
+    types: [completed]
+    branches: [main]
+  schedule:
+    # Weekly on Sunday at 04:23 UTC, in case the workflow_run trigger is missed.
+    - cron: '23 4 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  screenshot:
+    name: Render Grafana dashboard screenshot
+    runs-on: ubuntu-latest
+    # For workflow_run triggers, only proceed when the parent succeeded.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out hsa-snoop
+        uses: actions/checkout@v7
+        with:
+          path: hsa-snoop
+
+      - name: Fetch perf history from gh-pages
+        shell: bash
+        run: |
+          set -euo pipefail
+          remote="https://github.com/${GITHUB_REPOSITORY}.git"
+          if git clone --quiet --depth 1 --branch gh-pages "$remote" gh-pages 2>/dev/null; then
+            echo "fetched $(wc -l < gh-pages/perf/history.jsonl) history records"
+          else
+            echo "::warning::gh-pages branch not found or empty; using zero-record history"
+            mkdir -p gh-pages/perf
+            echo "" > gh-pages/perf/history.jsonl
+          fi
+
+      - name: Start VictoriaMetrics
+        run: |
+          docker run -d --name vm \
+            --network host \
+            victoriametrics/victoria-metrics:latest \
+            -retentionPeriod=1200
+          for i in $(seq 30); do
+            curl -sf http://localhost:8428/health && break || sleep 1
+          done
+
+      - name: Import perf history into VictoriaMetrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -I hsa-snoop/.github/ci/report/gen-prom-history.py \
+            gh-pages/perf/history.jsonl \
+            | curl -sf -X POST http://localhost:8428/api/v1/import/prometheus \
+                -H 'Content-Type: text/plain' \
+                --data-binary @- \
+              || echo "::warning::import returned non-zero; continuing"
+
+      - name: Provision Grafana datasource and dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p prov/datasources prov/dashboards dash-staged
+
+          # Datasource — VictoriaMetrics is Prometheus-compatible.
+          cat > prov/datasources/prometheus.yaml <<'EOF'
+          apiVersion: 1
+          datasources:
+            - name: hsa-snoop-prom
+              type: prometheus
+              uid: hsa-snoop-prom
+              url: http://localhost:8428
+              isDefault: true
+              access: proxy
+          EOF
+
+          # Dashboard provisioner pointing at our staged directory.
+          cat > prov/dashboards/dashboards.yaml <<'EOF'
+          apiVersion: 1
+          providers:
+            - name: hsa-snoop
+              type: file
+              disableDeletion: false
+              allowUiUpdates: true
+              updateIntervalSeconds: 10
+              options:
+                path: /var/lib/grafana-dashboards
+                foldersFromFilesStructure: false
+          EOF
+
+          # The dashboard template variables (${ds_prom}, ${ds_loki}) are
+          # resolved by Grafana at query time from the provisioned datasources.
+          cp hsa-snoop/deploy/grafana/hsa-snoop-dashboard.json dash-staged/
+
+      - name: Start Grafana image renderer
+        run: |
+          docker run -d --name renderer \
+            --network host \
+            -e ENABLE_METRICS=true \
+            grafana/grafana-image-renderer:latest
+
+      - name: Start Grafana
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name grafana \
+            --network host \
+            -v "$(pwd)/prov:/etc/grafana/provisioning:ro" \
+            -v "$(pwd)/dash-staged:/var/lib/grafana-dashboards:ro" \
+            -e GF_AUTH_ANONYMOUS_ENABLED=true \
+            -e GF_AUTH_ANONYMOUS_ORG_ROLE=Admin \
+            -e GF_AUTH_DISABLE_LOGIN_FORM=true \
+            -e GF_RENDERING_SERVER_URL=http://localhost:8081/render \
+            -e GF_RENDERING_CALLBACK_URL=http://localhost:3000/ \
+            -e GF_LOG_LEVEL=warn \
+            grafana/grafana:12.3.0
+
+          # Wait for Grafana to be ready (up to 90s).
+          for i in $(seq 45); do
+            curl -sf http://localhost:3000/api/health -o /dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:3000/api/health || {
+            echo "::error::Grafana did not become healthy"
+            docker logs grafana
+            exit 1
+          }
+
+      - name: Render dashboard screenshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p images
+          # Allow Grafana to finish dashboard provisioning.
+          sleep 5
+          # Render full dashboard: uid=hsa-snoop, 1600x900, dark theme.
+          # Use a 30-day window so any historical data points are visible.
+          curl -sf \
+            "http://localhost:3000/render/d/hsa-snoop/hsa-snoop?orgId=1&width=1600&height=900&from=now-30d&to=now&theme=dark" \
+            -o images/grafana-dashboard.png || {
+              echo "::warning::dashboard render failed; trying overview row only"
+              curl -sf \
+                "http://localhost:3000/render/d-solo/hsa-snoop/hsa-snoop?orgId=1&panelId=2&width=1600&height=600&from=now-30d&to=now&theme=dark" \
+                -o images/grafana-dashboard.png || true
+            }
+          if [ -s images/grafana-dashboard.png ]; then
+            echo "screenshot: $(du -sh images/grafana-dashboard.png | cut -f1)"
+          else
+            echo "::warning::grafana-dashboard.png is empty or missing"
+          fi
+
+      - name: Push screenshot to gh-pages
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -s images/grafana-dashboard.png ]; then
+            echo "::warning::no screenshot to publish"
+            exit 0
+          fi
+
+          bail() { echo "::warning::$1; screenshot not published"; exit 0; }
+
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory '*' || true
+          git config --global user.name  "hsa-snoop-ci"
+          git config --global user.email "hsa-snoop-ci@users.noreply.github.com"
+          git config --global commit.gpgSign false
+
+          pages="$(mktemp -d)"
+          git clone --quiet --depth 1 --branch gh-pages "$remote" "$pages" \
+            || bail "could not clone gh-pages"
+
+          mkdir -p "$pages/images"
+          cp images/grafana-dashboard.png "$pages/images/"
+
+          git -C "$pages" add images/grafana-dashboard.png || bail "could not stage image"
+          if git -C "$pages" diff --cached --quiet; then
+            echo "screenshot unchanged"
+            exit 0
+          fi
+          git -C "$pages" commit \
+            -m "images: update Grafana dashboard screenshot" \
+            -m "Rendered from perf history by hsa-snoop-grafana-screenshot.yml. [skip ci]" \
+            || bail "could not commit screenshot"
+
+          for attempt in 1 2 3; do
+            git -C "$pages" push origin HEAD:gh-pages && break
+            echo "push rejected (attempt ${attempt}); refreshing"
+            sleep $((attempt * 5))
+            git -C "$pages" reset --hard HEAD~1 || bail "could not unwind"
+            git -C "$pages" fetch --quiet --depth 1 origin gh-pages \
+              || bail "could not refresh gh-pages"
+            git -C "$pages" reset --hard FETCH_HEAD || bail "could not refresh gh-pages"
+            git -C "$pages" add images/grafana-dashboard.png
+            git -C "$pages" commit \
+              -m "images: update Grafana dashboard screenshot" \
+              -m "Rendered from perf history by hsa-snoop-grafana-screenshot.yml. [skip ci]" \
+              || bail "could not re-commit"
+          done
+          echo "published grafana screenshot to gh-pages/images/"
+
+      - name: Show Grafana logs on failure
+        if: failure()
+        run: |
+          docker logs grafana 2>&1 | tail -50 || true
+          docker logs renderer 2>&1 | tail -20 || true
