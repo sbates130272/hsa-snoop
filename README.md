@@ -1,4 +1,4 @@
-# hsa-snoop
+# hsa-snoop: A HIP/HSA-Agnostic AMD GPU Runtime Analyzer
 
 [![vm-hardware-test](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-vm-hardware-test.yml/badge.svg?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-vm-hardware-test.yml)
 [![build-check](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-build-check.yml/badge.svg)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-build-check.yml)
@@ -15,21 +15,11 @@
 [![Grafana Dashboard](https://img.shields.io/badge/Grafana-Dashboard-F46800?logo=grafana)](https://github.com/sbates130272/hsa-snoop/blob/main/deploy/grafana/hsa-snoop-dashboard.json)
 [![Perfetto Tracing](https://img.shields.io/badge/Perfetto-Traces-blueviolet)](https://ui.perfetto.dev)
 
-`hsa-snoop` detects the HSA **AQL queues** and **SDMA copy queues** an
-application uses to talk to an AMD GPU, tracks their ring-buffer addresses
-(virtual **and** physical), decodes the packets flowing across them (kernel
-dispatches, barriers, agent dispatches, and SDMA DMA copies), and emits a
-**Perfetto** trace with queue-observed timing, kernel names, launch dimensions,
-copy byte counts and directions, and more.
-
-SDMA queues carry the DMA-engine traffic — `hipMemcpyAsync`, peer-to-peer
-copies, KV-cache staging — that never appears on the AQL compute queues, so
-capturing them is the only way to see bulk device I/O byte counts from user
-space. See [SDMA capture](#sdma-capture).
-
-It works **without modifying or rebuilding the amdgpu driver**. See
-[How it works](#how-it-works) and [Do we need to touch the
-driver?](#do-we-need-to-touch-the-driver) below.
+`hsa-snoop` traces AMD GPU workloads from user space — without touching the
+driver. It discovers AQL compute queues and SDMA copy queues via a dynamic
+kprobe, decodes all packet types including kernel dispatches and DMA copies,
+and emits Perfetto traces with queue-observed timing, kernel names, byte counts
+and directions.
 
 ```
 sudo ./hsa-snoop -- ./my_hip_app     # launch + trace a single app
@@ -37,30 +27,18 @@ sudo ./hsa-snoop --all               # monitor every GPU process system-wide
 # open traces at https://ui.perfetto.dev
 ```
 
-Project pages and performance tracking:
+Project pages: [GitHub Pages](https://sbates130272.github.io/hsa-snoop/) ·
+[Performance tracker](https://sbates130272.github.io/hsa-snoop/perf/) ·
+[Prometheus snapshot](https://sbates130272.github.io/hsa-snoop/prom/)
 
-- [GitHub Pages site](https://sbates130272.github.io/hsa-snoop/)
-- [Performance tracker](https://sbates130272.github.io/hsa-snoop/perf/)
-- [Prometheus snapshot](https://sbates130272.github.io/hsa-snoop/prom/)
-
-Example (from the bundled `gfx-test` example):
-
-```
-[queue] pid=404039 comm=gfx-test uid=2 ring_va=0x75dbfc200000 ring_phys=0x1a781498000 size=1048576B slots=16384 gpu=36740
-hsa-snoop: 2 AQL queue(s), 195 packet(s) captured.
-```
+→ [How it works in detail](docs/internals.md)
 
 ## Perfetto trace visualization
 
 `hsa-snoop` emits native Perfetto traces that can be opened in
-[Perfetto UI](https://ui.perfetto.dev/). Each discovered AQL or SDMA queue is
-shown on a separate timeline track, making kernel dispatches, barrier packets,
-DMA copies, and queue activity easy to correlate.
-
-Selecting a slice exposes its decoded metadata. AQL packets include the packet
-type and dispatch ID; kernel dispatches additionally include grid and workgroup
-dimensions, the kernel object, segment sizes, and completion signal. The
-physical ring address is included when available.
+[Perfetto UI](https://ui.perfetto.dev/). Each AQL or SDMA queue gets its own
+timeline track; selecting a slice exposes decoded metadata including grid
+dimensions, kernel object, segment sizes and completion signals.
 
 <table>
   <tr>
@@ -90,109 +68,10 @@ physical ring address is included when available.
 </table>
 
 > [!NOTE]
-> This example captures a workload that combines asynchronous copies with
-> kernel launches. `hsa-snoop` slices represent approximate
-> enqueue-to-queue-consumed residency, not GPU execution time.
+> Slices represent approximate enqueue-to-queue-consumed residency, not GPU
+> execution time.
 
 ---
-
-## How it works
-
-hsa-snoop has three stages, all in user space:
-
-1. **Queue discovery — via the amdgpu/KFD driver.**
-   The ROCr runtime creates every AQL queue with the KFD `create_queue` ioctl
-   (`kfd_ioctl_create_queue`). We install a **dynamic ftrace kprobe** on that
-   function (by writing to `/sys/kernel/tracing/kprobe_events`) and read the
-   `struct kfd_ioctl_create_queue_args` it was handed. That gives us, per queue:
-   the ring base address, ring size, read/write pointers, GPU id and queue
-   type. `COMPUTE_AQL` queues (type 2) are the host↔GPU AQL queues; `SDMA`
-   (type 1) and `SDMA_XGMI` (type 3) are the DMA-copy queues (see
-   [SDMA capture](#sdma-capture)). PM4 compute queues (type 0) are ignored.
-
-   The argument offsets come from the stable KFD uapi ABI
-   (`struct kfd_ioctl_create_queue_args`), and the args pointer is the 3rd
-   function argument (`%dx` on x86-64). No BTF or driver debuginfo is required.
-
-   A zero-build equivalent is provided for quick verification:
-   `sudo bpftrace scripts/hsa-snoop.bt`.
-
-2. **Physical address tracking.**
-   AQL ring buffers for host↔GPU communication live in host-accessible
-   (GTT/system) memory. For each ring we resolve its physical address by walking
-   `/proc/<pid>/pagemap` (needs `CAP_SYS_ADMIN`, i.e. run under `sudo`).
-
-3. **Ring parsing — the activity snoop.**
-   The ring base and read/write pointers captured in step 1 are **user virtual
-   addresses in the target process** (the KFD validates them as `__user`
-   pointers). A per-queue poller reads them with `process_vm_readv` and watches
-   `write_dispatch_id` vs `read_dispatch_id`:
-   * when the write id advances, the newly enqueued 64-byte AQL packet is decoded
-     using the layouts in `src/aql.h` (mirrors `<hsa/hsa.h>`);
-   * when the read id passes a packet, it is marked queue-consumed.
-
-   Enqueue → queue-consumed host timestamps (`CLOCK_MONOTONIC_RAW`) give an
-   approximate queue residency window for each dispatch. This is not the same as
-   observing the packet completion signal or true GPU execution duration.
-
-   **Kernel names** are resolved from `kernel_object` (the runtime address of the
-   kernel descriptor, i.e. the ELF `*.kd` symbol). We locate the AMDGPU
-   (`EM_AMDGPU`) code-object ELFs in the process address space and walk their
-   dynamic symbol tables. The descriptors the GPU actually uses live in
-   device-backed (`/dev/dri/renderD128`) mappings, which `process_vm_readv`
-   cannot read, so the resolver reads code objects through `/proc/<pid>/mem`
-   instead. Names are demangled.
-
-Output is written as a native Perfetto protobuf trace (default) or Chrome JSON
-(`--format json`); both open in <https://ui.perfetto.dev>.
-
-### SDMA capture
-
-The same discovery kprobe also sees the **SDMA** (`type 1`) and **SDMA_XGMI**
-(`type 3`) queues — the GPU DMA copy engines. `hipMemcpyAsync`, peer-to-peer
-transfers and framework KV-cache staging are submitted here, **not** on the AQL
-compute queues, so they are invisible to `hsa_kernel_launches_total`. Capturing
-SDMA is the only user-space way to account for that bulk byte movement.
-
-SDMA rings differ from AQL rings in three ways the parser handles separately
-(`src/sdma.h`, `src/parser.cpp`):
-
-* **Variable-length packets.** SDMA is dword-granular microcode, not fixed
-  64-byte slots. Each packet's header dword carries an 8-bit opcode + sub-opcode;
-  the decoder reads the header, computes the length, decodes, then strides
-  forward. Unknown opcodes trigger a resync rather than a bad stride.
-* **The COPY packet carries the byte count and src/dst addresses.** For linear
-  copies we record `bytes`, `src`, `dst` and a **direction**.
-* **Direction (H2D / D2H / D2D)** is inferred by resolving the src/dst virtual
-  addresses through `/proc/<pid>/pagemap`: a host page has a physical frame, a
-  device (VRAM) page has none. src=host,dst=device → `h2d`, and so on. Results
-  are cached per page.
-
-> **Generation note.** KFD/ROCR publish SDMA ring pointers as byte offsets;
-> hsa-snoop normalises them to dword indices before walking packets. It detects
-> the SDMA generation from the KFD `gfx_target_version` property and uses
-> separate packet
-> tables for CDNA SDMA v4.x (gfx9) and RDNA3 SDMA v6.x (gfx11). Other
-> generations are ignored rather than decoded with the wrong layout. Use
-> `HSA_SNOOP_SDMA_DUMP=1` when calibrating a newly supported generation.
-
-## Do we need to touch the driver?
-
-**No.** Everything is done by dynamically attaching to the running,
-stock out-of-tree amdgpu module:
-
-* queue discovery — dynamic **ftrace kprobe** on `kfd_ioctl_create_queue`
-  (or the bundled bpftrace script). No source patch, no rebuild, no reload.
-* physical addresses — `/proc/<pid>/pagemap`.
-* ring contents & pointers — `process_vm_readv` / `/proc/<pid>/mem`.
-* kernel names — the process's own loaded code objects.
-
-The KFD debugfs nodes (`/sys/kernel/debug/kfd/mqds`, `hqds`, `rls`) can be used
-as an independent cross-check of ring addresses but are not required.
-
-A source-level tracepoint patch to amdgpu would only ever be needed if dynamic
-kprobe attach were unavailable (e.g. `kfd_ioctl_create_queue` inlined away); it
-is **not** needed on this platform (gfx90a, amdgpu 6.16 DKMS).
 
 ## Build
 
@@ -202,16 +81,10 @@ cmake --build build --parallel $(nproc)
 ```
 
 Requires a C++17 compiler and CMake 3.21+. No third-party libraries. `protoc`
-is optional (only used to sanity-check the emitted trace).
-
-If ROCm is installed, the HIP examples under `deploy/examples/` (`gfx-test`,
-`sdma-test`) are built automatically. GPU targets are auto-detected via
-`rocm_agent_enumerator`; pass `-DGPU_TARGETS=gfxNNNN` to override.
+is optional. If ROCm is installed, the HIP examples under `deploy/examples/`
+are built automatically; pass `-DGPU_TARGETS=gfxNNNN` to override detection.
 
 ### Tests
-
-The default test suite is hardware-independent and can run in a GPU-less CI
-environment:
 
 ```
 cmake -B build -DBUILD_TESTING=ON
@@ -219,42 +92,29 @@ cmake --build build --parallel $(nproc)
 ctest --test-dir build --output-on-failure
 ```
 
-Enable the SDMA integration test explicitly when building on an AMD GPU host
-with ROCm. The test launches `sdma-test` through hsa-snoop and checks the real
-trace for COPY_LINEAR count/address decoding and false NOP packets. Queue
-discovery and cross-process memory access require the test to run as root.
-The default `HSA_SNOOP_HARDWARE_SDMA_VERSION=AUTO` uses the generation detected
-from the installed GPU, so the same test works on supported CDNA SDMA v4 and
-RDNA3 SDMA v6 hosts. CI or developers targeting one generation can set the
-expected version explicitly; the test fails if the hardware does not match.
+Hardware tests (require a GPU and root):
 
 ```
-cmake -B build-hw \
-  -DBUILD_TESTING=ON \
-  -DHSA_SNOOP_HARDWARE_TESTS=ON
+cmake -B build-hw -DBUILD_TESTING=ON -DHSA_SNOOP_HARDWARE_TESTS=ON
 cmake --build build-hw --parallel $(nproc)
 sudo ctest --test-dir build-hw -L hardware --output-on-failure
 ```
 
-For an explicitly targeted build, add either
-`-DHSA_SNOOP_HARDWARE_SDMA_VERSION=4` or
-`-DHSA_SNOOP_HARDWARE_SDMA_VERSION=6` to the CMake configure command.
-
 ### Prometheus exporter build
-
-To enable the Prometheus metrics exporter, pass `-DHSA_SNOOP_PROMETHEUS=ON`.
-This fetches [prometheus-cpp](https://github.com/jupp0r/prometheus-cpp)
-(v1.2.4) via CMake `FetchContent` and links it into the binary:
 
 ```
 cmake -B build -DHSA_SNOOP_PROMETHEUS=ON
 cmake --build build --parallel $(nproc)
 ```
 
-No other dependencies are required; the prometheus-cpp HTTP server
-(CivetWeb) is bundled.
+Fetches [prometheus-cpp](https://github.com/jupp0r/prometheus-cpp) v1.2.4 via
+`FetchContent`; no other dependencies required.
+
+---
 
 ## Usage
+
+Must run as root (tracefs, pagemap and cross-process reads all require it).
 
 ```
 sudo ./hsa-snoop [options] --pid <pid>       # attach to a running process
@@ -263,131 +123,62 @@ sudo ./hsa-snoop [options] --all             # monitor all GPU processes
 
 Options:
   --pid <pid>        Trace only this process
-  --all              Monitor all HSA/HIP processes system-wide (daemon mode);
-                     writes one trace file per discovered queue to --out-dir
-  --out <file>       Output trace path (single-process modes)
-                     (default hsa-snoop.pftrace / .json)
-  --out-dir <dir>    Output directory for --all mode
-                     (default /var/log/hsa-snoop)
+  --all              Monitor all HSA/HIP processes system-wide
+  --out <file>       Output trace path (default hsa-snoop.pftrace / .json)
+  --out-dir <dir>    Output directory for --all mode (default /var/log/hsa-snoop)
   --format <fmt>     perfetto (default) | json
   --poll-us <n>      Ring poll interval in microseconds (default 20)
   --duration <sec>   Auto-stop after N seconds (0 = until Ctrl-C / child exit)
   --tracefs <path>   tracefs mount (default /sys/kernel/tracing)
   --mode <mode>      kprobe (default) | bpftrace | kfd-uprobe
-                     bpftrace:   for WSL2/librocdxg systems without KFD;
-                                 auto-selected when running inside WSL2
-                     kfd-uprobe: uprobe on hsa_queue_add_write_index in
-                                 libhsa-runtime64.so; no process_vm_readv,
-                                 safe on emulated GPUs (rocjitsu/vfio-user)
   --librocdxg <path> Path to librocdxg.so.* (bpftrace mode; auto-detected)
   --libhsa <path>    Path to libhsa-runtime64.so.* (kfd-uprobe mode; auto-detected)
-  --ais-snoop        Monitor AMD Infinity Storage (AIS) P2P DMA ioctls via
-                     kprobe on the amdgpu driver. Adds ais_* metrics (Prometheus
-                     mode) or AIS events to the trace.
+  --ais-snoop        Monitor AMD Infinity Storage P2P DMA ioctls
   --log-dispatches <file>
-                     Write one NDJSON line per event (dispatch, queue, AIS) to
-                     <file>; use '-' for stderr. Supplements both trace and
-                     Prometheus modes with per-event timestamps.
-  --prometheus       Expose metrics via Prometheus HTTP endpoint instead of
-                     writing trace files (requires -DHSA_SNOOP_PROMETHEUS=ON)
+                     Write one NDJSON line per event to <file> (use '-' for stderr)
+  --prometheus       Expose metrics via Prometheus HTTP endpoint
   --prometheus-port <n>
-                     Port for the Prometheus /metrics endpoint (default 9488)
+                     Prometheus /metrics port (default 9488)
   --prometheus-snapshot <file>
-                     Write a Prometheus text snapshot to <file> on exit.
-                     Used by CI to capture a point-in-time metric reading.
-  --xnack-snoop      Count GPU page-fault retry (XNACK) events via
-                     kprobe:kfd_process_vm_fault (requires bpftrace and root).
-                     Prometheus: increments hsa_xnack_total per pasid.
-                     Trace mode: prints fault events to stderr.
+                     Write Prometheus text snapshot to <file> on exit
+  --xnack-snoop      Count GPU page-fault retry (XNACK) events
 ```
 
-Must run as root (tracefs, pagemap and cross-process reads all require it).
-
-### Recommended: launch mode
+**Launch mode** (recommended — kprobe armed before exec, captures all queues):
 
 ```
 sudo ./hsa-snoop -- ./my_hip_app
 ```
 
-The kprobe is armed *before* the child is exec'd, so every queue it creates is
-captured. Set `HSA_SNOOP_DEBUG=1` for verbose discovery/decode diagnostics.
-
-### System-wide monitor mode
+**System-wide mode** (daemon; one trace file per queue under `--out-dir`):
 
 ```
 sudo ./hsa-snoop --all
 ```
 
-Monitors every HSA/HIP process on the system without targeting a specific PID.
-Each discovered AQL queue writes its own trace file to `/var/log/hsa-snoop/`
-(override with `--out-dir`). Runs indefinitely until `Ctrl-C` or `SIGTERM`.
-This is the mode used by the systemd daemon.
-
-### WSL2 / librocdxg mode
-
-On Windows Subsystem for Linux 2, the amdgpu KFD device is not present.
-Instead, AMD's librocdxg library bridges HSA calls through the Windows DXG
-kernel interface. hsa-snoop detects WSL2 automatically and switches to
-bpftrace mode:
+**WSL2** (auto-detected; uses bpftrace uprobe on librocdxg instead of KFD):
 
 ```
-sudo ./hsa-snoop -- ./my_hip_app     # auto-selects bpftrace on WSL2
+sudo ./hsa-snoop -- ./my_hip_app
 ```
 
-Or force it explicitly on any system:
-
-```
-sudo ./hsa-snoop --mode bpftrace -- ./my_hip_app
-sudo ./hsa-snoop --mode bpftrace --all
-```
-
-In bpftrace mode, hsa-snoop forks a `bpftrace` child that attaches a uprobe
-to `hsaKmtCreateQueueExt` in `librocdxg.so`. The library path is
-auto-detected via `/opt/rocm/lib/librocdxg.so`; pass `--librocdxg <path>` to
-override. `bpftrace` must be installed and the process must run as root.
-
-### KFD uprobe mode (emulated GPU / no process_vm_readv)
-
-On systems with emulated GPU devices (e.g. rocjitsu served over vfio-user),
-`kprobe` mode will deadlock GPU dispatch because `process_vm_readv` on the
-vfio-user shared memfd competes with the emulator's memory access. Use
-`kfd-uprobe` mode instead:
+**Emulated GPU / kfd-uprobe** (safe on rocjitsu/vfio-user; no `process_vm_readv`):
 
 ```
 sudo ./hsa-snoop --mode kfd-uprobe --all --prometheus
 ```
 
-`kfd-uprobe` forks a `bpftrace` child that attaches a uprobe to
-`hsa_queue_add_write_index_screlease` in `libhsa-runtime64.so`. This fires
-on every AQL dispatch without reading ring buffer memory, so it is safe on
-emulated devices. `bpftrace` must be installed and the process must run as
-root.
+→ [Full per-mode details, systemd setup, dispatch log](docs/usage.md)
 
-The libhsa-runtime64 path is auto-detected from `/opt/rocm/lib/`; pass
-`--libhsa <path>` to override.
+---
 
-**Current limitations vs kprobe mode:**
-- `hsa_kernel_launches_total` and `hsa_active_queues` are not populated
-  (wptr/rptr addresses not available from this hook; ring parser cannot run)
-- Kernel names report as address strings rather than demangled symbols
-- `gpu_id` is always 0
+## Prometheus exporter
 
-### Prometheus exporter mode
-
-When built with `-DHSA_SNOOP_PROMETHEUS=ON`, hsa-snoop can expose live GPU
-metrics via a Prometheus-compatible HTTP endpoint instead of writing trace
-files. This integrates with Grafana and any Prometheus-compatible monitoring
-stack.
+When built with `-DHSA_SNOOP_PROMETHEUS=ON`:
 
 ```
 sudo ./hsa-snoop --all --prometheus                  # serve on default port 9488
 sudo ./hsa-snoop --all --prometheus-port 9100        # custom port
-sudo ./hsa-snoop --pid <pid> --prometheus            # single process
-```
-
-Scrape the metrics endpoint:
-
-```
 curl http://localhost:9488/metrics
 ```
 
@@ -397,177 +188,53 @@ Metrics exposed (all carry constant labels `host`, `platform`, `rocm_version`,
 | Metric | Type | Labels | Description |
 | --- | --- | --- | --- |
 | `hsa_snoop_up` | Gauge | — | 1 when the exporter is running |
-| `hsa_kernel_launches_total` | Counter | `kernel_name`, `gpu_id`, `gpu_type`, `pid`, `comm` | Kernel dispatch count; filter by `kernel_name` for per-kernel totals |
-| `hsa_kernel_duration_seconds` | Histogram | `kernel_name`, `gpu_id`, `gpu_type` | Kernel duration from enqueue to completion (host-observed) |
+| `hsa_kernel_launches_total` | Counter | `kernel_name`, `gpu_id`, `gpu_type`, `pid`, `comm` | Kernel dispatch count |
+| `hsa_kernel_duration_seconds` | Histogram | `kernel_name`, `gpu_id`, `gpu_type` | Kernel duration (host-observed, enqueue to queue-consumed) |
 | `hsa_kernel_launches_per_second` | Gauge | `gpu_id`, `gpu_type` | Rolling 10 s launch rate |
-| `hsa_last_kernel_launch_timestamp_seconds` | Gauge | `gpu_id`, `gpu_type` | Wall-clock time of the most recent launch |
+| `hsa_last_kernel_launch_timestamp_seconds` | Gauge | `gpu_id`, `gpu_type` | Wall-clock time of most recent launch |
 | `hsa_last_kernel_launch_info` | Gauge | `gpu_id`, `gpu_type`, `kernel_name` | Most recently launched kernel name (value always 1) |
 | `hsa_active_queues` | Gauge | `gpu_id`, `gpu_type` | Currently tracked AQL queues |
 | `hsa_barrier_packets_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm` | Barrier AQL packets seen |
 | `hsa_sdma_copies_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `direction` | SDMA copy packets, by direction (`h2d`/`d2h`/`d2d`) |
-| `hsa_sdma_bytes_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `direction` | Bytes moved by SDMA copies, by direction |
-| `hsa_sdma_packets_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `opcode` | SDMA packets, by opcode (`copy`/`fence`/`timestamp`/...) |
+| `hsa_sdma_bytes_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `direction` | Bytes moved by SDMA copies |
+| `hsa_sdma_packets_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `opcode` | SDMA packets by opcode |
 | `hsa_active_sdma_queues` | Gauge | `gpu_id`, `gpu_type` | Currently tracked SDMA queues |
-| `hsa_sdma_present` | Gauge | — | Latches at 1 when the first SDMA queue is seen; stays 0 on APU/unified-memory nodes with no discrete DMA engine |
-| `hsa_triggered` | Gauge | `gpu_id`, `gpu_type` | Latches at 1 on the first kernel dispatch seen on this GPU |
-| `hsa_errors_total` | Counter | `gpu_id`, `pid` | Packets arriving before queue registration |
-| `hsa_xnack_total` | Counter | `pasid`, `comm` | GPU page-fault retry (XNACK) events observed via `kprobe:kfd_process_vm_fault`; requires `--xnack-snoop` |
+| `hsa_sdma_present` | Gauge | — | 1 when first SDMA queue seen; 0 on APU/unified-memory nodes |
+| `hsa_triggered` | Gauge | `gpu_id`, `gpu_type` | 1 on first kernel dispatch on this GPU |
+| `hsa_errors_total` | Counter | `gpu_id`, `pid` | Packets before queue registration |
+| `hsa_xnack_total` | Counter | `pasid`, `comm` | GPU page-fault retries (`--xnack-snoop`) |
 
-AIS (AMD Infinity Storage) metrics, all requiring `--ais-snoop`. Reads
-(file→VRAM) and writes (VRAM→file) are separate metric families rather than a
-label, so a dashboard can select them independently. All carry `gpu_id`,
-`gpu_type`, `pcie_id`, `device_type` and `vendor`:
+AIS metrics (all require `--ais-snoop`; labels: `gpu_id`, `gpu_type`, `pcie_id`,
+`device_type`, `vendor`):
 
 | Metric | Type | Description |
 | --- | --- | --- |
-| `ais_snoop_armed` | Gauge | 1 if the AIS kprobe monitor started, 0 if `--ais-snoop` was passed but it failed. **Absent** when the flag was not passed |
-| `ais_active` | Gauge | Latches at 1 on the first AIS operation observed |
+| `ais_snoop_armed` | Gauge | 1 if AIS kprobe started; absent if `--ais-snoop` not passed |
+| `ais_active` | Gauge | 1 on first AIS operation |
 | `ais_rx_ops_total` / `ais_tx_ops_total` | Counter | AIS ioctls completed |
-| `ais_rx_bytes_total` / `ais_tx_bytes_total` | Counter | Bytes transferred by P2P DMA |
-| `ais_rx_errors_total` / `ais_tx_errors_total` | Counter | Failed operations; extra `errno` label |
+| `ais_rx_bytes_total` / `ais_tx_bytes_total` | Counter | P2P DMA bytes transferred |
+| `ais_rx_errors_total` / `ais_tx_errors_total` | Counter | Failed operations (extra `errno` label) |
 | `ais_rx_latency_seconds` / `ais_tx_latency_seconds` | Histogram | ioctl entry-to-return latency |
 | `ais_rx_io_size_bytes` / `ais_tx_io_size_bytes` | Histogram | Requested transfer size |
-| `ais_pcie_device_info` | Gauge | Info metric (value 1) per PCIe device; extra `vendor_id`, `device_id`, `class_code` labels |
+| `ais_pcie_device_info` | Gauge | Info metric per PCIe device |
 
-`ais_snoop_armed` exists to separate the three reasons an AIS panel can be
-empty — the flag was never passed (metric absent), the monitor could not start
-(0), or AIS is genuinely being watched and no P2P IO happened (1, with
-`ais_active` still 0). `ais_active` alone cannot tell them apart.
-
-Prometheus mode and trace-file mode are **independent** — both can run
-simultaneously using separate hsa-snoop instances (or via the two systemd
-units below). They do not share state or interfere with each other.
-
-### Dispatch event log (`--log-dispatches`)
-
-Prometheus is an aggregating store sampled at the scrape interval. At the
-~2700 kernel launches/s a tight HIP loop reaches, a 1 s scrape collapses
-thousands of distinct dispatches into a single counter delta, and no dashboard
-built on it can show *which kernel ran when*. `--log-dispatches` is the other
-half: one NDJSON line per event, with a wall-clock RFC3339 timestamp, written
-independently of both the trace files and the exporter.
-
-```
-sudo ./hsa-snoop --all --prometheus --log-dispatches /var/log/hsa-snoop/events.ndjson
-sudo ./hsa-snoop -- ./my_hip_app --log-dispatches -      # '-' means stderr
-```
-
-```json
-{"ts":"2026-09-01T22:04:28.106365Z","ev":"queue","kind":"aql","gpu_id":10976,"pid":1795691,"comm":"gfx-test","queue_uid":1,"qtype":2,"ring_size":4096,"ring_va":"0x7097172a9000","ring_phys":"0x63f49cc000"}
-{"ts":"2026-09-01T22:04:28.392511Z","ev":"dispatch","gpu_id":10976,"pid":1795691,"comm":"gfx-test","queue_uid":2,"dispatch_id":0,"kernel":"vadd(float const*, float const*, float*, int)","grid":[26624,1,1],"wg":[256,1,1],"lds":0,"scratch":0,"dur_us":812.500}
-```
-
-`ev` is one of `queue`, `dispatch` or `sdma`. `dur_us` is present only when the
-queue was observed to retire the packet; 64-bit addresses are hex **strings**,
-because JSON numbers are IEEE doubles in most consumers and would silently lose
-the low bits. Available in every build — it does not require
-`-DHSA_SNOOP_PROMETHEUS=ON`.
-
-This is the stream the Grafana kernel-launch timeline is built from; ship it
-into Loki with the Alloy config under `scripts/observability/`.
-
-> [!NOTE]
-> The log is written unbuffered-per-line from the parser sink thread. At a
-> sustained few thousand dispatches/s it produces on the order of 15 MB/minute,
-> so point it at local storage rather than NFS for long runs.
-
-### Quick discovery-only check (no build)
-
-```
-sudo bpftrace scripts/hsa-snoop.bt
-```
-
-## Running as a systemd daemon
-
-Requires a build with `-DHSA_SNOOP_PROMETHEUS=ON`.
-
-```bash
-# Configure with the same install prefix you intend to deploy.
-cmake -B build -DHSA_SNOOP_PROMETHEUS=ON -DCMAKE_INSTALL_PREFIX=/usr/local
-cmake --build build --parallel
-
-# Install binary and unit files to the prefix chosen above
-sudo cmake --install build
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now hsa-snoop-prometheus
-
-# Check status / live logs
-sudo systemctl status hsa-snoop-prometheus
-sudo journalctl -fu hsa-snoop-prometheus
-
-# Verify the metrics endpoint
-curl http://localhost:9488/metrics
-```
-
-The packaged/systemd-managed daemon is `hsa-snoop-prometheus.service`.
-Prometheus-enabled installs also stage `/etc/default/hsa-snoop`; edit it to tune
-the daemon (poll interval, optional snoops, etc.), then run
-`sudo systemctl restart hsa-snoop-prometheus.service`.
-
-To change the port, set it in `HSA_SNOOP_ARGS` or override `ExecStart` in a
-drop-in:
-
-```bash
-sudo mkdir -p /etc/systemd/system/hsa-snoop-prometheus.service.d
-cat <<EOF | sudo tee /etc/systemd/system/hsa-snoop-prometheus.service.d/port.conf
-[Service]
-ExecStart=
-ExecStart=/usr/local/bin/hsa-snoop --all --prometheus --prometheus-port 9100
-EOF
-sudo systemctl daemon-reload && sudo systemctl restart hsa-snoop-prometheus
-```
+---
 
 ## Grafana dashboard
 
 [![Grafana Dashboard](https://sbates130272.github.io/hsa-snoop/images/grafana-dashboard.png)](https://github.com/sbates130272/hsa-snoop/blob/main/deploy/grafana/hsa-snoop-dashboard.json)
 
-> Screenshot updated automatically by the `grafana-screenshot` CI workflow after
-> each successful hardware-test run. Import `deploy/grafana/hsa-snoop-dashboard.json`
-> via Grafana's **Dashboards → Import** to see live data.
+> Screenshot updated automatically by the `grafana-screenshot` CI workflow.
+> Import `deploy/grafana/hsa-snoop-dashboard.json` via **Dashboards → Import**.
 
-`deploy/grafana/hsa-snoop-dashboard.json` is the reference dashboard. It reads from
-two datasources:
+The dashboard reads from two datasources: **Prometheus** (Overview, Throughput,
+Duration, Queue, SDMA, AIS — requires `--prometheus`) and **Loki** (Kernel
+Launch Timeline — requires `--log-dispatches` shipped into Loki). The Prometheus
+rows work standalone; Loki rows stay empty without a log pipeline.
 
-* **Prometheus** — everything under Overview, Throughput, Duration, Queue,
-  SDMA and AIS. Requires `--prometheus`.
-* **Loki** — the *Kernel Launch Timeline* and *hsa-snoop Logs* rows. Requires
-  `--log-dispatches` shipped into Loki (see `scripts/observability/`).
+→ [Dashboard development workflow (capture-then-replay)](docs/usage.md#grafana-dashboard-development)
 
-The Prometheus rows work on their own; the Loki rows simply stay empty without
-a log pipeline. The two datasource template variables (`$ds_prom`, `$ds_loki`)
-make the file usable both through Grafana's import wizard and through file
-provisioning.
-
-### Developing the dashboard against real data
-
-Iterating on a dashboard means many minutes of clicking, and holding a
-`--gres=gpu:1` Slurm allocation open for that is wasteful. The workflow is
-therefore capture-then-replay:
-
-```
-# 1. On a GPU node under Slurm: run a phased workload with the exporter and the
-#    dispatch log on, then freeze a Prometheus TSDB snapshot plus the logs.
-scripts/slurm/submit-obs.sh my-run
-
-# 2. On the login node, with no allocation: replay them into a local
-#    Grafana + Prometheus + Loki stack.
-scripts/observability/stack.sh up results/my-run
-
-# 3. Edit deploy/grafana/hsa-snoop-dashboard.json, then re-provision without
-#    re-ingesting anything.
-scripts/observability/stack.sh reload
-
-# 4. Assert that every panel actually returns data.
-scripts/observability/check-dashboard.py
-scripts/observability/stack.sh down
-```
-
-`check-dashboard.py` walks the dashboard JSON, expands Grafana's template and
-interval variables, and runs every target against the replayed datasources.
-Loading a dashboard in a browser tells you it renders; this tells you which
-panels are silently empty because a label was renamed or a metric is only
-created after the first error.
+---
 
 ## Layout
 
@@ -585,63 +252,16 @@ src/dispatch_log.{h,cpp}           NDJSON per-event log (--log-dispatches)
 src/main.cpp                       CLI / orchestration
 scripts/hsa-snoop.bt               zero-build discovery via bpftrace
 scripts/slurm/                     multi-GFX Slurm validation + capture harness
-scripts/slurm/obs-job.sh           capture a replayable Prometheus+log dataset
 scripts/observability/             offline Grafana/Prometheus/Loki replay stack
 deploy/grafana/hsa-snoop-dashboard.json   reference Grafana dashboard
 deploy/systemd/hsa-snoop-prometheus.service  systemd unit (Prometheus exporter daemon)
 deploy/systemd/hsa-snoop.conf             runtime configuration (extra ExecStart arguments)
 ```
 
-## Limitations & notes
+---
 
-* **Sampling snoop, not a tap.** Activity is captured by polling the ring. A
-  packet that is enqueued *and* queue-consumed entirely within one poll interval
-  can be missed (the slot may read back as `INVALID` once consumed). Lower
-  `--poll-us` to catch faster kernels; deeply-queued workloads are captured
-  near-completely (195/200 in the bundled test). Missed packets are counted
-  internally as "dropped".
-* **Timing is host-observed.** enqueue→queue-consumed uses host timestamps for
-  queue pointer transitions, so a slice includes queue-wait time and may differ
-  from true kernel execution or completion-signal timing. No profiling signals
-  or counters are read; this is best used for structure and relative timing.
-* **Attach mode only sees queues created after attach**, since the kprobe fires
-  on `create_queue`. Use launch mode to guarantee capture from process start.
-* **`hsa_kernel_duration_seconds` is a coarse histogram by nature.** Its buckets
-  run 50 µs to 5 s on a 1-2.5-5 ladder, chosen against 96,749 measured
-  dispatches so the fullest bucket holds ~42% of samples rather than the 72% the
-  original decade ladder produced. `histogram_quantile` still interpolates
-  inside a bucket, so a p99 is accurate to roughly the bucket width. When an
-  exact percentile matters, take it from the `--log-dispatches` stream
-  (`quantile_over_time(... | unwrap dur_us ...)`), which quantiles the individual
-  measurements. The 50 µs floor is deliberate: durations come from polling the
-  ring at `--poll-us` (default 20 µs), so anything below a couple of poll
-  intervals is quantisation noise.
-* **WSL2 PID mapping is heuristic.** bpftrace reports host-kernel PIDs, which
-  differ from WSL2 namespace PIDs by a fixed offset. In `--all` mode without a
-  known target PID, hsa-snoop scans `/proc` by comm name to resolve the
-  namespace PID. This can misattribute queues if two processes share the same
-  comm prefix. Launch mode (`-- <command>`) avoids this by using the known
-  child PID.
-* **Physical addresses** resolve for host/GTT-backed rings (the norm for AQL
-  host↔GPU queues). VRAM-resident pages have no pagemap PFN and report `0`.
-* **SDMA decode supports v4.x, v6.x, and v7.x packet layouts.** v4 covers gfx9
-  CDNA (gfx90a / gfx942); v6 covers gfx11 RDNA3 (including gfx1101); v7 covers
-  gfx12 (including gfx1250 / MI455X). Unknown generations are ignored to avoid
-  losing ring synchronisation. Non-linear copy layouts (tiled, sub-window) are
-  counted and stepped over but do not yet contribute a byte total.
-* **SDMA copy direction is a pagemap heuristic.** A src/dst page with no PFN is
-  treated as device (VRAM) memory; this also matches a not-present/swapped host
-  page, so a copy touching a paged-out host buffer can be misclassified. For
-  live, pinned copy buffers (the common case) it is accurate.
-* Verified on: gfx90a (MI2xx / Aldebaran), ROCm 7.1.0, amdgpu 6.16 DKMS,
-  kernel 6.8, x86-64; gfx1101 SDMA v6 COPY_LINEAR; gfx1250 (MI455X) SDMA v7
-  COPY_LINEAR via rocjitsu/vfio-user. SDMA capture calibration is in progress
-  on gfx942 (MI3xx).
+## Further reading
 
-## Verifying the AQL layouts
-
-`src/aql.h` is a self-contained copy of the packet formats so the tool builds
-without ROCm `-dev` headers. It is byte-compatible with
-`/opt/rocm/include/hsa/hsa.h`:
-`static_assert`s enforce the 64-byte packet size, and field offsets match
-`hsa_kernel_dispatch_packet_t`.
+- [How it works, SDMA capture, driver details](docs/internals.md)
+- [All usage modes, systemd setup, dispatch log](docs/usage.md)
+- [Limitations and notes](docs/limitations.md)
