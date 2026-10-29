@@ -8,7 +8,7 @@ on:
     paths:
       - 'README.md'
       - 'docs/**'
-      - 'ci/report/publish-perf.py'
+      - '.github/ci/report/publish-perf.py'
       - '.github/actions/publish-perf/action.yml'
       - '.github/workflows/hsa-snoop-docs-deploy.yml'
 
@@ -43,7 +43,7 @@ jobs:
 
       - name: Render the performance tracker assets
         run: |
-          python3 ci/report/publish-perf.py --render-only --docs-dir docs
+          python3 .github/ci/report/publish-perf.py --render-only --docs-dir docs
 
       - name: Publish to gh-pages
         run: |

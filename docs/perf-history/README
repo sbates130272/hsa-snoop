@@ -1,4 +1,4 @@
-# Scratch space for ci/report/publish-perf.py. The durable record lives at
+# Scratch space for .github/ci/report/publish-perf.py. The durable record lives at
 # perf/history.jsonl on the gh-pages branch, alongside the badge-*.json files
 # that back the GitHub Pages performance summary.
 #

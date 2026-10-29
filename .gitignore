@@ -1,15 +1,53 @@
+# ── Build output ──────────────────────────────────────────────────────────────
+build*/
+Testing/
+
+# ── Compiled / object files ───────────────────────────────────────────────────
 *.o
-hsa-snoop
+*.so
+*.a
+
+# ── HIP / ROCm artifacts ──────────────────────────────────────────────────────
+*.bc
+*.ll
 *.pftrace
+
+# ── Installed example binaries (compiled in-tree by cmake) ────────────────────
+deploy/examples/square
+deploy/examples/vecwork
+
+# ── Python cache ──────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+
+# ── CMake user overrides ──────────────────────────────────────────────────────
+CMakeUserPresets.json
+
+# ── Debian packaging artifacts ────────────────────────────────────────────────
+debian/*.debhelper
+debian/tmp/
+debian/files
+debian/*.substvars
+
+# ── Top-level built binary ────────────────────────────────────────────────────
+/hsa-snoop
+
+# ── Generated JSON at repo root ───────────────────────────────────────────────
 /*.json
-examples/vecwork
-examples/square
-build**/
+
+# ── Runtime / scratch ─────────────────────────────────────────────────────────
 results/
 .obs-scratch/
-# aspell writes its compiled dictionary into the working directory when
-# pyspelling runs, so anyone linting locally produces one.
+
+# ── Spell-check compiled dictionary (created on local lint runs) ──────────────
 dictionary.dic
 
+# ── Generated docs files ──────────────────────────────────────────────────────
 /docs/perf-history/index.html
 /docs/perf-history/badge-*.json
+
+# ── Editor / OS noise ─────────────────────────────────────────────────────────
+*.swp
+*~
+.DS_Store

@@ -11,9 +11,9 @@ on:
       - '**.hip'
       - 'CMakeLists.txt'
       - 'src/**'
-      - 'systemd/**'
+      - 'deploy/systemd/**'
       - 'debian/**'
-      - 'grafana/**'
+      - 'deploy/grafana/**'
       - '.github/workflows/hsa-snoop-debian-package.yml'
 
 permissions:
