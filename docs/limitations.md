@@ -1,4 +1,4 @@
-# hsa-snoop limitations and notes
+# hsa-snoop Limitations and Notes
 
 * **Sampling snoop, not a tap.** Activity is captured by polling the ring. A
   packet that is enqueued *and* queue-consumed entirely within one poll interval

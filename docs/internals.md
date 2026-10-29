@@ -1,6 +1,6 @@
-# hsa-snoop internals
+# hsa-snoop Internals
 
-## How it works
+## How It Works
 
 hsa-snoop has three stages, all in user space:
 
@@ -50,7 +50,7 @@ hsa-snoop has three stages, all in user space:
 Output is written as a native Perfetto protobuf trace (default) or Chrome JSON
 (`--format json`); both open in <https://ui.perfetto.dev>.
 
-## SDMA capture
+## SDMA Capture
 
 The same discovery kprobe also sees the **SDMA** (`type 1`) and **SDMA_XGMI**
 (`type 3`) queues — the GPU DMA copy engines. `hipMemcpyAsync`, peer-to-peer
@@ -80,7 +80,7 @@ SDMA rings differ from AQL rings in three ways the parser handles separately
 > rather than decoded with the wrong layout. Use `HSA_SNOOP_SDMA_DUMP=1` when
 > calibrating a newly supported generation.
 
-## Do we need to touch the driver?
+## Do We Need to Touch the Driver?
 
 **No.** Everything is done by dynamically attaching to the running,
 stock out-of-tree amdgpu module:
@@ -98,7 +98,7 @@ A source-level tracepoint patch to amdgpu would only ever be needed if dynamic
 kprobe attach were unavailable (e.g. `kfd_ioctl_create_queue` inlined away); it
 is **not** needed on this platform (gfx90a, amdgpu 6.16 DKMS).
 
-## Verifying the AQL layouts
+## Verifying the AQL Layouts
 
 `src/aql.h` is a self-contained copy of the packet formats so the tool builds
 without ROCm `-dev` headers. It is byte-compatible with

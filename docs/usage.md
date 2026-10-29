@@ -1,6 +1,6 @@
-# hsa-snoop usage guide
+# hsa-snoop Usage Guide
 
-## WSL2 / librocdxg mode
+## WSL2 / librocdxg Mode
 
 On Windows Subsystem for Linux 2, the amdgpu KFD device is not present.
 Instead, AMD's librocdxg library bridges HSA calls through the Windows DXG
@@ -23,7 +23,7 @@ to `hsaKmtCreateQueueExt` in `librocdxg.so`. The library path is
 auto-detected via `/opt/rocm/lib/librocdxg.so`; pass `--librocdxg <path>` to
 override. `bpftrace` must be installed and the process must run as root.
 
-## KFD uprobe mode (emulated GPU / no process_vm_readv)
+## KFD Uprobe Mode (Emulated GPU / No process_vm_readv)
 
 On systems with emulated GPU devices (e.g. rocjitsu served over vfio-user),
 `kprobe` mode will deadlock GPU dispatch because `process_vm_readv` on the
@@ -49,7 +49,7 @@ The libhsa-runtime64 path is auto-detected from `/opt/rocm/lib/`; pass
 - Kernel names report as address strings rather than demangled symbols
 - `gpu_id` is always 0
 
-## Dispatch event log (`--log-dispatches`)
+## Dispatch Event Log (`--log-dispatches`)
 
 Prometheus is an aggregating store sampled at the scrape interval. At the
 ~2700 kernel launches/s a tight HIP loop reaches, a 1 s scrape collapses
@@ -82,13 +82,13 @@ into Loki with the Alloy config under `scripts/observability/`.
 > sustained few thousand dispatches/s it produces on the order of 15 MB/minute,
 > so point it at local storage rather than NFS for long runs.
 
-## Quick discovery-only check (no build)
+## Quick Discovery-Only Check (No Build)
 
 ```
 sudo bpftrace scripts/hsa-snoop.bt
 ```
 
-## Running as a systemd daemon
+## Running as a systemd Daemon
 
 Requires a build with `-DHSA_SNOOP_PROMETHEUS=ON`.
 
@@ -129,7 +129,7 @@ EOF
 sudo systemctl daemon-reload && sudo systemctl restart hsa-snoop-prometheus
 ```
 
-## Grafana dashboard development
+## Grafana Dashboard Development
 
 Iterating on a dashboard means many minutes of clicking, and holding a
 `--gres=gpu:1` Slurm allocation open for that is wasteful. The workflow is
