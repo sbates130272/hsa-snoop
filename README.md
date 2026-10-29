@@ -624,18 +624,19 @@ deploy/systemd/hsa-snoop.conf             runtime configuration (extra ExecStart
   child PID.
 * **Physical addresses** resolve for host/GTT-backed rings (the norm for AQL
   host↔GPU queues). VRAM-resident pages have no pagemap PFN and report `0`.
-* **SDMA decode supports v4.x and v6.x packet layouts.** This covers gfx9 CDNA
-  (gfx90a / gfx942) and gfx11 RDNA3 (including gfx1101). SDMA v5/v7 and unknown
-  generations are ignored to avoid losing ring synchronization. Non-linear copy
-  layouts (tiled, sub-window) are counted and stepped over but do not yet
-  contribute a byte total.
+* **SDMA decode supports v4.x, v6.x, and v7.x packet layouts.** v4 covers gfx9
+  CDNA (gfx90a / gfx942); v6 covers gfx11 RDNA3 (including gfx1101); v7 covers
+  gfx12 (including gfx1250 / MI455X). Unknown generations are ignored to avoid
+  losing ring synchronisation. Non-linear copy layouts (tiled, sub-window) are
+  counted and stepped over but do not yet contribute a byte total.
 * **SDMA copy direction is a pagemap heuristic.** A src/dst page with no PFN is
   treated as device (VRAM) memory; this also matches a not-present/swapped host
   page, so a copy touching a paged-out host buffer can be misclassified. For
   live, pinned copy buffers (the common case) it is accurate.
 * Verified on: gfx90a (MI2xx / Aldebaran), ROCm 7.1.0, amdgpu 6.16 DKMS,
-  kernel 6.8, x86-64, and gfx1101 SDMA v6 COPY_LINEAR. SDMA capture calibration
-  is in progress on gfx942 (MI3xx).
+  kernel 6.8, x86-64; gfx1101 SDMA v6 COPY_LINEAR; gfx1250 (MI455X) SDMA v7
+  COPY_LINEAR via rocjitsu/vfio-user. SDMA capture calibration is in progress
+  on gfx942 (MI3xx).
 
 ## Verifying the AQL layouts
 
