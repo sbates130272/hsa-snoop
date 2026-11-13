@@ -1,5 +1,6 @@
 // kfd_debug_scan.h - Retroactive discovery of pre-existing KFD queues via the
-// KFD debug-trap API (AMDKFD_IOC_DBG_TRAP / KFD_IOC_DBG_TRAP_GET_QUEUE_SNAPSHOT).
+// KFD debug-trap API (AMDKFD_IOC_DBG_TRAP /
+// KFD_IOC_DBG_TRAP_GET_QUEUE_SNAPSHOT).
 #pragma once
 #include "model.h"
 #include <functional>
@@ -14,7 +15,8 @@ namespace hsasnoop {
 //
 // Protocol per process:
 //   ptrace(PTRACE_SEIZE) → ENABLE → GET_QUEUE_SNAPSHOT → DISABLE → DETACH
-// The target keeps running throughout; the debug session window is milliseconds.
+// The target keeps running throughout; the debug session window is
+// milliseconds.
 int ScanExistingKfdQueues(std::function<void(const QueueInfo&)> cb,
                           pid_t pid_filter = 0);
 

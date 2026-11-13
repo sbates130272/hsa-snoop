@@ -22,7 +22,6 @@ bool IsWsl2();
 // or returns empty string if not found.
 std::string FindLibrocdxg();
 
-
 class Discovery {
   public:
     using Callback = std::function<void(const QueueInfo&)>;
