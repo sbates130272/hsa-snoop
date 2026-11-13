@@ -4,7 +4,8 @@
 src/aql.{h,cpp}                    AQL packet formats (mirrors <hsa/hsa.h>)
 src/sdma.{h,cpp}                   SDMA microcode packet formats + length decode
 src/model.h                        QueueInfo / PacketRecord / SdmaRecord data model
-src/discovery.{h,cpp}              queue discovery: kprobe (native), bpftrace (WSL2/librocdxg), kfd-uprobe (emulated GPU)
+src/discovery.{h,cpp}              queue discovery: kprobe (native), bpftrace (WSL2/librocdxg)
+src/kfd_debug_scan.{h,cpp}         startup scan for pre-existing KFD queues via AMDKFD_IOC_DBG_TRAP
 src/proc_mem.{h,cpp}               process_vm_readv + pagemap (VA->phys)
 src/ksym.{h,cpp}                   kernel_object -> demangled name via code-object ELFs
 src/parser.{h,cpp}                 per-queue ring poller / AQL + SDMA decoder / timing
