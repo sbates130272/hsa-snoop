@@ -48,6 +48,18 @@ bool ReadQueuePtr(int pid, uint64_t va, uint64_t* out) {
     return ReadU64ViaMem(pid, va, out);
 }
 
+// Read amd_signal_s::value from a completion signal handle. The handle is a
+// user VA pointing to amd_signal_s; value (volatile int64_t) lives at offset 8
+// after the 8-byte kind field. The GPU decrements this to 0 at kernel
+// completion, strictly at or before the CP advances rptr.
+bool ReadSignalValue(int pid, uint64_t signal_handle, int64_t* out) {
+    constexpr uint64_t kValueOffset = 8; // offsetof(amd_signal_s, value)
+    uint64_t va = signal_handle + kValueOffset;
+    if (ReadProcMem(pid, va, out, sizeof(*out)))
+        return true;
+    return ReadProcMemViaMem(pid, va, out, sizeof(*out));
+}
+
 } // namespace
 
 RingParser::RingParser(Sink sink, SdmaSink sdma_sink, int poll_us)
@@ -259,12 +271,28 @@ void RingParser::PollQueue(QueueState* qs, double now) {
         }
     }
 
-    // Mark packets as queue-consumed once read_dispatch_id advances past them.
-    // This is not the same as observing the packet completion signal.
+    // Retire inflight packets in dispatch-id order. A packet is complete when
+    // either (a) rptr has advanced past it (the CP retired the slot), or (b)
+    // its completion signal value has dropped to ≤0 (the GPU decremented it at
+    // kernel completion, which happens at or before the CP updates rptr).
+    // Checking the signal catches completion a poll cycle earlier for packets
+    // that finish between rptr updates.
     while (!qs->inflight.empty()) {
         auto it = qs->inflight.begin();
-        if (it->first >= rptr)
-            break;
+        bool by_signal = false;
+        if (it->first >= rptr) {
+            if (it->second.completion_signal != 0) {
+                int64_t sig = 0;
+                if (ReadSignalValue(q.pid, it->second.completion_signal, &sig))
+                    by_signal = sig <= 0;
+            }
+            if (!by_signal)
+                break;
+        }
+        if (kDebug && by_signal)
+            fprintf(stderr,
+                    "[poll q%lu id%lu] completed via signal (rptr still %lu)\n",
+                    q.uid, it->first, rptr);
         PacketRecord& r = it->second;
         r.complete_ts = now;
         r.completed = true;
