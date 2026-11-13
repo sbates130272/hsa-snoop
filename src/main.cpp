@@ -19,6 +19,7 @@
 
 #include "ais_monitor.h"
 #include "discovery.h"
+#include "kfd_debug_scan.h"
 #include "dispatch_log.h"
 #include "parser.h"
 #include "proc_mem.h"
@@ -59,17 +60,12 @@ void Usage(const char* p) {
         "  --duration <sec>   Auto-stop after N seconds (0 = until "
         "Ctrl-C/exit)\n"
         "  --tracefs <path>   tracefs mount (default /sys/kernel/tracing)\n"
-        "  --mode <mode>      kprobe (default) | bpftrace | kfd-uprobe\n"
+        "  --mode <mode>      kprobe (default) | bpftrace\n"
         "                     bpftrace: for WSL2/librocdxg systems without "
         "KFD\n"
         "                     auto-selected when running in WSL2\n"
-        "                     kfd-uprobe: uprobe on hsa_queue_add_write_index\n"
-        "                     in libhsa-runtime64.so — no process_vm_readv,\n"
-        "                     safe on emulated GPUs (rocjitsu/vfio-user)\n"
         "  --librocdxg <path> Path to librocdxg.so.* (bpftrace mode; "
         "auto-detected)\n"
-        "  --libhsa <path>    Path to libhsa-runtime64.so.* (kfd-uprobe mode;"
-        " auto-detected)\n"
         "  --prometheus       Expose metrics via Prometheus HTTP endpoint\n"
         "                     instead of writing trace files\n"
         "                     (requires -DHSA_SNOOP_PROMETHEUS=ON at build "
@@ -90,6 +86,10 @@ void Usage(const char* p) {
         "                     bpftrace). In Prometheus mode, increments\n"
         "                     hsa_xnack_total per pasid. In trace mode,\n"
         "                     prints fault events to stderr.\n"
+        "  --kfd-scan         Scan all running KFD processes at startup and emit\n"
+        "                     queues created before hsa-snoop started.\n"
+        "                     Uses KFD debug-trap API; requires CAP_SYS_PTRACE.\n"
+        "                     Briefly enables debug mode on each target process.\n"
         "  --mem-snoop        Enable memory footprint mode: for each kernel\n"
         "                     dispatch, scan the kernarg buffer for GPU "
         "virtual\n"
@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
     std::string prometheus_snapshot_path;
 #endif
     std::string out, out_dir, tracefs = "/sys/kernel/tracing";
-    std::string mode_str, librocdxg_path, libhsa_path, dispatch_log_path;
+    std::string mode_str, librocdxg_path, dispatch_log_path;
     Format fmt = Format::kPerfetto;
     std::vector<char*> child_cmd;
 
@@ -160,8 +160,6 @@ int main(int argc, char** argv) {
             mode_str = argv[++i];
         else if (a == "--librocdxg" && i + 1 < argc)
             librocdxg_path = argv[++i];
-        else if (a == "--libhsa" && i + 1 < argc)
-            libhsa_path = argv[++i];
         else if (a == "--prometheus")
             prometheus_mode = true;
         else if (a == "--ais-snoop")
@@ -198,9 +196,7 @@ int main(int argc, char** argv) {
     // Determine discovery mode: explicit --mode overrides, otherwise
     // auto-detect.
     DiscoveryMode disc_mode = DiscoveryMode::kKprobe;
-    if (mode_str == "kfd-uprobe") {
-        disc_mode = DiscoveryMode::kKfdUprobe;
-    } else if (mode_str == "bpftrace") {
+    if (mode_str == "bpftrace") {
         disc_mode = DiscoveryMode::kBpftrace;
     } else if (mode_str.empty() && IsWsl2()) {
         disc_mode = DiscoveryMode::kBpftrace;
@@ -208,21 +204,9 @@ int main(int argc, char** argv) {
                 "hsa-snoop: WSL2 detected, switching to bpftrace mode\n");
     } else if (!mode_str.empty() && mode_str != "kprobe") {
         fprintf(stderr,
-                "hsa-snoop: unknown --mode '%s' (kprobe|bpftrace|kfd-uprobe)\n",
+                "hsa-snoop: unknown --mode '%s' (kprobe|bpftrace)\n",
                 mode_str.c_str());
         return 2;
-    }
-
-    // In kfd-uprobe mode, find libhsa-runtime64 if not supplied explicitly.
-    if (disc_mode == DiscoveryMode::kKfdUprobe && libhsa_path.empty()) {
-        libhsa_path = FindLibhsa();
-        if (libhsa_path.empty()) {
-            fprintf(stderr, "hsa-snoop: cannot locate libhsa-runtime64.so; "
-                            "specify --libhsa <path>\n");
-            return 1;
-        }
-        fprintf(stderr, "hsa-snoop: using libhsa-runtime64 at %s\n",
-                libhsa_path.c_str());
     }
 
     // In bpftrace mode, find librocdxg if not supplied explicitly.
@@ -299,9 +283,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<PrometheusExporter> prom_exporter;
     if (prometheus_mode) {
         const std::string disc_label =
-            disc_mode == DiscoveryMode::kBpftrace    ? "dxg"
-            : disc_mode == DiscoveryMode::kKfdUprobe ? "kfd-uprobe"
-                                                     : "kprobe";
+            disc_mode == DiscoveryMode::kBpftrace ? "dxg" : "kprobe";
         try {
             prom_exporter = std::make_unique<PrometheusExporter>(
                 prometheus_port, 10.0, disc_label);
@@ -642,8 +624,7 @@ int main(int argc, char** argv) {
     }
 
     int queue_count = 0;
-    Discovery discovery(tracefs, pid_filter, disc_mode, librocdxg_path,
-                        libhsa_path);
+    Discovery discovery(tracefs, pid_filter, disc_mode, librocdxg_path);
     auto on_queue = [&](const QueueInfo& q_in) {
         QueueInfo q = q_in;
         if (!q.is_traced())
@@ -702,6 +683,12 @@ int main(int argc, char** argv) {
                 kind, q.pid, q.comm.c_str(), q.uid, q.ring_base, q.ring_phys,
                 q.ring_size, q.num_slots(), q.gpu_id, sdma_version);
     };
+
+    if (child_cmd.empty()) {
+        int n = ScanExistingKfdQueues(on_queue, pid_filter);
+        fprintf(stderr, "hsa-snoop: kfd-scan: %d process(es), %d queue(s)\n",
+                n, queue_count);
+    }
 
     if (!discovery.Start(on_queue)) {
         fprintf(stderr, "hsa-snoop: failed to start discovery\n");

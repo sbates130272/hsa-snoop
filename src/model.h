@@ -148,6 +148,10 @@ enum class AisOp : uint8_t {
 
 const char* AisOpName(AisOp op);
 
+// Global monotonic queue-uid allocator shared across all discovery paths.
+// Defined in kfd_debug_scan.cpp.
+uint64_t AllocQueueUid();
+
 // One AIS (AMD Infinity Storage) ioctl observed via kprobe on kfd_ioctl_ais.
 // Tracks per-GPU (via gpu_id from the handle upper-32 bits) and per-PCIe device
 // (via pcie_id = pdev->devfn encoded as domain:bus:dev.fn string from

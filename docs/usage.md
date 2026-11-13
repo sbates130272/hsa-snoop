@@ -23,31 +23,19 @@ to `hsaKmtCreateQueueExt` in `librocdxg.so`. The library path is
 auto-detected via `/opt/rocm/lib/librocdxg.so`; pass `--librocdxg <path>` to
 override. `bpftrace` must be installed and the process must run as root.
 
-## KFD Uprobe Mode (Emulated GPU / No process_vm_readv)
+## Startup Scan for Pre-existing Queues
 
-On systems with emulated GPU devices (e.g. rocjitsu served over vfio-user),
-`kprobe` mode will deadlock GPU dispatch because `process_vm_readv` on the
-vfio-user shared memfd competes with the emulator's memory access. Use
-`kfd-uprobe` mode instead:
+hsa-snoop automatically scans all running KFD processes at startup using the
+KFD debug-trap API (`AMDKFD_IOC_DBG_TRAP / KFD_IOC_DBG_TRAP_GET_QUEUE_SNAPSHOT`).
+This discovers queues that were created before hsa-snoop started, with full
+metadata (ring VA, wptr, rptr, gpu_id, queue type). The scan runs in launch
+mode is skipped (the target process hasn't started yet); in `--pid` and `--all`
+modes it runs automatically before the event-driven probe is armed.
 
-```
-sudo ./hsa-snoop --mode kfd-uprobe --all --prometheus
-```
-
-`kfd-uprobe` forks a `bpftrace` child that attaches a uprobe to
-`hsa_queue_add_write_index_screlease` in `libhsa-runtime64.so`. This fires
-on every AQL dispatch without reading ring buffer memory, so it is safe on
-emulated devices. `bpftrace` must be installed and the process must run as
-root.
-
-The libhsa-runtime64 path is auto-detected from `/opt/rocm/lib/`; pass
-`--libhsa <path>` to override.
-
-**Current limitations vs kprobe mode:**
-- `hsa_kernel_launches_total` and `hsa_active_queues` are not populated
-  (wptr/rptr addresses not available from this hook; ring parser cannot run)
-- Kernel names report as address strings rather than demangled symbols
-- `gpu_id` is always 0
+The scan uses `PTRACE_SEIZE` (non-stopping) and briefly enables KFD debug mode
+on each target process (milliseconds). It requires `CAP_SYS_PTRACE` (root),
+which hsa-snoop already requires. KFD ioctl minor version ≥ 1.13 is required
+(Linux ~6.1 / AMDGPU ~5.7).
 
 ## Dispatch Event Log (`--log-dispatches`)
 
