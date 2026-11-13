@@ -70,6 +70,14 @@ struct PacketRecord {
     double submit_ts = 0;   // first observed pending (id < wptr, id >= rptr)
     double complete_ts = 0; // observed after rptr advanced past id
     bool completed = false;
+
+    // GPU hardware shader-clock ticks from amd_signal_s::start_ts / end_ts.
+    // Non-zero only when the queue was created under HSA_TOOLS_LIB with
+    // hsa_amd_profiling_set_profiler_enabled and the dispatch had a signal.
+    // Duration in ticks = gpu_end_ticks - gpu_start_ticks; divide by the
+    // GPU shader-clock frequency (Hz) for nanoseconds.
+    uint64_t gpu_start_ticks = 0;
+    uint64_t gpu_end_ticks = 0;
 };
 
 // Copy direction inferred from whether the src/dst pages are host- or

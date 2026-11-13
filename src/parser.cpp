@@ -60,6 +60,28 @@ bool ReadSignalValue(int pid, uint64_t signal_handle, int64_t* out) {
     return ReadProcMemViaMem(pid, va, out, sizeof(*out));
 }
 
+// Read amd_signal_s::start_ts and end_ts (GPU shader-clock ticks written by
+// the CP when hsa_amd_profiling_set_profiler_enabled was active). start_ts is
+// at offset 32, end_ts at offset 40. Returns false if either read fails or
+// start_ts is 0 (profiling not enabled for this dispatch).
+bool TryReadGpuTs(int pid, uint64_t signal_handle,
+                  uint64_t* start_ticks, uint64_t* end_ticks) {
+    constexpr uint64_t kStartOffset = 32; // offsetof(amd_signal_s, start_ts)
+    constexpr uint64_t kEndOffset   = 40; // offsetof(amd_signal_s, end_ts)
+    auto read64 = [&](uint64_t off, uint64_t* out) -> bool {
+        uint64_t va = signal_handle + off;
+        if (ReadProcMem(pid, va, out, sizeof(*out)))
+            return true;
+        return ReadProcMemViaMem(pid, va, out, sizeof(*out));
+    };
+    uint64_t s = 0, e = 0;
+    if (!read64(kStartOffset, &s) || !read64(kEndOffset, &e) || s == 0)
+        return false;
+    *start_ticks = s;
+    *end_ticks   = e;
+    return true;
+}
+
 } // namespace
 
 RingParser::RingParser(Sink sink, SdmaSink sdma_sink, int poll_us)
@@ -257,6 +279,9 @@ void RingParser::PollQueue(QueueState* qs, double now) {
             if (qs->next_id < rptr) {
                 rec.complete_ts = now;
                 rec.completed = true;
+                if (rec.completion_signal != 0)
+                    TryReadGpuTs(q.pid, rec.completion_signal,
+                                 &rec.gpu_start_ticks, &rec.gpu_end_ticks);
                 if (sink_)
                     sink_(rec);
             } else {
@@ -296,6 +321,9 @@ void RingParser::PollQueue(QueueState* qs, double now) {
         PacketRecord& r = it->second;
         r.complete_ts = now;
         r.completed = true;
+        if (r.completion_signal != 0)
+            TryReadGpuTs(q.pid, r.completion_signal,
+                         &r.gpu_start_ticks, &r.gpu_end_ticks);
         if (sink_)
             sink_(r);
         qs->inflight.erase(it);
