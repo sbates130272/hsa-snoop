@@ -97,7 +97,7 @@ void SnapshotProcessQueues(pid_t pid, int kfd_fd,
     }
 
     // Enable debug mode on target.
-    struct kfd_ioctl_dbg_trap_args args{};
+    struct kfd_ioctl_dbg_trap_args args {};
     args.pid = static_cast<__u32>(pid);
     args.op = KFD_IOC_DBG_TRAP_ENABLE;
     args.enable.exception_mask = 0;
@@ -115,7 +115,7 @@ void SnapshotProcessQueues(pid_t pid, int kfd_fd,
     }
 
     // Two-pass GET_QUEUE_SNAPSHOT: first to count, then to fill.
-    struct kfd_ioctl_dbg_trap_args snap{};
+    struct kfd_ioctl_dbg_trap_args snap {};
     snap.pid = static_cast<__u32>(pid);
     snap.op = KFD_IOC_DBG_TRAP_GET_QUEUE_SNAPSHOT;
     snap.queue_snapshot.exception_mask = 0;
@@ -177,7 +177,7 @@ void SnapshotProcessQueues(pid_t pid, int kfd_fd,
     }
 
 disable:
-    struct kfd_ioctl_dbg_trap_args dis{};
+    struct kfd_ioctl_dbg_trap_args dis {};
     dis.pid = static_cast<__u32>(pid);
     dis.op = KFD_IOC_DBG_TRAP_DISABLE;
     ioctl(kfd_fd, AMDKFD_IOC_DBG_TRAP, &dis); // best-effort; ignore error

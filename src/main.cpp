@@ -19,8 +19,8 @@
 
 #include "ais_monitor.h"
 #include "discovery.h"
-#include "kfd_debug_scan.h"
 #include "dispatch_log.h"
+#include "kfd_debug_scan.h"
 #include "parser.h"
 #include "proc_mem.h"
 #include "trace_writer.h"
@@ -86,10 +86,13 @@ void Usage(const char* p) {
         "                     bpftrace). In Prometheus mode, increments\n"
         "                     hsa_xnack_total per pasid. In trace mode,\n"
         "                     prints fault events to stderr.\n"
-        "  --kfd-scan         Scan all running KFD processes at startup and emit\n"
+        "  --kfd-scan         Scan all running KFD processes at startup and "
+        "emit\n"
         "                     queues created before hsa-snoop started.\n"
-        "                     Uses KFD debug-trap API; requires CAP_SYS_PTRACE.\n"
-        "                     Briefly enables debug mode on each target process.\n"
+        "                     Uses KFD debug-trap API; requires "
+        "CAP_SYS_PTRACE.\n"
+        "                     Briefly enables debug mode on each target "
+        "process.\n"
         "  --mem-snoop        Enable memory footprint mode: for each kernel\n"
         "                     dispatch, scan the kernarg buffer for GPU "
         "virtual\n"
@@ -203,8 +206,7 @@ int main(int argc, char** argv) {
         fprintf(stderr,
                 "hsa-snoop: WSL2 detected, switching to bpftrace mode\n");
     } else if (!mode_str.empty() && mode_str != "kprobe") {
-        fprintf(stderr,
-                "hsa-snoop: unknown --mode '%s' (kprobe|bpftrace)\n",
+        fprintf(stderr, "hsa-snoop: unknown --mode '%s' (kprobe|bpftrace)\n",
                 mode_str.c_str());
         return 2;
     }
@@ -686,8 +688,8 @@ int main(int argc, char** argv) {
 
     if (child_cmd.empty()) {
         int n = ScanExistingKfdQueues(on_queue, pid_filter);
-        fprintf(stderr, "hsa-snoop: kfd-scan: %d process(es), %d queue(s)\n",
-                n, queue_count);
+        fprintf(stderr, "hsa-snoop: kfd-scan: %d process(es), %d queue(s)\n", n,
+                queue_count);
     }
 
     if (!discovery.Start(on_queue)) {

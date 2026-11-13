@@ -262,7 +262,9 @@ void Discovery::RunKprobe() {
     char chunk[8192];
 
     while (running_) {
-        struct pollfd pfd{pipe_fd_, POLLIN, 0};
+        struct pollfd pfd {
+            pipe_fd_, POLLIN, 0
+        };
         int pr = poll(&pfd, 1, 200);
         if (pr <= 0)
             continue;
@@ -468,7 +470,9 @@ bool Discovery::StartBpftrace() {
         bool armed = false;
         double deadline = MonoNow() + 20.0;
         while (MonoNow() < deadline) {
-            struct pollfd pfd{pipe_fd_, POLLIN, 0};
+            struct pollfd pfd {
+                pipe_fd_, POLLIN, 0
+            };
             poll(&pfd, 1, 200);
             ssize_t n = read(pipe_fd_, chunk, sizeof(chunk));
             if (n > 0) {
