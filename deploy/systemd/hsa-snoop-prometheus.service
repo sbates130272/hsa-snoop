@@ -10,7 +10,8 @@ ExecStart=/bin/sh -lc 'exec @HSA_SNOOP_EXECUTABLE@ --all --prometheus $HSA_SNOOP
 Restart=on-failure
 RestartSec=5s
 
-# hsa-snoop needs root for tracefs, pagemap, and process_vm_readv.
+# hsa-snoop needs root for tracefs, pagemap, process_vm_readv, and ptrace
+# (CAP_SYS_PTRACE is used by the KFD debug-trap scan at startup).
 # SUDO_UID/SUDO_GID are read from /etc/default/hsa-snoop and allow
 # DetectGpuType() to call rocminfo as the GPU-capable console user on
 # WSL2/DXG. postinst auto-detects these; edit /etc/default/hsa-snoop

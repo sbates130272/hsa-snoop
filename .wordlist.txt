@@ -127,8 +127,8 @@ js
 json
 kfd
 kprobe
-libhsa
 librocdxg
+Pre
 localhost
 logrotate
 mb
