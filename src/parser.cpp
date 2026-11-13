@@ -48,16 +48,45 @@ bool ReadQueuePtr(int pid, uint64_t va, uint64_t* out) {
     return ReadU64ViaMem(pid, va, out);
 }
 
+// amd_signal_s is 64-byte aligned, so bits 0-5 of a valid handle are normally
+// zero. Newer CP firmware uses bits 4-5 as per-dispatch timestamp hint flags
+// (AMD_SIGNAL_HINT_TS_ON / TS_OFF / TS_INHERIT). Strip them before using the
+// handle as a VA so reads land at the correct struct address regardless.
+constexpr uint64_t kSignalVaMask = ~0x3FULL;
+
 // Read amd_signal_s::value from a completion signal handle. The handle is a
 // user VA pointing to amd_signal_s; value (volatile int64_t) lives at offset 8
 // after the 8-byte kind field. The GPU decrements this to 0 at kernel
 // completion, strictly at or before the CP advances rptr.
 bool ReadSignalValue(int pid, uint64_t signal_handle, int64_t* out) {
     constexpr uint64_t kValueOffset = 8; // offsetof(amd_signal_s, value)
-    uint64_t va = signal_handle + kValueOffset;
+    uint64_t va = (signal_handle & kSignalVaMask) + kValueOffset;
     if (ReadProcMem(pid, va, out, sizeof(*out)))
         return true;
     return ReadProcMemViaMem(pid, va, out, sizeof(*out));
+}
+
+// Read amd_signal_s::start_ts and end_ts (GPU shader-clock ticks written by
+// the CP when hsa_amd_profiling_set_profiler_enabled was active). start_ts is
+// at offset 32, end_ts at offset 40. Returns false if either read fails or
+// start_ts is 0 (profiling not enabled for this dispatch).
+bool TryReadGpuTs(int pid, uint64_t signal_handle,
+                  uint64_t* start_ticks, uint64_t* end_ticks) {
+    constexpr uint64_t kStartOffset = 32; // offsetof(amd_signal_s, start_ts)
+    constexpr uint64_t kEndOffset   = 40; // offsetof(amd_signal_s, end_ts)
+    const uint64_t base = signal_handle & kSignalVaMask;
+    auto read64 = [&](uint64_t off, uint64_t* out) -> bool {
+        uint64_t va = base + off;
+        if (ReadProcMem(pid, va, out, sizeof(*out)))
+            return true;
+        return ReadProcMemViaMem(pid, va, out, sizeof(*out));
+    };
+    uint64_t s = 0, e = 0;
+    if (!read64(kStartOffset, &s) || !read64(kEndOffset, &e) || s == 0)
+        return false;
+    *start_ticks = s;
+    *end_ticks   = e;
+    return true;
 }
 
 } // namespace
@@ -257,6 +286,9 @@ void RingParser::PollQueue(QueueState* qs, double now) {
             if (qs->next_id < rptr) {
                 rec.complete_ts = now;
                 rec.completed = true;
+                if (rec.completion_signal != 0)
+                    TryReadGpuTs(q.pid, rec.completion_signal,
+                                 &rec.gpu_start_ticks, &rec.gpu_end_ticks);
                 if (sink_)
                     sink_(rec);
             } else {
@@ -296,6 +328,9 @@ void RingParser::PollQueue(QueueState* qs, double now) {
         PacketRecord& r = it->second;
         r.complete_ts = now;
         r.completed = true;
+        if (r.completion_signal != 0)
+            TryReadGpuTs(q.pid, r.completion_signal,
+                         &r.gpu_start_ticks, &r.gpu_end_ticks);
         if (sink_)
             sink_(r);
         qs->inflight.erase(it);

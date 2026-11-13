@@ -54,6 +54,10 @@ if(HSA_SNOOP_PROMETHEUS)
 endif()
 
 file(GLOB HSA_SNOOP_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
+# Exclude the HSA_TOOLS_LIB shim — it needs HSA headers and a separate
+# compile definition that the main executable must not inherit.
+list(REMOVE_ITEM HSA_SNOOP_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/hsa_profiler_shim.cpp")
 add_executable(hsa-snoop ${HSA_SNOOP_SOURCES})
 target_compile_features(hsa-snoop PRIVATE cxx_std_17)
 target_link_libraries(hsa-snoop PRIVATE Threads::Threads)
@@ -135,6 +139,42 @@ if(HSA_SNOOP_PROMETHEUS)
 endif()
 install(FILES deploy/grafana/hsa-snoop-dashboard.json
         DESTINATION ${CMAKE_INSTALL_DATADIR}/hsa-snoop/grafana)
+
+# ---- Optional HSA_TOOLS_LIB profiler shim ----
+# Builds libhsa-snoop-profiler.so. Set HSA_TOOLS_LIB to its install path
+# before launching a ROCm workload to enable GPU hardware timestamps in every
+# AQL completion signal (hsa_amd_profiling_set_profiler_enabled).
+option(HSA_SNOOP_PROFILER_SHIM
+  "Build HSA_TOOLS_LIB profiler shim for hardware timestamps" ON)
+if(HSA_SNOOP_PROFILER_SHIM)
+  find_path(HSA_API_TRACE_INCLUDE_DIR hsa/hsa_api_trace.h
+    HINTS
+      /opt/rocm/core-10.1/include
+      /opt/rocm/core/include
+      /opt/rocm/include)
+  if(HSA_API_TRACE_INCLUDE_DIR)
+    add_library(hsa-snoop-profiler SHARED src/hsa_profiler_shim.cpp)
+    target_include_directories(hsa-snoop-profiler PRIVATE
+      ${HSA_API_TRACE_INCLUDE_DIR})
+    # AMD_INTERNAL_BUILD: hsa_api_trace.h uses it to pick flat sibling
+    # includes (e.g. "hsa_ext_amd.h") instead of an inc/ subdirectory that
+    # doesn't exist in the installed ROCm package layout.
+    target_compile_definitions(hsa-snoop-profiler PRIVATE AMD_INTERNAL_BUILD)
+    # No link-time dep on the HSA runtime — libhsa-runtime64.so dlopen()s us.
+    set_target_properties(hsa-snoop-profiler PROPERTIES
+      CXX_STANDARD 17
+      CXX_STANDARD_REQUIRED ON
+      OUTPUT_NAME "hsa-snoop-profiler"
+      SOVERSION 1)
+    install(TARGETS hsa-snoop-profiler
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    message(STATUS
+      "HSA profiler shim enabled (headers: ${HSA_API_TRACE_INCLUDE_DIR})")
+  else()
+    message(STATUS
+      "HSA profiler shim skipped — hsa/hsa_api_trace.h not found")
+  endif()
+endif()
 
 # ais-test uses raw KFD ioctls only — no HIP runtime dependency.
 add_executable(ais-test deploy/examples/ais-test.hip)
