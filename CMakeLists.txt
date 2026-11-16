@@ -160,6 +160,15 @@ if(HSA_SNOOP_PROFILER_SHIM)
     # includes (e.g. "hsa_ext_amd.h") instead of an inc/ subdirectory that
     # doesn't exist in the installed ROCm package layout.
     target_compile_definitions(hsa-snoop-profiler PRIVATE AMD_INTERNAL_BUILD)
+    # hsa_amd_queue_create (the descriptor-based call HIP uses) only exists
+    # in newer ROCr. Hook it where the API table has it; older runtimes
+    # create queues with hsa_queue_create, which the shim always hooks.
+    file(STRINGS "${HSA_API_TRACE_INCLUDE_DIR}/hsa/hsa_api_trace.h"
+      _hsa_amd_queue_create_fn REGEX "hsa_amd_queue_create_fn")
+    if(_hsa_amd_queue_create_fn)
+      target_compile_definitions(hsa-snoop-profiler PRIVATE
+        HSA_SNOOP_HAVE_AMD_QUEUE_CREATE)
+    endif()
     # No link-time dep on the HSA runtime — libhsa-runtime64.so dlopen()s us.
     set_target_properties(hsa-snoop-profiler PROPERTIES
       CXX_STANDARD 17
