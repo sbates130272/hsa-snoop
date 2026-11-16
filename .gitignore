@@ -43,9 +43,8 @@ results/
 # ── Spell-check compiled dictionary (created on local lint runs) ──────────────
 dictionary.dic
 
-# ── Generated docs files ──────────────────────────────────────────────────────
-/docs/perf-history/index.html
-/docs/perf-history/badge-*.json
+# ── MkDocs build output ───────────────────────────────────────────────────────
+/site/
 
 # ── Editor / OS noise ─────────────────────────────────────────────────────────
 *.swp

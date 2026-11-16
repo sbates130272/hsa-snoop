@@ -1,0 +1,5 @@
+# Documentation build dependencies. The site is built with --strict, so
+# a theme release that breaks it fails the build instead of publishing.
+mkdocs~=1.6
+mkdocs-material~=9.5
+pymdown-extensions~=10.14

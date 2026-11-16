@@ -1,0 +1,92 @@
+/* Styling for the generated performance and snapshot pages. The
+   Material theme owns typography, tables and dark mode; everything
+   here is a container the theme knows nothing about. */
+
+.perf-empty {
+  padding: 0.8rem 1rem;
+  border-left: 0.2rem solid var(--md-default-fg-color--lighter);
+  color: var(--md-default-fg-color--light);
+}
+
+.perf-cards,
+.perf-charts {
+  display: grid;
+  gap: 0.8rem;
+  margin: 1.2rem 0;
+}
+
+.perf-cards {
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+}
+
+.perf-charts {
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+}
+
+.perf-card,
+.perf-chart {
+  padding: 0.8rem 1rem;
+  border: 0.05rem solid var(--md-default-fg-color--lightest);
+  border-radius: 0.2rem;
+}
+
+.perf-card__label,
+.perf-chart__title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--md-default-fg-color--light);
+}
+
+.perf-card__value {
+  margin: 0.2rem 0;
+  font-size: 1.3rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.perf-card__note {
+  font-size: 0.65rem;
+  color: var(--md-default-fg-color--light);
+}
+
+.perf-chart__canvas {
+  position: relative;
+  height: 11rem;
+  margin-top: 0.4rem;
+}
+
+#perf-runs,
+#prom-families {
+  overflow-x: auto;
+}
+
+#perf-runs table,
+#prom-families table {
+  width: 100%;
+  font-size: 0.7rem;
+}
+
+#perf-runs td.num,
+#perf-runs th.num,
+#prom-families td.num,
+#prom-families th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#prom-families td:first-child {
+  word-break: break-all;
+}
+
+.prom-type {
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.4rem;
+  border: 0.05rem solid var(--md-default-fg-color--lighter);
+  border-radius: 0.2rem;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--light);
+  vertical-align: middle;
+}
