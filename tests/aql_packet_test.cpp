@@ -139,10 +139,56 @@ bool TestBarrierLayout() {
 
 } // namespace
 
+bool TestExtKernelDispatchLayout() {
+    bool ok = true;
+    ok &= Expect(sizeof(aql::ExtKernelDispatchPacket) == 64,
+                 "ExtKernelDispatchPacket must be 64 bytes");
+    ok &= Expect(offsetof(aql::ExtKernelDispatchPacket, amd_format) == 2,
+                 "amd_format must be byte 2");
+    ok &= Expect(offsetof(aql::ExtKernelDispatchPacket, cluster_count_x) == 12,
+                 "cluster_count_x must be at offset 12");
+    ok &= Expect(offsetof(aql::ExtKernelDispatchPacket, cluster_size_x) == 20,
+                 "cluster_size_x must be at offset 20");
+    // The fields hsa-snoop shares with the plain dispatch must line up, so
+    // signal and kernarg handling is the same for both packet kinds.
+    ok &= Expect(offsetof(aql::ExtKernelDispatchPacket, private_segment_size) ==
+                     offsetof(aql::KernelDispatchPacket, private_segment_size),
+                 "private_segment_size offsets must match");
+    ok &= Expect(offsetof(aql::ExtKernelDispatchPacket, kernel_object) ==
+                     offsetof(aql::KernelDispatchPacket, kernel_object),
+                 "kernel_object offsets must match");
+    ok &= Expect(offsetof(aql::ExtKernelDispatchPacket, kernarg_address) ==
+                     offsetof(aql::KernelDispatchPacket, kernarg_address),
+                 "kernarg_address offsets must match");
+    ok &= Expect(offsetof(aql::ExtKernelDispatchPacket, completion_signal) ==
+                     offsetof(aql::KernelDispatchPacket, completion_signal),
+                 "completion_signal offsets must match");
+    return ok;
+}
+
+bool TestExtKernelDispatchHelpers() {
+    bool ok = true;
+    ok &= Expect(!aql::IsExtKernelDispatch(aql::kAmdFormatBarrierValue),
+                 "barrier value is not a dispatch");
+    ok &= Expect(aql::IsExtKernelDispatch(aql::kAmdFormatExtKernelDispatch),
+                 "format 3 is a dispatch");
+    ok &= Expect(aql::IsExtKernelDispatch(aql::kAmdFormatExtKernelDispatchLd),
+                 "format 4 is a dispatch");
+    ok &= Expect(!aql::IsExtKernelDispatch(1), "PM4 IB is not a dispatch");
+    // 4 clusters of 2 work-groups of 64 work-items.
+    ok &= Expect(aql::ExtGridSize(4, 2, 64) == 512, "grid is the product");
+    ok &= Expect(aql::ExtGridSize(1, 1, 1) == 1, "unit dimension stays 1");
+    ok &= Expect(aql::ExtGridSize(UINT32_MAX, 255, 65535) == UINT32_MAX,
+                 "grid saturates instead of wrapping");
+    return ok;
+}
+
 int main() {
     return TestPacketSizes() && TestHeaderType() && TestHeaderBarrier() &&
                    TestPacketTypeNames() && TestGridDims() &&
-                   TestKernelDispatchLayout() && TestBarrierLayout()
+                   TestKernelDispatchLayout() && TestBarrierLayout() &&
+                   TestExtKernelDispatchLayout() &&
+                   TestExtKernelDispatchHelpers()
                ? 0
                : 1;
 }

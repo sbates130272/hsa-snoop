@@ -70,10 +70,10 @@ bool ReadSignalValue(int pid, uint64_t signal_handle, int64_t* out) {
 // the CP when hsa_amd_profiling_set_profiler_enabled was active). start_ts is
 // at offset 32, end_ts at offset 40. Returns false if either read fails or
 // start_ts is 0 (profiling not enabled for this dispatch).
-bool TryReadGpuTs(int pid, uint64_t signal_handle,
-                  uint64_t* start_ticks, uint64_t* end_ticks) {
+bool TryReadGpuTs(int pid, uint64_t signal_handle, uint64_t* start_ticks,
+                  uint64_t* end_ticks) {
     constexpr uint64_t kStartOffset = 32; // offsetof(amd_signal_s, start_ts)
-    constexpr uint64_t kEndOffset   = 40; // offsetof(amd_signal_s, end_ts)
+    constexpr uint64_t kEndOffset = 40;   // offsetof(amd_signal_s, end_ts)
     const uint64_t base = signal_handle & kSignalVaMask;
     auto read64 = [&](uint64_t off, uint64_t* out) -> bool {
         uint64_t va = base + off;
@@ -85,7 +85,7 @@ bool TryReadGpuTs(int pid, uint64_t signal_handle,
     if (!read64(kStartOffset, &s) || !read64(kEndOffset, &e) || s == 0)
         return false;
     *start_ticks = s;
-    *end_ticks   = e;
+    *end_ticks = e;
     return true;
 }
 
@@ -222,6 +222,31 @@ bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
         rec->completion_signal = p.completion_signal;
         rec->kernarg_address = p.kernarg_address;
         rec->kernel_name = qs->ksym->Resolve(p.kernel_object);
+    } else if (type == aql::PacketType::VendorSpecific &&
+               aql::IsExtKernelDispatch(raw[2])) {
+        // AMD extended kernel dispatch: a kernel launch in a vendor packet.
+        // Report it as the KernelDispatch it is, so it gets a kernel name.
+        aql::ExtKernelDispatchPacket p;
+        memcpy(&p, raw, sizeof(p));
+        rec->type = aql::PacketType::KernelDispatch;
+        rec->kernel_object = p.kernel_object;
+        rec->grid[0] = aql::ExtGridSize(p.cluster_count_x, p.cluster_size_x,
+                                        p.workgroup_size_x);
+        rec->grid[1] = aql::ExtGridSize(p.cluster_count_y, p.cluster_size_y,
+                                        p.workgroup_size_y);
+        rec->grid[2] = aql::ExtGridSize(p.cluster_count_z, p.cluster_size_z,
+                                        p.workgroup_size_z);
+        rec->wg[0] = p.workgroup_size_x;
+        rec->wg[1] = p.workgroup_size_y;
+        rec->wg[2] = p.workgroup_size_z;
+        rec->private_seg = p.private_segment_size;
+        rec->group_seg = p.group_segment_size;
+        rec->completion_signal = p.completion_signal;
+        rec->kernarg_address = p.kernarg_address;
+        rec->kernel_name = qs->ksym->Resolve(p.kernel_object);
+    } else if (type == aql::PacketType::VendorSpecific &&
+               raw[2] == aql::kAmdFormatBarrierValue) {
+        rec->kernel_name = "barrier_value";
     } else {
         rec->kernel_name = aql::PacketTypeName(type);
     }
@@ -329,8 +354,8 @@ void RingParser::PollQueue(QueueState* qs, double now) {
         r.complete_ts = now;
         r.completed = true;
         if (r.completion_signal != 0)
-            TryReadGpuTs(q.pid, r.completion_signal,
-                         &r.gpu_start_ticks, &r.gpu_end_ticks);
+            TryReadGpuTs(q.pid, r.completion_signal, &r.gpu_start_ticks,
+                         &r.gpu_end_ticks);
         if (sink_)
             sink_(r);
         qs->inflight.erase(it);
