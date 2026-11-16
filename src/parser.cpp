@@ -82,7 +82,12 @@ bool TryReadGpuTs(int pid, uint64_t signal_handle, uint64_t* start_ticks,
         return ReadProcMemViaMem(pid, va, out, sizeof(*out));
     };
     uint64_t s = 0, e = 0;
-    if (!read64(kStartOffset, &s) || !read64(kEndOffset, &e) || s == 0)
+    const bool read_ok = read64(kStartOffset, &s) && read64(kEndOffset, &e);
+    if (kDebug)
+        fprintf(stderr,
+                "[gputs pid=%d] signal=0x%lx read=%s start_ts=%lu end_ts=%lu\n",
+                pid, signal_handle, read_ok ? "ok" : "FAILED", s, e);
+    if (!read_ok || s == 0)
         return false;
     *start_ticks = s;
     *end_ticks = e;
@@ -306,19 +311,12 @@ void RingParser::PollQueue(QueueState* qs, double now) {
         PacketRecord rec;
         if (DecodeSlot(qs, qs->next_id, rptr, &rec)) {
             rec.submit_ts = now;
-            // Fast-reset path: slot already consumed by GPU (id < rptr), emit
-            // directly as completed rather than adding to inflight.
-            if (qs->next_id < rptr) {
-                rec.complete_ts = now;
-                rec.completed = true;
-                if (rec.completion_signal != 0)
-                    TryReadGpuTs(q.pid, rec.completion_signal,
-                                 &rec.gpu_start_ticks, &rec.gpu_end_ticks);
-                if (sink_)
-                    sink_(rec);
-            } else {
-                qs->inflight.emplace(qs->next_id, std::move(rec));
-            }
+            // Already consumed by the CP when first seen (id < rptr). Record
+            // when, and let the retire loop below decide whether it has
+            // finished or is still waiting on its completion signal.
+            if (qs->next_id < rptr)
+                rec.consumed_ts = now;
+            qs->inflight.emplace(qs->next_id, std::move(rec));
             qs->next_id++;
         } else if (qs->next_id < rptr) {
             qs->dropped++;
@@ -328,30 +326,45 @@ void RingParser::PollQueue(QueueState* qs, double now) {
         }
     }
 
-    // Retire inflight packets in dispatch-id order. A packet is complete when
-    // either (a) rptr has advanced past it (the CP retired the slot), or (b)
-    // its completion signal value has dropped to ≤0 (the GPU decremented it at
-    // kernel completion, which happens at or before the CP updates rptr).
-    // Checking the signal catches completion a poll cycle earlier for packets
-    // that finish between rptr updates.
+    // Retire inflight packets in dispatch-id order.
+    //
+    // rptr advancing past a packet means the CP has taken it off the queue,
+    // not that the kernel has finished. A packet with a completion signal is
+    // finished when the signal value drops to <= 0, which is also when the CP
+    // has written the dispatch's start/end ticks into the signal. So a packet
+    // with a readable signal retires on the signal, and one without retires
+    // on rptr.
+    //
+    // A signal that never drops (recycled by the runtime before this poller
+    // saw it at <= 0) would hold the queue's records back indefinitely, so a
+    // consumed packet stops waiting after kSignalWaitSec and retires on rptr.
+    constexpr double kSignalWaitSec = 5.0;
     while (!qs->inflight.empty()) {
         auto it = qs->inflight.begin();
-        bool by_signal = false;
-        if (it->first >= rptr) {
-            if (it->second.completion_signal != 0) {
-                int64_t sig = 0;
-                if (ReadSignalValue(q.pid, it->second.completion_signal, &sig))
-                    by_signal = sig <= 0;
-            }
-            if (!by_signal)
-                break;
-        }
-        if (kDebug && by_signal)
-            fprintf(stderr,
-                    "[poll q%lu id%lu] completed via signal (rptr still %lu)\n",
-                    q.uid, it->first, rptr);
         PacketRecord& r = it->second;
-        r.complete_ts = now;
+        const bool consumed = it->first < rptr;
+        if (consumed && r.consumed_ts == 0)
+            r.consumed_ts = now;
+
+        bool signalled = false, awaiting_signal = false;
+        if (r.completion_signal != 0) {
+            int64_t sig = 0;
+            if (ReadSignalValue(q.pid, r.completion_signal, &sig)) {
+                signalled = sig <= 0;
+                awaiting_signal = !signalled;
+            }
+        }
+        if (!consumed && !signalled)
+            break;
+        const bool timed_out =
+            awaiting_signal && now - r.consumed_ts >= kSignalWaitSec;
+        if (awaiting_signal && !timed_out)
+            break;
+        if (kDebug && r.completion_signal != 0)
+            fprintf(stderr, "[poll q%lu id%lu] completed via %s (rptr %lu)\n",
+                    q.uid, it->first,
+                    signalled ? "signal" : "rptr after signal timeout", rptr);
+        r.complete_ts = timed_out ? r.consumed_ts : now;
         r.completed = true;
         if (r.completion_signal != 0)
             TryReadGpuTs(q.pid, r.completion_signal, &r.gpu_start_ticks,

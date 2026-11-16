@@ -68,7 +68,8 @@ struct PacketRecord {
 
     // Timing (host CLOCK_MONOTONIC_RAW seconds).
     double submit_ts = 0;   // first observed pending (id < wptr, id >= rptr)
-    double complete_ts = 0; // observed after rptr advanced past id
+    double consumed_ts = 0; // rptr advanced past id (CP took the packet)
+    double complete_ts = 0; // completion signal fired, or consumed if none
     bool completed = false;
 
     // GPU hardware shader-clock ticks from amd_signal_s::start_ts / end_ts.
