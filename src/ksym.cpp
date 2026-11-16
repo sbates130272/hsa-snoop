@@ -74,10 +74,21 @@ std::vector<uint64_t> FindElfBases(int pid, const MemReader& m) {
         // Format: start-end perms offset dev inode path
         uint64_t start = 0, end = 0, off = 1;
         char perms[8] = {0};
-        if (sscanf(line.c_str(), "%lx-%lx %7s %lx", &start, &end, perms, &off) <
-            4)
+        int name_at = -1;
+        if (sscanf(line.c_str(), "%lx-%lx %7s %lx %*s %*s %n", &start, &end,
+                   perms, &off, &name_at) < 4)
             continue;
         if (perms[0] != 'r')
+            continue;
+        // Only probe mappings that can hold a code object. ROCr loads them
+        // into device or shared memory (/dev/dri/renderD*, /dev/zero), or on
+        // WSL2 into an executable anonymous mapping. Reading the start of the
+        // target's other anonymous memory (heap, stacks, runtime buffers)
+        // through /proc/<pid>/mem is not free of side effects: on gfx1250 it
+        // left the process's GPU queues stalled.
+        const bool named =
+            name_at >= 0 && static_cast<size_t>(name_at) < line.size();
+        if (named ? line[name_at] == '[' : perms[2] != 'x')
             continue;
         // NB: AMDGPU code objects backed by /dev/dri/renderD128 report a
         // nonzero file offset (renderD128 is one large BO), yet each object's
