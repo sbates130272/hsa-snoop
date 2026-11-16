@@ -1,15 +1,31 @@
 name: hsa-snoop - docs-deploy
 
+# Builds the MkDocs Material site from docs/ and publishes it to the
+# gh-pages branch, served at https://sbates130272.github.io/hsa-snoop/.
+#
+# A branch deploy rather than the actions/deploy-pages artifact flow,
+# because this is not the only writer. vm-hardware-test pushes the
+# performance data (perf/history.jsonl, perf/badge-*.json,
+# prom/snapshot.json) and grafana-screenshot pushes
+# images/grafana-dashboard.png. The site build knows nothing about
+# those files, so the publish step below leaves them in place; the
+# Performance and Prometheus Snapshot pages fetch them at runtime.
+#
+# Pull requests build the site with --strict but publish nothing.
+
 on:
   workflow_dispatch:
   push:
     branches:
       - main
     paths:
-      - 'README.md'
       - 'docs/**'
-      - '.github/ci/report/publish-perf.py'
-      - '.github/actions/publish-perf/action.yml'
+      - '.mkdocs.yml'
+      - '.github/workflows/hsa-snoop-docs-deploy.yml'
+  pull_request:
+    paths:
+      - 'docs/**'
+      - '.mkdocs.yml'
       - '.github/workflows/hsa-snoop-docs-deploy.yml'
 
 concurrency:
@@ -21,7 +37,7 @@ permissions:
 
 jobs:
   publish-site:
-    name: publish GitHub Pages site
+    name: build and publish GitHub Pages site
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -29,23 +45,19 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v7
 
-      - name: Fetch the published performance history
-        run: |
-          set -euo pipefail
-          mkdir -p docs/perf-history
-          if git fetch --quiet --depth 1 origin gh-pages 2>/dev/null \
-             && git show FETCH_HEAD:perf/history.jsonl \
-                  > docs/perf-history/history.jsonl 2>/dev/null; then
-            echo "using $(wc -l < docs/perf-history/history.jsonl) published runs"
-          else
-            echo "::notice::no published history on gh-pages; rendering the placeholder"
-          fi
+      - name: Set up Python for MkDocs
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
 
-      - name: Render the performance tracker assets
-        run: |
-          python3 .github/ci/report/publish-perf.py --render-only --docs-dir docs
+      - name: Install the documentation toolchain
+        run: pip install -r docs/requirements.txt
+
+      - name: Build site with MkDocs
+        run: mkdocs build --strict --config-file .mkdocs.yml --site-dir site
 
       - name: Publish to gh-pages
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
 
@@ -57,18 +69,18 @@ jobs:
           git worktree add --quiet --detach ../gh-pages FETCH_HEAD
 
           for attempt in 1 2 3; do
+            # Replace the published tree with the built site. The
+            # excludes are the files the other workflows own: rsync
+            # neither overwrites nor deletes an excluded path.
             rsync -a --delete \
-              --exclude '.git' \
-              --exclude 'perf/' \
-              --exclude 'perf-history/' \
-              --exclude 'prom/' \
-              --exclude 'prom-snapshot/' \
-              --exclude 'website/' \
-              docs/ ../gh-pages/
-            # Promote docs/website/ contents to gh-pages root so that
-            # index.html and site.css are served at the site root.
-            rsync -a docs/website/ ../gh-pages/
+              --exclude '/.git' \
+              --exclude '/perf/history.jsonl' \
+              --exclude '/perf/badge-*.json' \
+              --exclude '/prom/snapshot.json' \
+              --exclude '/images/grafana-dashboard.png' \
+              site/ ../gh-pages/
 
+            # The theme emits directories GitHub's Jekyll would skip.
             touch ../gh-pages/.nojekyll
 
             git -C ../gh-pages add -A

@@ -19,6 +19,6 @@ scripts/observability/             offline Grafana/Prometheus/Loki replay stack
 deploy/grafana/hsa-snoop-dashboard.json       reference Grafana dashboard
 deploy/systemd/hsa-snoop-prometheus.service   systemd unit (Prometheus exporter daemon)
 deploy/systemd/hsa-snoop.conf                 runtime configuration (extra ExecStart arguments)
-docs/                              documentation (markdown)
-docs/website/                      GitHub Pages site assets
+docs/                              documentation; built into the GitHub Pages site
+.mkdocs.yml                        MkDocs Material site configuration
 ```

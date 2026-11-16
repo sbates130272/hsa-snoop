@@ -1,0 +1,87 @@
+# MkDocs configuration for the hsa-snoop documentation site.
+#
+# Built and published to the gh-pages branch by
+# .github/workflows/hsa-snoop-docs-deploy.yml and served at
+# https://sbates130272.github.io/hsa-snoop/.
+#
+# Performance data is not built in. The hardware-test lane pushes
+# perf/history.jsonl, perf/badge-*.json and prom/snapshot.json onto
+# gh-pages itself; the Performance and Prometheus Snapshot pages fetch
+# those at runtime, so a site built without them still renders.
+site_name: hsa-snoop
+site_description: >-
+  A HIP/HSA-agnostic AMD GPU runtime analyzer — AQL and SDMA queue
+  tracing, Perfetto traces, Prometheus metrics and CI performance
+  tracking.
+site_url: https://sbates130272.github.io/hsa-snoop/
+repo_url: https://github.com/sbates130272/hsa-snoop
+repo_name: sbates130272/hsa-snoop
+edit_uri: edit/main/docs/
+exclude_docs: |
+  requirements.txt
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+extra_javascript:
+  - https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js
+  - javascripts/perf.js
+  - javascripts/prom.js
+
+extra_css:
+  - stylesheets/extra.css
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Usage: usage.md
+  - Perfetto Traces: perfetto.md
+  - Prometheus Exporter: prometheus.md
+  - Grafana Dashboard: grafana.md
+  - Performance:
+      - perf/index.md
+      - Prometheus Snapshot: prom/index.md
+  - Internals:
+      - How It Works: internals.md
+      - Project Layout: layout.md
+      - Limitations: limitations.md

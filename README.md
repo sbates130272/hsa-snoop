@@ -119,3 +119,10 @@ at `http://localhost:9488/metrics`.
 - [Grafana Dashboard and Development Workflow](docs/grafana.md)
 - [Project Layout](docs/layout.md)
 - [Limitations and Notes](docs/limitations.md)
+
+The same pages are published as a MkDocs Material site. To preview it locally:
+
+```
+pip install -r docs/requirements.txt
+mkdocs serve --config-file .mkdocs.yml
+```
