@@ -48,13 +48,19 @@ bool ReadQueuePtr(int pid, uint64_t va, uint64_t* out) {
     return ReadU64ViaMem(pid, va, out);
 }
 
+// amd_signal_s is 64-byte aligned, so bits 0-5 of a valid handle are normally
+// zero. Newer CP firmware uses bits 4-5 as per-dispatch timestamp hint flags
+// (AMD_SIGNAL_HINT_TS_ON / TS_OFF / TS_INHERIT). Strip them before using the
+// handle as a VA so reads land at the correct struct address regardless.
+constexpr uint64_t kSignalVaMask = ~0x3FULL;
+
 // Read amd_signal_s::value from a completion signal handle. The handle is a
 // user VA pointing to amd_signal_s; value (volatile int64_t) lives at offset 8
 // after the 8-byte kind field. The GPU decrements this to 0 at kernel
 // completion, strictly at or before the CP advances rptr.
 bool ReadSignalValue(int pid, uint64_t signal_handle, int64_t* out) {
     constexpr uint64_t kValueOffset = 8; // offsetof(amd_signal_s, value)
-    uint64_t va = signal_handle + kValueOffset;
+    uint64_t va = (signal_handle & kSignalVaMask) + kValueOffset;
     if (ReadProcMem(pid, va, out, sizeof(*out)))
         return true;
     return ReadProcMemViaMem(pid, va, out, sizeof(*out));
@@ -68,8 +74,9 @@ bool TryReadGpuTs(int pid, uint64_t signal_handle,
                   uint64_t* start_ticks, uint64_t* end_ticks) {
     constexpr uint64_t kStartOffset = 32; // offsetof(amd_signal_s, start_ts)
     constexpr uint64_t kEndOffset   = 40; // offsetof(amd_signal_s, end_ts)
+    const uint64_t base = signal_handle & kSignalVaMask;
     auto read64 = [&](uint64_t off, uint64_t* out) -> bool {
-        uint64_t va = signal_handle + off;
+        uint64_t va = base + off;
         if (ReadProcMem(pid, va, out, sizeof(*out)))
             return true;
         return ReadProcMemViaMem(pid, va, out, sizeof(*out));
