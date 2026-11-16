@@ -266,6 +266,20 @@ if(HSA_SNOOP_HARDWARE_TESTS)
     LABELS "hardware;gfx"
     TIMEOUT 180)
 
+  # Pre-existing queues: attaches to a gfx-test that is already running, so
+  # its queues can only be found by the KFD debug-trap startup scan.
+  add_test(
+    NAME kfd-scan-hardware-test
+    COMMAND ${CMAKE_COMMAND}
+      -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
+      -DGFX_TEST=$<TARGET_FILE:gfx-test>
+      -DTRACE_DIR=${CMAKE_CURRENT_BINARY_DIR}/kfd-scan-traces
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/kfd_scan_hardware_test.cmake)
+  set_tests_properties(kfd-scan-hardware-test PROPERTIES
+    LABELS "hardware;gfx"
+    SKIP_REGULAR_EXPRESSION "SKIP:"
+    TIMEOUT 120)
+
   # SDMA stress: two streams × 4 MB, validates deeper decode than the basic
   # sdma-hardware-test (more copy_linear events, both H2D and D2D directions).
   add_test(
