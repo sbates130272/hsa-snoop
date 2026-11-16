@@ -56,11 +56,13 @@
 }
 
 #perf-runs,
+#timing-table,
 #prom-families {
   overflow-x: auto;
 }
 
 #perf-runs table,
+#timing-table table,
 #prom-families table {
   width: 100%;
   font-size: 0.7rem;
@@ -68,6 +70,8 @@
 
 #perf-runs td.num,
 #perf-runs th.num,
+#timing-table td.num,
+#timing-table th.num,
 #prom-families td.num,
 #prom-families th.num {
   text-align: right;

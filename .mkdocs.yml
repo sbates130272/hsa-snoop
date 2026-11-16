@@ -5,9 +5,9 @@
 # https://sbates130272.github.io/hsa-snoop/.
 #
 # Performance data is not built in. The hardware-test lane pushes
-# perf/history.jsonl, perf/badge-*.json and prom/snapshot.json onto
-# gh-pages itself; the Performance and Prometheus Snapshot pages fetch
-# those at runtime, so a site built without them still renders.
+# perf/, prom/ and timing/ data files onto gh-pages itself; the
+# Performance, Kernel Timing and Prometheus Snapshot pages fetch those
+# at runtime, so a site built without them still renders.
 site_name: hsa-snoop
 site_description: >-
   A HIP/HSA-agnostic AMD GPU runtime analyzer — AQL and SDMA queue
@@ -65,6 +65,7 @@ extra_javascript:
   - https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js
   - javascripts/perf.js
   - javascripts/prom.js
+  - javascripts/timing.js
 
 extra_css:
   - stylesheets/extra.css
@@ -80,6 +81,7 @@ nav:
   - Grafana Dashboard: grafana.md
   - Performance:
       - perf/index.md
+      - Kernel Timing: timing/index.md
       - Prometheus Snapshot: prom/index.md
   - Internals:
       - How It Works: internals.md

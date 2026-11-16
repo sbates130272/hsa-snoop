@@ -20,11 +20,13 @@ sudo ./hsa-snoop --all               # monitor every GPU process system-wide
 [![SDMA copies](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-sdma_copies.json)](perf/index.md)
 [![AIS RX bytes](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_rx_bytes.json)](perf/index.md)
 [![AIS TX bytes](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_tx_bytes.json)](perf/index.md)
+[![Kernel timing](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/timing/badge-kernel_timing.json)](timing/index.md)
 
 Every hardware-test run on `main` records these counters. The
 [performance tracker](perf/index.md) charts them per run, and the
 [Prometheus snapshot](prom/index.md) lists every metric the latest run
-exported.
+exported. [Kernel timing](timing/index.md) records how long each test
+kernel takes.
 
 ## Where To Start
 

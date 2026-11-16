@@ -6,10 +6,11 @@ name: hsa-snoop - docs-deploy
 # A branch deploy rather than the actions/deploy-pages artifact flow,
 # because this is not the only writer. vm-hardware-test pushes the
 # performance data (perf/history.jsonl, perf/badge-*.json,
-# prom/snapshot.json) and grafana-screenshot pushes
-# images/grafana-dashboard.png. The site build knows nothing about
-# those files, so the publish step below leaves them in place; the
-# Performance and Prometheus Snapshot pages fetch them at runtime.
+# prom/snapshot.json, timing/history.jsonl, timing/badge-*.json) and
+# grafana-screenshot pushes images/grafana-dashboard.png. The site
+# build knows nothing about those files, so the publish step below
+# leaves them in place; the pages that present them fetch them at
+# runtime.
 #
 # Pull requests build the site with --strict but publish nothing.
 
@@ -77,6 +78,8 @@ jobs:
               --exclude '/perf/history.jsonl' \
               --exclude '/perf/badge-*.json' \
               --exclude '/prom/snapshot.json' \
+              --exclude '/timing/history.jsonl' \
+              --exclude '/timing/badge-*.json' \
               --exclude '/images/grafana-dashboard.png' \
               site/ ../gh-pages/
 
