@@ -8,8 +8,8 @@
 [![debian-publish](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-debian-publish.yml?branch=main&label=debian-publish)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-publish.yml)
 [![docs-deploy](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-docs-deploy.yml?branch=main&label=docs-deploy)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-docs-deploy.yml)
 [![grafana-screenshot](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-grafana-screenshot.yml?branch=main&label=grafana-screenshot)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-grafana-screenshot.yml)
-[![Grafana Dashboard](https://img.shields.io/badge/Grafana-Dashboard-F46800?logo=grafana)](https://github.com/sbates130272/hsa-snoop/blob/main/deploy/grafana/hsa-snoop-dashboard.json)
-[![Perfetto Tracing](https://img.shields.io/badge/Perfetto-Traces-blueviolet)](https://ui.perfetto.dev)
+[![Grafana Dashboard](https://img.shields.io/badge/Grafana-Dashboard-F46800?logo=grafana)](https://sbates130272.github.io/hsa-snoop/grafana/)
+[![Perfetto Tracing](https://img.shields.io/badge/Perfetto-Traces-blueviolet)](https://sbates130272.github.io/hsa-snoop/perfetto/)
 
 [![kernel launches](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-kernel_launches.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)
 [![SDMA copies](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-sdma_copies.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)

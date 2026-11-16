@@ -46,12 +46,14 @@ def main() -> None:
         sha = meta.get("sha", "unknown")[:12]
         runner = meta.get("runner", "unknown")
         metrics = rec.get("metrics", {})
+        host_labels = f'{{host="{runner}",sha="{sha}"}}'
+        # Emit hsa_snoop_up so the dashboard $host variable can be populated.
+        print(f'hsa_snoop_up{host_labels} 1 {ts_ms}')
         for key, prom_name in METRIC_MAP.items():
             val = metrics.get(key)
             if val is None:
                 continue
-            labels = f'{{host="{runner}",sha="{sha}"}}'
-            print(f"{prom_name}{labels} {val:.0f} {ts_ms}")
+            print(f"{prom_name}{host_labels} {val:.0f} {ts_ms}")
 
 
 if __name__ == "__main__":
