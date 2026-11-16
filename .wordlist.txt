@@ -55,6 +55,7 @@ PFN
 PIDs
 PM4
 Perfetto
+Profiler
 PromQL
 Prometheus
 QEMU
@@ -151,6 +152,7 @@ oras
 pagemap
 pasid
 perf
+profiler
 perfetto
 pftrace
 pid
@@ -174,6 +176,7 @@ rptr
 sbatch
 sdma
 sha
+shader
 src
 sshd
 stderr

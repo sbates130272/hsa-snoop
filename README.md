@@ -1,19 +1,21 @@
 # hsa-snoop: A HIP/HSA-Agnostic AMD GPU Runtime Analyzer
 
-[![vm-hardware-test](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-vm-hardware-test.yml/badge.svg?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-vm-hardware-test.yml)
-[![build-check](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-build-check.yml/badge.svg)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-build-check.yml)
-[![clang-format](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-clang-format.yml/badge.svg)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-clang-format.yml)
-[![spell-check](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-spell-check.yml/badge.svg)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-spell-check.yml)
-[![debian-package](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-package.yml/badge.svg)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-package.yml)
-[![debian-publish](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-publish.yml/badge.svg?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-publish.yml)
-[![docs-deploy](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-docs-deploy.yml/badge.svg?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-docs-deploy.yml)
+[![vm-hardware-test](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-vm-hardware-test.yml?branch=main&label=vm-hardware-test)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-vm-hardware-test.yml)
+[![build-check](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-build-check.yml?label=build-check)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-build-check.yml)
+[![clang-format](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-clang-format.yml?label=clang-format)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-clang-format.yml)
+[![spell-check](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-spell-check.yml?label=spell-check)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-spell-check.yml)
+[![debian-package](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-debian-package.yml?label=debian-package)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-package.yml)
+[![debian-publish](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-debian-publish.yml?branch=main&label=debian-publish)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-publish.yml)
+[![docs-deploy](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-docs-deploy.yml?branch=main&label=docs-deploy)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-docs-deploy.yml)
+[![grafana-screenshot](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-grafana-screenshot.yml?branch=main&label=grafana-screenshot)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-grafana-screenshot.yml)
+[![Grafana Dashboard](https://img.shields.io/badge/Grafana-Dashboard-F46800?logo=grafana)](https://github.com/sbates130272/hsa-snoop/blob/main/deploy/grafana/hsa-snoop-dashboard.json)
+[![Perfetto Tracing](https://img.shields.io/badge/Perfetto-Traces-blueviolet)](https://ui.perfetto.dev)
+
 [![kernel launches](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-kernel_launches.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)
 [![SDMA copies](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-sdma_copies.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)
 [![AIS RX bytes](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_rx_bytes.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)
 [![AIS TX bytes](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_tx_bytes.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/perf/)
-[![grafana-screenshot](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-grafana-screenshot.yml/badge.svg?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-grafana-screenshot.yml)
-[![Grafana Dashboard](https://img.shields.io/badge/Grafana-Dashboard-F46800?logo=grafana)](https://github.com/sbates130272/hsa-snoop/blob/main/deploy/grafana/hsa-snoop-dashboard.json)
-[![Perfetto Tracing](https://img.shields.io/badge/Perfetto-Traces-blueviolet)](https://ui.perfetto.dev)
+[![kernel timing](https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/timing/badge-kernel_timing.json&cacheSeconds=3600)](https://sbates130272.github.io/hsa-snoop/timing/)
 
 `hsa-snoop` traces AMD GPU workloads from user space — without touching the
 driver. It discovers AQL compute queues and SDMA copy queues via a dynamic
@@ -29,6 +31,7 @@ sudo ./hsa-snoop --all               # monitor every GPU process system-wide
 
 Project pages: [GitHub Pages](https://sbates130272.github.io/hsa-snoop/) ·
 [Performance tracker](https://sbates130272.github.io/hsa-snoop/perf/) ·
+[Kernel timing](https://sbates130272.github.io/hsa-snoop/timing/) ·
 [Prometheus snapshot](https://sbates130272.github.io/hsa-snoop/prom/)
 
 → [How it works in detail](docs/internals.md)

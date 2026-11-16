@@ -54,6 +54,10 @@ if(HSA_SNOOP_PROMETHEUS)
 endif()
 
 file(GLOB HSA_SNOOP_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
+# Exclude the HSA_TOOLS_LIB shim — it needs HSA headers and a separate
+# compile definition that the main executable must not inherit.
+list(REMOVE_ITEM HSA_SNOOP_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/hsa_profiler_shim.cpp")
 add_executable(hsa-snoop ${HSA_SNOOP_SOURCES})
 target_compile_features(hsa-snoop PRIVATE cxx_std_17)
 target_link_libraries(hsa-snoop PRIVATE Threads::Threads)
@@ -135,6 +139,51 @@ if(HSA_SNOOP_PROMETHEUS)
 endif()
 install(FILES deploy/grafana/hsa-snoop-dashboard.json
         DESTINATION ${CMAKE_INSTALL_DATADIR}/hsa-snoop/grafana)
+
+# ---- Optional HSA_TOOLS_LIB profiler shim ----
+# Builds libhsa-snoop-profiler.so. Set HSA_TOOLS_LIB to its install path
+# before launching a ROCm workload to enable GPU hardware timestamps in every
+# AQL completion signal (hsa_amd_profiling_set_profiler_enabled).
+option(HSA_SNOOP_PROFILER_SHIM
+  "Build HSA_TOOLS_LIB profiler shim for hardware timestamps" ON)
+if(HSA_SNOOP_PROFILER_SHIM)
+  find_path(HSA_API_TRACE_INCLUDE_DIR hsa/hsa_api_trace.h
+    HINTS
+      /opt/rocm/core-10.1/include
+      /opt/rocm/core/include
+      /opt/rocm/include)
+  if(HSA_API_TRACE_INCLUDE_DIR)
+    add_library(hsa-snoop-profiler SHARED src/hsa_profiler_shim.cpp)
+    target_include_directories(hsa-snoop-profiler PRIVATE
+      ${HSA_API_TRACE_INCLUDE_DIR})
+    # AMD_INTERNAL_BUILD: hsa_api_trace.h uses it to pick flat sibling
+    # includes (e.g. "hsa_ext_amd.h") instead of an inc/ subdirectory that
+    # doesn't exist in the installed ROCm package layout.
+    target_compile_definitions(hsa-snoop-profiler PRIVATE AMD_INTERNAL_BUILD)
+    # hsa_amd_queue_create (the descriptor-based call HIP uses) only exists
+    # in newer ROCr. Hook it where the API table has it; older runtimes
+    # create queues with hsa_queue_create, which the shim always hooks.
+    file(STRINGS "${HSA_API_TRACE_INCLUDE_DIR}/hsa/hsa_api_trace.h"
+      _hsa_amd_queue_create_fn REGEX "hsa_amd_queue_create_fn")
+    if(_hsa_amd_queue_create_fn)
+      target_compile_definitions(hsa-snoop-profiler PRIVATE
+        HSA_SNOOP_HAVE_AMD_QUEUE_CREATE)
+    endif()
+    # No link-time dep on the HSA runtime — libhsa-runtime64.so dlopen()s us.
+    set_target_properties(hsa-snoop-profiler PROPERTIES
+      CXX_STANDARD 17
+      CXX_STANDARD_REQUIRED ON
+      OUTPUT_NAME "hsa-snoop-profiler"
+      SOVERSION 1)
+    install(TARGETS hsa-snoop-profiler
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR})
+    message(STATUS
+      "HSA profiler shim enabled (headers: ${HSA_API_TRACE_INCLUDE_DIR})")
+  else()
+    message(STATUS
+      "HSA profiler shim skipped — hsa/hsa_api_trace.h not found")
+  endif()
+endif()
 
 # ais-test uses raw KFD ioctls only — no HIP runtime dependency.
 add_executable(ais-test deploy/examples/ais-test.hip)
@@ -225,6 +274,20 @@ if(HSA_SNOOP_HARDWARE_TESTS)
   set_tests_properties(all-mode-hardware-test PROPERTIES
     LABELS "hardware;gfx"
     TIMEOUT 180)
+
+  # Pre-existing queues: attaches to a gfx-test that is already running, so
+  # its queues can only be found by the KFD debug-trap startup scan.
+  add_test(
+    NAME kfd-scan-hardware-test
+    COMMAND ${CMAKE_COMMAND}
+      -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
+      -DGFX_TEST=$<TARGET_FILE:gfx-test>
+      -DTRACE_DIR=${CMAKE_CURRENT_BINARY_DIR}/kfd-scan-traces
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/kfd_scan_hardware_test.cmake)
+  set_tests_properties(kfd-scan-hardware-test PROPERTIES
+    LABELS "hardware;gfx"
+    SKIP_REGULAR_EXPRESSION "SKIP:"
+    TIMEOUT 120)
 
   # SDMA stress: two streams × 4 MB, validates deeper decode than the basic
   # sdma-hardware-test (more copy_linear events, both H2D and D2D directions).

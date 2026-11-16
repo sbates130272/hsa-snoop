@@ -24,10 +24,8 @@ jobs:
     name: Build Debian package (Prometheus)
     runs-on: ubuntu-latest
     container:
-      image: rocm/dev-ubuntu-24.04:7.2
+      image: rocm/dev-ubuntu-24.04:10.1.0-full
       options: --user root
-    env:
-      LD_LIBRARY_PATH: /opt/rocm/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 
     steps:
     - name: Install git
@@ -39,6 +37,22 @@ jobs:
       uses: actions/checkout@v7
       with:
         fetch-depth: 0
+
+    # The image may install ROCm under /opt/rocm or a versioned
+    # /opt/rocm/core-<ver>; find it once and export it for CMake and the
+    # loader instead of hard-coding either.
+    - name: Locate ROCm
+      run: |
+        rocm_path=$(ls -d /opt/rocm/core-* 2>/dev/null | sort -V | tail -1)
+        rocm_path=${rocm_path:-/opt/rocm}
+        test -f "$rocm_path/include/hsa/hsa_api_trace.h"
+        echo "ROCm at $rocm_path"
+        {
+          echo "ROCM_PATH=$rocm_path"
+          echo "CMAKE_PREFIX_PATH=$rocm_path"
+          echo "LD_LIBRARY_PATH=$rocm_path/lib:/usr/lib/x86_64-linux-gnu"
+        } >> "$GITHUB_ENV"
+        echo "$rocm_path/bin" >> "$GITHUB_PATH"
 
     - name: Mark repo as safe for git
       run: git config --global --add safe.directory "$GITHUB_WORKSPACE"

@@ -48,6 +48,52 @@ bool ReadQueuePtr(int pid, uint64_t va, uint64_t* out) {
     return ReadU64ViaMem(pid, va, out);
 }
 
+// amd_signal_s is 64-byte aligned, so bits 0-5 of a valid handle are normally
+// zero. Newer CP firmware uses bits 4-5 as per-dispatch timestamp hint flags
+// (AMD_SIGNAL_HINT_TS_ON / TS_OFF / TS_INHERIT). Strip them before using the
+// handle as a VA so reads land at the correct struct address regardless.
+constexpr uint64_t kSignalVaMask = ~0x3FULL;
+
+// Read amd_signal_s::value from a completion signal handle. The handle is a
+// user VA pointing to amd_signal_s; value (volatile int64_t) lives at offset 8
+// after the 8-byte kind field. The GPU decrements this to 0 at kernel
+// completion, strictly at or before the CP advances rptr.
+bool ReadSignalValue(int pid, uint64_t signal_handle, int64_t* out) {
+    constexpr uint64_t kValueOffset = 8; // offsetof(amd_signal_s, value)
+    uint64_t va = (signal_handle & kSignalVaMask) + kValueOffset;
+    if (ReadProcMem(pid, va, out, sizeof(*out)))
+        return true;
+    return ReadProcMemViaMem(pid, va, out, sizeof(*out));
+}
+
+// Read amd_signal_s::start_ts and end_ts (GPU shader-clock ticks written by
+// the CP when hsa_amd_profiling_set_profiler_enabled was active). start_ts is
+// at offset 32, end_ts at offset 40. Returns false if either read fails or
+// start_ts is 0 (profiling not enabled for this dispatch).
+bool TryReadGpuTs(int pid, uint64_t signal_handle, uint64_t* start_ticks,
+                  uint64_t* end_ticks) {
+    constexpr uint64_t kStartOffset = 32; // offsetof(amd_signal_s, start_ts)
+    constexpr uint64_t kEndOffset = 40;   // offsetof(amd_signal_s, end_ts)
+    const uint64_t base = signal_handle & kSignalVaMask;
+    auto read64 = [&](uint64_t off, uint64_t* out) -> bool {
+        uint64_t va = base + off;
+        if (ReadProcMem(pid, va, out, sizeof(*out)))
+            return true;
+        return ReadProcMemViaMem(pid, va, out, sizeof(*out));
+    };
+    uint64_t s = 0, e = 0;
+    const bool read_ok = read64(kStartOffset, &s) && read64(kEndOffset, &e);
+    if (kDebug)
+        fprintf(stderr,
+                "[gputs pid=%d] signal=0x%lx read=%s start_ts=%lu end_ts=%lu\n",
+                pid, signal_handle, read_ok ? "ok" : "FAILED", s, e);
+    if (!read_ok || s == 0)
+        return false;
+    *start_ticks = s;
+    *end_ticks = e;
+    return true;
+}
+
 } // namespace
 
 RingParser::RingParser(Sink sink, SdmaSink sdma_sink, int poll_us)
@@ -181,6 +227,31 @@ bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
         rec->completion_signal = p.completion_signal;
         rec->kernarg_address = p.kernarg_address;
         rec->kernel_name = qs->ksym->Resolve(p.kernel_object);
+    } else if (type == aql::PacketType::VendorSpecific &&
+               aql::IsExtKernelDispatch(raw[2])) {
+        // AMD extended kernel dispatch: a kernel launch in a vendor packet.
+        // Report it as the KernelDispatch it is, so it gets a kernel name.
+        aql::ExtKernelDispatchPacket p;
+        memcpy(&p, raw, sizeof(p));
+        rec->type = aql::PacketType::KernelDispatch;
+        rec->kernel_object = p.kernel_object;
+        rec->grid[0] = aql::ExtGridSize(p.cluster_count_x, p.cluster_size_x,
+                                        p.workgroup_size_x);
+        rec->grid[1] = aql::ExtGridSize(p.cluster_count_y, p.cluster_size_y,
+                                        p.workgroup_size_y);
+        rec->grid[2] = aql::ExtGridSize(p.cluster_count_z, p.cluster_size_z,
+                                        p.workgroup_size_z);
+        rec->wg[0] = p.workgroup_size_x;
+        rec->wg[1] = p.workgroup_size_y;
+        rec->wg[2] = p.workgroup_size_z;
+        rec->private_seg = p.private_segment_size;
+        rec->group_seg = p.group_segment_size;
+        rec->completion_signal = p.completion_signal;
+        rec->kernarg_address = p.kernarg_address;
+        rec->kernel_name = qs->ksym->Resolve(p.kernel_object);
+    } else if (type == aql::PacketType::VendorSpecific &&
+               raw[2] == aql::kAmdFormatBarrierValue) {
+        rec->kernel_name = "barrier_value";
     } else {
         rec->kernel_name = aql::PacketTypeName(type);
     }
@@ -240,16 +311,12 @@ void RingParser::PollQueue(QueueState* qs, double now) {
         PacketRecord rec;
         if (DecodeSlot(qs, qs->next_id, rptr, &rec)) {
             rec.submit_ts = now;
-            // Fast-reset path: slot already consumed by GPU (id < rptr), emit
-            // directly as completed rather than adding to inflight.
-            if (qs->next_id < rptr) {
-                rec.complete_ts = now;
-                rec.completed = true;
-                if (sink_)
-                    sink_(rec);
-            } else {
-                qs->inflight.emplace(qs->next_id, std::move(rec));
-            }
+            // Already consumed by the CP when first seen (id < rptr). Record
+            // when, and let the retire loop below decide whether it has
+            // finished or is still waiting on its completion signal.
+            if (qs->next_id < rptr)
+                rec.consumed_ts = now;
+            qs->inflight.emplace(qs->next_id, std::move(rec));
             qs->next_id++;
         } else if (qs->next_id < rptr) {
             qs->dropped++;
@@ -259,15 +326,49 @@ void RingParser::PollQueue(QueueState* qs, double now) {
         }
     }
 
-    // Mark packets as queue-consumed once read_dispatch_id advances past them.
-    // This is not the same as observing the packet completion signal.
+    // Retire inflight packets in dispatch-id order.
+    //
+    // rptr advancing past a packet means the CP has taken it off the queue,
+    // not that the kernel has finished. A packet with a completion signal is
+    // finished when the signal value drops to <= 0, which is also when the CP
+    // has written the dispatch's start/end ticks into the signal. So a packet
+    // with a readable signal retires on the signal, and one without retires
+    // on rptr.
+    //
+    // A signal that never drops (recycled by the runtime before this poller
+    // saw it at <= 0) would hold the queue's records back indefinitely, so a
+    // consumed packet stops waiting after kSignalWaitSec and retires on rptr.
+    constexpr double kSignalWaitSec = 5.0;
     while (!qs->inflight.empty()) {
         auto it = qs->inflight.begin();
-        if (it->first >= rptr)
-            break;
         PacketRecord& r = it->second;
-        r.complete_ts = now;
+        const bool consumed = it->first < rptr;
+        if (consumed && r.consumed_ts == 0)
+            r.consumed_ts = now;
+
+        bool signalled = false, awaiting_signal = false;
+        if (r.completion_signal != 0) {
+            int64_t sig = 0;
+            if (ReadSignalValue(q.pid, r.completion_signal, &sig)) {
+                signalled = sig <= 0;
+                awaiting_signal = !signalled;
+            }
+        }
+        if (!consumed && !signalled)
+            break;
+        const bool timed_out =
+            awaiting_signal && now - r.consumed_ts >= kSignalWaitSec;
+        if (awaiting_signal && !timed_out)
+            break;
+        if (kDebug && r.completion_signal != 0)
+            fprintf(stderr, "[poll q%lu id%lu] completed via %s (rptr %lu)\n",
+                    q.uid, it->first,
+                    signalled ? "signal" : "rptr after signal timeout", rptr);
+        r.complete_ts = timed_out ? r.consumed_ts : now;
         r.completed = true;
+        if (r.completion_signal != 0)
+            TryReadGpuTs(q.pid, r.completion_signal, &r.gpu_start_ticks,
+                         &r.gpu_end_ticks);
         if (sink_)
             sink_(r);
         qs->inflight.erase(it);

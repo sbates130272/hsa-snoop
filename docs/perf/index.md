@@ -28,3 +28,5 @@ carries performance data; this page fetches the history when it loads.
 
 The same run publishes every metric it exported, not only the four
 tracked here, to the [Prometheus snapshot](../prom/index.md).
+Per-kernel durations from that run are on the
+[kernel timing](../timing/index.md) page.

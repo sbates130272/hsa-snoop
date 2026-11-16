@@ -14,6 +14,7 @@ on:
       - 'deploy/examples/**'
       - 'src/**'
       - 'tests/**'
+      - '.github/ci/report/*kernel-timing*'
       - '.github/workflows/hsa-snoop-vm-hardware-test.yml'
   push:
     branches:
@@ -26,6 +27,7 @@ on:
       - 'deploy/examples/**'
       - 'src/**'
       - 'tests/**'
+      - '.github/ci/report/*kernel-timing*'
       - '.github/workflows/hsa-snoop-vm-hardware-test.yml'
 
 permissions:
@@ -331,6 +333,9 @@ jobs:
           -DHSA_SNOOP_PROMETHEUS=ON
         cmake --build /tmp/hsa-snoop/build --parallel $(nproc)
         ls -lh /tmp/hsa-snoop/build/deploy/examples/sdma-test /tmp/hsa-snoop/build/deploy/examples/gfx-test /tmp/hsa-snoop/build/ais-test
+        # The HSA_TOOLS_LIB profiler shim is optional in CMake (it needs the HSA
+        # headers), so a missing one would otherwise go unnoticed.
+        ls -lh /tmp/hsa-snoop/build/libhsa-snoop-profiler.so
         EOF
 
     - name: Run unit tests in VM
@@ -375,6 +380,45 @@ jobs:
           ./artifacts/prometheus.txt 2>/dev/null || true
         test -s ./artifacts/prometheus.txt || echo "::warning::Prometheus snapshot not collected — prometheus-monotonicity-hardware-test may have been skipped or failed" >&2
 
+    # Kernel timing lane. Runs the gfx-test HIP kernels under hsa-snoop with
+    # the dispatch log on and the HSA_TOOLS_LIB profiler shim loaded. The
+    # capture fails if the shim is missing, if the HSA runtime does not load
+    # it, if no dispatch resolves to a kernel name, or if none carries GPU
+    # timestamps. continue-on-error so a
+    # failure here
+    # cannot cost the run its perf history; the "Fail if" step at the end of
+    # the job still turns the run red.
+    - name: Capture kernel timing in VM
+      id: kernel-timing
+      if: success()
+      continue-on-error: true
+      timeout-minutes: 15
+      run: |
+        ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu \
+          env TIMING_REQUIRE_SHIM=1 \
+          bash /tmp/hsa-snoop/.github/ci/report/capture-kernel-timing.sh \
+            /tmp/hsa-snoop/build /tmp/hsa-snoop/build/kernel-timing.ndjson
+        mkdir -p ./artifacts
+        scp -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -P 2222 "$VM_USERNAME"@qemu:/tmp/hsa-snoop/build/kernel-timing.ndjson \
+          ./artifacts/kernel-timing.ndjson
+        python3 hsa-snoop/.github/ci/report/publish-kernel-timing.py \
+          --dispatch-log ./artifacts/kernel-timing.ndjson \
+          --out-dir ./artifacts/kernel-timing \
+          --summary "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload kernel timing
+      if: always() && steps.kernel-timing.outcome != 'skipped'
+      uses: actions/upload-artifact@v7
+      with:
+        name: kernel-timing
+        path: |
+          artifacts/kernel-timing.ndjson
+          artifacts/kernel-timing/
+        if-no-files-found: ignore
+        retention-days: 7
+
     - name: Publish performance trends to gh-pages
       if: >-
         success() && github.ref == 'refs/heads/main' &&
@@ -383,7 +427,14 @@ jobs:
       uses: ./hsa-snoop/.github/actions/publish-perf
       with:
         prometheus-file: ./artifacts/prometheus.txt
+        dispatch-log: ./artifacts/kernel-timing.ndjson
         token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Fail if the kernel timing capture failed
+      if: steps.kernel-timing.outcome == 'failure'
+      run: |
+        echo "::error::kernel timing capture failed; see the 'Capture kernel timing in VM' step"
+        exit 1
 
     - name: Show compose logs on failure
       if: failure()

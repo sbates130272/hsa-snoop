@@ -178,6 +178,13 @@ void DispatchLog::LogDispatch(const PacketRecord& r, const Ctx& c) {
     // every percentile panel down.
     if (r.completed && r.complete_ts > r.submit_ts)
         AppendFixed(&o, "dur_us", (r.complete_ts - r.submit_ts) * 1e6, 3);
+    // GPU hardware timestamps from amd_signal_s::start_ts / end_ts, present
+    // when the queue was created under HSA_TOOLS_LIB=libhsa-snoop-profiler.so.
+    // Raw shader-clock ticks; divide by GPU frequency (Hz) for nanoseconds.
+    if (r.gpu_start_ticks != 0 && r.gpu_end_ticks > r.gpu_start_ticks) {
+        AppendNum(&o, "gpu_start_ticks", r.gpu_start_ticks);
+        AppendNum(&o, "gpu_end_ticks", r.gpu_end_ticks);
+    }
     o.push_back('}');
     WriteLine(o);
 }
