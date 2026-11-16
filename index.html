@@ -483,6 +483,8 @@
       
         
       
+        
+      
     
     
     
@@ -535,6 +537,34 @@
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="timing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kernel Timing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
               
@@ -822,11 +852,13 @@ kernel names, byte counts and directions.</p>
 <p><a href="perf/"><img alt="Kernel dispatches" src="https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-kernel_launches.json" /></a>
 <a href="perf/"><img alt="SDMA copies" src="https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-sdma_copies.json" /></a>
 <a href="perf/"><img alt="AIS RX bytes" src="https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_rx_bytes.json" /></a>
-<a href="perf/"><img alt="AIS TX bytes" src="https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_tx_bytes.json" /></a></p>
+<a href="perf/"><img alt="AIS TX bytes" src="https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/perf/badge-ais_tx_bytes.json" /></a>
+<a href="timing/"><img alt="Kernel timing" src="https://img.shields.io/endpoint?url=https://sbates130272.github.io/hsa-snoop/timing/badge-kernel_timing.json" /></a></p>
 <p>Every hardware-test run on <code>main</code> records these counters. The
 <a href="perf/">performance tracker</a> charts them per run, and the
 <a href="prom/">Prometheus snapshot</a> lists every metric the latest run
-exported.</p>
+exported. <a href="timing/">Kernel timing</a> records how long each test
+kernel takes.</p>
 <h2 id="where-to-start">Where To Start<a class="headerlink" href="#where-to-start" title="Permanent link">&para;</a></h2>
 <div class="grid cards">
 <ul>
@@ -928,6 +960,8 @@ testing and the HIP examples.</p>
         <script src="javascripts/perf.js"></script>
       
         <script src="javascripts/prom.js"></script>
+      
+        <script src="javascripts/timing.js"></script>
       
     
   </body>

@@ -16,7 +16,7 @@
         <link rel="prev" href="../grafana/">
       
       
-        <link rel="next" href="../prom/">
+        <link rel="next" href="../timing/">
       
       
         
@@ -407,6 +407,8 @@
       
         
       
+        
+      
     
     
     
@@ -459,6 +461,34 @@
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../timing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Kernel Timing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
               
             
               
@@ -754,7 +784,9 @@ run and hands the exposition text to
 <code>perf/badge-*.json</code> files behind the README badges. Nothing in <code>main</code>
 carries performance data; this page fetches the history when it loads.</p>
 <p>The same run publishes every metric it exported, not only the four
-tracked here, to the <a href="../prom/">Prometheus snapshot</a>.</p>
+tracked here, to the <a href="../prom/">Prometheus snapshot</a>.
+Per-kernel durations from that run are on the
+<a href="../timing/">kernel timing</a> page.</p>
 
 
 
@@ -820,6 +852,8 @@ tracked here, to the <a href="../prom/">Prometheus snapshot</a>.</p>
         <script src="../javascripts/perf.js"></script>
       
         <script src="../javascripts/prom.js"></script>
+      
+        <script src="../javascripts/timing.js"></script>
       
     
   </body>
