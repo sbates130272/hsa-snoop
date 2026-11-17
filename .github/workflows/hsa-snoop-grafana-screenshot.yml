@@ -151,12 +151,15 @@ jobs:
           sleep 5
           # Render full dashboard: uid=hsa-snoop, 1600x900, dark theme.
           # Use a 30-day window so any historical data points are visible.
+          # Pin all multi-select variables to "All" so panels show aggregate
+          # history data even when label_values() queries find no live metrics.
+          VARS="var-host=All&var-gpu_id=All&var-comm=All&var-pid=All&var-kernel=All&var-pcie_id=All&var-device_type=All"
           curl -sf \
-            "http://localhost:3000/render/d/hsa-snoop/hsa-snoop?orgId=1&width=1600&height=900&from=now-30d&to=now&theme=dark" \
+            "http://localhost:3000/render/d/hsa-snoop/hsa-snoop?orgId=1&width=1600&height=900&from=now-30d&to=now&theme=dark&${VARS}" \
             -o images/grafana-dashboard.png || {
               echo "::warning::dashboard render failed; trying overview row only"
               curl -sf \
-                "http://localhost:3000/render/d-solo/hsa-snoop/hsa-snoop?orgId=1&panelId=2&width=1600&height=600&from=now-30d&to=now&theme=dark" \
+                "http://localhost:3000/render/d-solo/hsa-snoop/hsa-snoop?orgId=1&panelId=2&width=1600&height=600&from=now-30d&to=now&theme=dark&${VARS}" \
                 -o images/grafana-dashboard.png || true
             }
           if [ -s images/grafana-dashboard.png ]; then
