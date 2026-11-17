@@ -1,4 +1,4 @@
-name: hsa-snoop - grafana-screenshot
+name: grafana-screenshot
 
 # Renders a screenshot of the HSA Snoop Grafana dashboard, seeded with the
 # published performance history, and pushes it to gh-pages so the README can
@@ -6,7 +6,7 @@ name: hsa-snoop - grafana-screenshot
 
 on:
   workflow_run:
-    workflows: ["hsa-snoop - vm-hardware-test"]
+    workflows: ["vm-hardware-test"]
     types: [completed]
     branches: [main]
   schedule:
@@ -71,6 +71,22 @@ jobs:
                 -H 'Content-Type: text/plain' \
                 --data-binary @- \
               || echo "::warning::import returned non-zero; continuing"
+
+      - name: Import latest Prometheus snapshot into VictoriaMetrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -s gh-pages/prom/snapshot.json ]; then
+            python3 -I hsa-snoop/.github/ci/report/gen-prom-snapshot.py \
+              gh-pages/prom/snapshot.json \
+              | curl -sf -X POST http://localhost:8428/api/v1/import/prometheus \
+                  -H 'Content-Type: text/plain' \
+                  --data-binary @- \
+              || echo "::warning::snapshot import returned non-zero; continuing"
+            echo "imported prom/snapshot.json into VictoriaMetrics"
+          else
+            echo "::warning::no prom/snapshot.json on gh-pages; skipping snapshot import"
+          fi
 
       - name: Provision Grafana datasource and dashboard
         shell: bash

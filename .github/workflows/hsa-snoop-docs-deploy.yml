@@ -1,4 +1,4 @@
-name: hsa-snoop - docs-deploy
+name: docs-deploy
 
 # Builds the MkDocs Material site from docs/ and publishes it to the
 # gh-pages branch, served at https://sbates130272.github.io/hsa-snoop/.
