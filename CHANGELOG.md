@@ -17,7 +17,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that previously showed "No Data".
 - `workflow_run` trigger in `grafana-screenshot.yml` updated to match the renamed
   workflow name after the `"hsa-snoop - "` prefix was dropped.
-- Workflow `name:` fields stripped of `"hsa-snoop - "` prefix so shields.io
+- Workflow `name:` fields stripped of `"hsa-snoop - "` prefix so `shields.io`
   derives badge labels correctly without `?label=` overrides.
 
 ## [1.5.0] — 2025-07-14
@@ -45,7 +45,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Grafana dashboard screenshot CI workflow.
 
 ### Changed
-- Repo layout reorganised; Prometheus metrics cleaned up.
+- Repository layout reorganised; Prometheus metrics cleaned up.
 - README restructured; content migrated into `docs/` tree.
 
 ### Fixed

@@ -67,8 +67,10 @@ ROCm
 ROCr
 SDMA
 Slurm
+slurm
 Strix
 TSDB
+VictoriaMetrics
 UID
 VMFAULT
 VRAM
@@ -92,6 +94,7 @@ datasource
 datasources
 debian
 debugfs
+Dependabot
 debuginfo
 demangled
 deref
@@ -129,8 +132,13 @@ journalctl
 js
 json
 kfd
+kernarg
+Kernarg
 kprobe
+kprobes
+ksym
 librocdxg
+lifecycle
 Pre
 localhost
 logrotate
@@ -143,6 +151,7 @@ mkdir
 modprobe
 monotonic
 namespace
+observability
 ndjson
 netplan
 networkctl
