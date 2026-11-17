@@ -12,7 +12,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   VictoriaMetrics during Grafana screenshot CI.
 
 ### Fixed
-- Grafana screenshot CI now imports the full Prometheus snapshot from gh-pages,
+- Grafana screenshot CI now imports the full Prometheus snapshot from `gh-pages`,
   filling Overview gauges, Kernel Duration, Queue/Barrier, SDMA, and AIS panels
   that previously showed "No Data".
 - `workflow_run` trigger in `grafana-screenshot.yml` updated to match the renamed

@@ -9,6 +9,7 @@ CAP_SYS_ADMIN
 CDNA
 CMake
 CSV
+Changelog
 Chrome
 CivetWeb
 Ctrl
