@@ -1,13 +1,13 @@
 # hsa-snoop: A HIP/HSA-Agnostic AMD GPU Runtime Analyzer
 
-[![vm-hardware-test](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-vm-hardware-test.yml?branch=main&label=vm-hardware-test)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-vm-hardware-test.yml)
-[![build-check](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-build-check.yml?label=build-check)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-build-check.yml)
-[![clang-format](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-clang-format.yml?label=clang-format)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-clang-format.yml)
-[![spell-check](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-spell-check.yml?label=spell-check)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-spell-check.yml)
-[![debian-package](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-debian-package.yml?label=debian-package)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-package.yml)
-[![debian-publish](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-debian-publish.yml?branch=main&label=debian-publish)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-publish.yml)
-[![docs-deploy](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-docs-deploy.yml?branch=main&label=docs-deploy)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-docs-deploy.yml)
-[![grafana-screenshot](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-grafana-screenshot.yml?branch=main&label=grafana-screenshot)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-grafana-screenshot.yml)
+[![vm-hardware-test](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-vm-hardware-test.yml?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-vm-hardware-test.yml)
+[![build-check](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-build-check.yml)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-build-check.yml)
+[![clang-format](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-clang-format.yml)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-clang-format.yml)
+[![spell-check](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-spell-check.yml)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-spell-check.yml)
+[![debian-package](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-debian-package.yml)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-package.yml)
+[![debian-publish](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-debian-publish.yml?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-debian-publish.yml)
+[![docs-deploy](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-docs-deploy.yml?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-docs-deploy.yml)
+[![grafana-screenshot](https://img.shields.io/github/actions/workflow/status/sbates130272/hsa-snoop/hsa-snoop-grafana-screenshot.yml?branch=main)](https://github.com/sbates130272/hsa-snoop/actions/workflows/hsa-snoop-grafana-screenshot.yml)
 [![Grafana Dashboard](https://img.shields.io/badge/Grafana-Dashboard-F46800?logo=grafana)](https://sbates130272.github.io/hsa-snoop/grafana/)
 [![Perfetto Tracing](https://img.shields.io/badge/Perfetto-Traces-blueviolet)](https://sbates130272.github.io/hsa-snoop/perfetto/)
 

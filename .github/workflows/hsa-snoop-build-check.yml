@@ -1,4 +1,4 @@
-name: hsa-snoop - build-check
+name: build-check
 
 on:
   workflow_dispatch:

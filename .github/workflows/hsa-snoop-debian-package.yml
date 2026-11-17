@@ -1,4 +1,4 @@
-name: hsa-snoop - debian-package
+name: debian-package
 
 on:
   workflow_dispatch:
