@@ -6,6 +6,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
@@ -76,6 +77,16 @@ void Usage(const char* p) {
         "  --prometheus-snapshot <path>\n"
         "                     Write a final /metrics snapshot to <path> on "
         "exit\n"
+        "  --host-label <s>   Value of the constant `host` label (default:\n"
+        "                     hostname; env HSA_SNOOP_HOST_LABEL). Set it in\n"
+        "                     containers, where the hostname is the "
+        "container id\n"
+        "  --rocm-version <s> Value of the constant `rocm_version` label\n"
+        "                     (default: detected from /opt/rocm; env\n"
+        "                     HSA_SNOOP_ROCM_VERSION)\n"
+        "  --kernel-name-max <n>\n"
+        "                     Truncate kernel_name label values to <n> bytes\n"
+        "                     (default 0 = no limit)\n"
         "  --ais-snoop        Enable AMD Infinity Storage (AIS) IO snooping\n"
         "                     via kprobe on kfd_ioctl_ais\n"
         "                     AIS events are included in the trace or "
@@ -137,6 +148,11 @@ int main(int argc, char** argv) {
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
     uint16_t prometheus_port = 9488;
     std::string prometheus_snapshot_path;
+    PrometheusExporter::Options prom_options;
+    if (const char* e = getenv("HSA_SNOOP_HOST_LABEL"))
+        prom_options.host_label = e;
+    if (const char* e = getenv("HSA_SNOOP_ROCM_VERSION"))
+        prom_options.rocm_version = e;
 #endif
     std::string out, out_dir, tracefs = "/sys/kernel/tracing";
     std::string mode_str, librocdxg_path, dispatch_log_path;
@@ -178,6 +194,13 @@ int main(int argc, char** argv) {
             prometheus_port = static_cast<uint16_t>(atoi(argv[++i]));
         else if (a == "--prometheus-snapshot" && i + 1 < argc)
             prometheus_snapshot_path = argv[++i];
+        else if (a == "--host-label" && i + 1 < argc)
+            prom_options.host_label = argv[++i];
+        else if (a == "--rocm-version" && i + 1 < argc)
+            prom_options.rocm_version = argv[++i];
+        else if (a == "--kernel-name-max" && i + 1 < argc)
+            prom_options.kernel_name_max =
+                static_cast<size_t>(std::max(0, atoi(argv[++i])));
 #endif
         else if (a == "--format" && i + 1 < argc)
             fmt = std::string(argv[++i]) == "json" ? Format::kJson
@@ -288,7 +311,7 @@ int main(int argc, char** argv) {
             disc_mode == DiscoveryMode::kBpftrace ? "dxg" : "kprobe";
         try {
             prom_exporter = std::make_unique<PrometheusExporter>(
-                prometheus_port, 10.0, disc_label);
+                prometheus_port, 10.0, disc_label, prom_options);
         } catch (const std::exception& e) {
             fprintf(stderr,
                     "hsa-snoop: failed to start Prometheus endpoint on port "
@@ -470,7 +493,8 @@ int main(int argc, char** argv) {
                                                   : 256; // pre-v3 descriptor
                         mr.footprint_valid = ScanKernargFootprint(
                             it->second.pid, r.kernarg_address, scan_bytes,
-                            &mr.mapped_vram_bytes, &mr.ptr_count);
+                            &mr.mapped_vram_bytes, &mr.ptr_count,
+                            /*max_vma_age_sec=*/1.0);
                     }
                     // else: the queue was never registered, so there is no pid
                     // to read from — footprint_valid stays false.
@@ -542,7 +566,16 @@ int main(int argc, char** argv) {
                 single_writer->Add(r);
             }
         },
-        poll_us);
+        poll_us,
+        [&](uint64_t queue_uid, uint64_t n, const char* reason) {
+            (void)queue_uid;
+            (void)n;
+            (void)reason;
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+            if (prom_exporter)
+                prom_exporter->AddMissed(queue_uid, n, reason);
+#endif
+        });
 
     // Launch mode: fork the child stopped so we can scope discovery to its pid
     // and arm the probe before it can create any queue. It is resumed

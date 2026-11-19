@@ -13,11 +13,29 @@ curl http://localhost:9488/metrics
 All metrics carry constant labels `host`, `platform`, `rocm_version`,
 `discovery_mode`.
 
+Options that shape the labels:
+
+| Option | Environment | Effect |
+| --- | --- | --- |
+| `--host-label <s>` | `HSA_SNOOP_HOST_LABEL` | Value of `host`. Defaults to the host name, which in a container is the container id and changes on every recreate; set it to the node name there. |
+| `--rocm-version <s>` | `HSA_SNOOP_ROCM_VERSION` | Value of `rocm_version`. Defaults to the version found under `/opt/rocm`, or `unknown` when ROCm is installed only in the traced containers. |
+| `--kernel-name-max <n>` | — | Truncate `kernel_name` values to `n` bytes (ending in `...`). Default 0, no limit. Names that differ only past the cut share one series. |
+
+`hsa_kernel_duration_seconds` is sampled. `hsa_kernel_launches_total` carries
+`kernel_name` and the unmeasured counter does not, so aggregate both sides to
+get the sample rate:
+
+```promql
+1 - sum by (gpu_id, pid, comm) (rate(hsa_kernel_durations_unmeasured_total[5m]))
+  / sum by (gpu_id, pid, comm) (rate(hsa_kernel_launches_total[5m]))
+```
+
 | Metric | Type | Labels | Description |
 | --- | --- | --- | --- |
 | `hsa_snoop_up` | Gauge | — | 1 when the exporter is running |
 | `hsa_kernel_launches_total` | Counter | `kernel_name`, `gpu_id`, `gpu_type`, `pid`, `comm` | Kernel dispatch count |
 | `hsa_kernel_duration_seconds` | Histogram | `kernel_name`, `gpu_id`, `gpu_type` | Kernel duration (host-observed, enqueue to queue-consumed) |
+| `hsa_kernel_durations_unmeasured_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm` | Launches with no duration observation (see the sample-rate query below) |
 | `hsa_kernel_launches_per_second` | Gauge | `gpu_id`, `gpu_type` | Rolling 10 s launch rate |
 | `hsa_last_kernel_launch_timestamp_seconds` | Gauge | `gpu_id`, `gpu_type` | Wall-clock time of most recent launch |
 | `hsa_last_kernel_launch_info` | Gauge | `gpu_id`, `gpu_type`, `kernel_name` | Most recently launched kernel name (value always 1) |
@@ -30,6 +48,7 @@ All metrics carry constant labels `host`, `platform`, `rocm_version`,
 | `hsa_sdma_present` | Gauge | — | 1 when first SDMA queue seen; 0 on APU/unified-memory nodes |
 | `hsa_triggered` | Gauge | `gpu_id`, `gpu_type` | 1 on first kernel dispatch on this GPU |
 | `hsa_errors_total` | Counter | `gpu_id`, `pid` | Packets before queue registration |
+| `hsa_dispatches_missed_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `reason` | AQL packets not decoded. `reason` is `overwritten` (the ring wrapped before they were read), `consumed` (already consumed and the slot no longer holds a packet that can be decoded) or `unreadable` (the slot read failed). Counts every packet type, not only kernel dispatches |
 | `hsa_xnack_total` | Counter | `pasid`, `comm` | GPU page-fault retries (`--xnack-snoop`) |
 
 ## AIS Metrics

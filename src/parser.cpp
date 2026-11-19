@@ -96,9 +96,10 @@ bool TryReadGpuTs(int pid, uint64_t signal_handle, uint64_t* start_ticks,
 
 } // namespace
 
-RingParser::RingParser(Sink sink, SdmaSink sdma_sink, int poll_us)
+RingParser::RingParser(Sink sink, SdmaSink sdma_sink, int poll_us,
+                       MissSink miss_sink)
     : sink_(std::move(sink)), sdma_sink_(std::move(sdma_sink)),
-      poll_us_(poll_us) {
+      miss_sink_(std::move(miss_sink)), poll_us_(poll_us) {
     running_ = true;
     thread_ = std::thread(&RingParser::Run, this);
 }
@@ -130,6 +131,29 @@ void RingParser::AddQueue(const QueueInfo& q) {
     queues_.push_back(std::move(qs));
 }
 
+// Read ring memory. A ring normally lives in host (GTT) memory that
+// process_vm_readv can reach. On ROCm 10.2 it can fail with EFAULT: rings are
+// in device memory by default on gfx94x/gfx125x with Large BAR, and gfx1201
+// rings are unreadable too for a reason not yet identified. /proc/<pid>/mem
+// reads them in both cases, so fall back to it as ReadQueuePtr does.
+bool RingParser::ReadRing(QueueState* qs, uint64_t va, void* out, size_t len) {
+    const int pid = qs->info.pid;
+    if (!qs->ring_via_mem) {
+        if (ReadProcMem(pid, va, out, len))
+            return true;
+        if (!ReadProcMemViaMem(pid, va, out, len))
+            return false;
+        qs->ring_via_mem = true;
+        fprintf(stderr,
+                "[parser] queue uid=%lu pid=%d: ring is not readable with "
+                "process_vm_readv; reading it through "
+                "/proc/%d/mem\n",
+                qs->info.uid, pid, pid);
+        return true;
+    }
+    return ReadProcMemViaMem(pid, va, out, len);
+}
+
 // Read and decode the AQL packet at ring slot for `id`. Returns false if the
 // packet is not yet ready (producer reserved the slot but has not published the
 // header) or the read failed.
@@ -141,18 +165,20 @@ void RingParser::AddQueue(const QueueInfo& q) {
 // intact and we synthesize a KernelDispatch record rather than silently
 // dropping it.
 bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
-                            PacketRecord* rec) {
+                            PacketRecord* rec, bool* read_failed) {
     const QueueInfo& q = qs->info;
+    *read_failed = false;
     uint32_t slots = q.num_slots();
     if (!slots)
         return false;
     uint64_t addr = q.ring_base + (id % slots) * aql::kPacketSize;
 
     uint8_t raw[aql::kPacketSize];
-    if (!ReadProcMem(q.pid, addr, raw, sizeof(raw))) {
+    if (!ReadRing(qs, addr, raw, sizeof(raw))) {
         if (kDebug)
             fprintf(stderr, "[decode q%lu id%lu] read failed @0x%lx\n", q.uid,
                     id, addr);
+        *read_failed = true;
         return false;
     }
 
@@ -294,8 +320,9 @@ void RingParser::PollQueue(QueueState* qs, double now) {
 
     // Guard against decoding slots the producer has already wrapped over.
     uint64_t slots = q.num_slots();
+    uint64_t overwritten = 0, consumed_undecodable = 0, unreadable = 0;
     if (wptr > qs->next_id + slots) {
-        qs->dropped += (wptr - qs->next_id) - slots;
+        overwritten = (wptr - qs->next_id) - slots;
         qs->next_id = wptr - slots;
     }
 
@@ -309,7 +336,8 @@ void RingParser::PollQueue(QueueState* qs, double now) {
     //                  skip.
     while (qs->next_id < wptr) {
         PacketRecord rec;
-        if (DecodeSlot(qs, qs->next_id, rptr, &rec)) {
+        bool read_failed = false;
+        if (DecodeSlot(qs, qs->next_id, rptr, &rec, &read_failed)) {
             rec.submit_ts = now;
             // Already consumed by the CP when first seen (id < rptr). Record
             // when, and let the retire loop below decide whether it has
@@ -319,11 +347,20 @@ void RingParser::PollQueue(QueueState* qs, double now) {
             qs->inflight.emplace(qs->next_id, std::move(rec));
             qs->next_id++;
         } else if (qs->next_id < rptr) {
-            qs->dropped++;
+            ++(read_failed ? unreadable : consumed_undecodable);
             qs->next_id++;
         } else {
             break; // genuinely pending publication
         }
+    }
+    qs->dropped += overwritten + consumed_undecodable + unreadable;
+    if (miss_sink_) {
+        if (overwritten)
+            miss_sink_(q.uid, overwritten, "overwritten");
+        if (consumed_undecodable)
+            miss_sink_(q.uid, consumed_undecodable, "consumed");
+        if (unreadable)
+            miss_sink_(q.uid, unreadable, "unreadable");
     }
 
     // Retire inflight packets in dispatch-id order.
@@ -378,7 +415,6 @@ void RingParser::PollQueue(QueueState* qs, double now) {
 
 void RingParser::Run() {
     while (running_) {
-        double now = MonoNow();
         std::vector<QueueState*> snapshot;
         {
             std::lock_guard<std::mutex> lk(mu_);
@@ -392,6 +428,9 @@ void RingParser::Run() {
                 qs->evict = true;
                 continue;
             }
+            // Timestamp per queue, not per pass: a slow pass over one queue
+            // must not be charged to the next queue's durations.
+            const double now = MonoNow();
             if (qs->info.is_sdma())
                 PollSdmaQueue(qs, now);
             else
@@ -425,10 +464,10 @@ bool RingParser::ReadRingDwords(QueueState* qs, uint64_t start_dw, uint32_t n,
         return false;
     uint64_t off = start_dw % ring_dw;
     uint64_t first = std::min<uint64_t>(n, ring_dw - off);
-    if (!ReadProcMem(q.pid, q.ring_base + off * 4, out, first * 4))
+    if (!ReadRing(qs, q.ring_base + off * 4, out, first * 4))
         return false;
     if (first < n)
-        return ReadProcMem(q.pid, q.ring_base, out + first, (n - first) * 4);
+        return ReadRing(qs, q.ring_base, out + first, (n - first) * 4);
     return true;
 }
 

@@ -4,7 +4,45 @@ All notable changes to hsa-snoop are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v1.6.0
+## [Unreleased]
+
+### Added
+- `hsa_dispatches_missed_total` counter: AQL packets that were never decoded,
+  labelled by `reason`, so a consumer can see loss and tell a poller that is
+  behind from packets that could not be decoded.
+- Startup warning when process ids from the `create_queue` probe are not
+  visible in `/proc` (container outside the host PID namespace).
+- `hsa_kernel_durations_unmeasured_total` counter: launches that produced no
+  duration observation, which exposes the sample rate of
+  `hsa_kernel_duration_seconds`.
+- `--host-label` and `--rocm-version` (also `HSA_SNOOP_HOST_LABEL` and
+  `HSA_SNOOP_ROCM_VERSION`) to set the constant `host` and `rocm_version`
+  labels, for container deployments.
+- `--kernel-name-max` to cap the length of `kernel_name` label values.
+
+### Fixed
+- `--mem-snoop` re-read `/proc/<pid>/maps` for every dispatch on the ring-poll
+  thread. On a process with thousands of mappings this stalled the poller, so
+  most launches were lost, one thread ran at 100% CPU regardless of `--poll-us`,
+  and it kept running for about a minute after the workload stopped while it
+  drained the ring. A snapshot of the map is now reused for up to one second.
+- Kernel durations were computed from one timestamp per pass over all queues,
+  so a slow pass on one queue appeared as a multi-second duration on another.
+- Queues discovered by the kprobe were labelled with the creating thread's id
+  and name; they now carry the process id and name, matching the KFD
+  startup scan.
+- `rocm_version` is detected on ROCm 10 layouts (`/opt/rocm/core/.info/version`).
+- A kernel name that could not be resolved at first sight was cached as
+  `kernel_0x<addr>` for the life of the process; the lookup is now retried a
+  bounded number of times.
+- No packets were decoded on ROCm 10.2 where the AQL ring cannot be read with
+  `process_vm_readv`: device-memory rings, the new default on gfx94x and
+  gfx125x with Large BAR, and gfx1201, where the cause is not yet known. Ring
+  reads now fall back to `/proc/<pid>/mem`.
+- A kprobe left enabled by an unclean exit is disabled before removal, instead
+  of failing the next start with `File exists`.
+
+## [1.6.0] — 2026-11-17
 
 ### Added
 - `gen-prom-snapshot.py`: converts `prom/snapshot.json` to Prometheus exposition

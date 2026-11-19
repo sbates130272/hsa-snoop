@@ -22,10 +22,18 @@ class RingParser {
   public:
     using Sink = std::function<void(const PacketRecord&)>;
     using SdmaSink = std::function<void(const SdmaRecord&)>;
+    // (queue_uid, n, reason): n AQL packets on that queue went by without
+    // being decoded. reason is a static string:
+    //   "overwritten" - the producer wrapped the ring before they were read
+    //   "consumed"    - already consumed, and the slot no longer holds a
+    //                   decodable packet
+    //   "unreadable"  - already consumed, and reading the slot failed
+    using MissSink = std::function<void(uint64_t, uint64_t, const char*)>;
 
     // poll_us: sleep between polls (microseconds). Lower catches faster
     // kernels/copies. sdma_sink may be empty if SDMA capture is not wanted.
-    RingParser(Sink sink, SdmaSink sdma_sink = {}, int poll_us = 20);
+    RingParser(Sink sink, SdmaSink sdma_sink = {}, int poll_us = 20,
+               MissSink miss_sink = {});
     ~RingParser();
 
     // Begin polling a newly discovered queue (thread-safe). AQL and SDMA queues
@@ -51,6 +59,9 @@ class RingParser {
         // it; the ring VA is then invalid in the new process. Evict after
         // threshold.
         int read_fail_count = 0;
+        // Set once process_vm_readv has failed on the ring and /proc/<pid>/mem
+        // has succeeded, so later reads skip the failing syscall.
+        bool ring_via_mem = false;
         bool evict = false;
     };
 
@@ -59,7 +70,9 @@ class RingParser {
     // AQL path.
     void PollQueue(QueueState* qs, double now);
     bool DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
-                    PacketRecord* rec);
+                    PacketRecord* rec, bool* read_failed);
+
+    bool ReadRing(QueueState* qs, uint64_t va, void* out, size_t len);
 
     // SDMA path.
     void PollSdmaQueue(QueueState* qs, double now);
@@ -70,6 +83,7 @@ class RingParser {
 
     Sink sink_;
     SdmaSink sdma_sink_;
+    MissSink miss_sink_;
     int poll_us_;
     std::mutex mu_;
     std::vector<std::unique_ptr<QueueState>> queues_;
