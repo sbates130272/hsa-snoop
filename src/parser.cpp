@@ -131,6 +131,29 @@ void RingParser::AddQueue(const QueueInfo& q) {
     queues_.push_back(std::move(qs));
 }
 
+// Read ring memory. A ring normally lives in host (GTT) memory that
+// process_vm_readv can reach. ROCm 10.2 puts AQL rings in device memory by
+// default on gfx94x/gfx95x/gfx12 with Large BAR; process_vm_readv refuses
+// those pages with EFAULT, so fall back to /proc/<pid>/mem as ReadQueuePtr
+// does.
+bool RingParser::ReadRing(QueueState* qs, uint64_t va, void* out, size_t len) {
+    const int pid = qs->info.pid;
+    if (!qs->ring_via_mem) {
+        if (ReadProcMem(pid, va, out, len))
+            return true;
+        if (!ReadProcMemViaMem(pid, va, out, len))
+            return false;
+        qs->ring_via_mem = true;
+        fprintf(stderr,
+                "[parser] queue uid=%lu pid=%d: ring is not readable with "
+                "process_vm_readv (device-memory ring?); reading it through "
+                "/proc/%d/mem\n",
+                qs->info.uid, pid, pid);
+        return true;
+    }
+    return ReadProcMemViaMem(pid, va, out, len);
+}
+
 // Read and decode the AQL packet at ring slot for `id`. Returns false if the
 // packet is not yet ready (producer reserved the slot but has not published the
 // header) or the read failed.
@@ -151,7 +174,7 @@ bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
     uint64_t addr = q.ring_base + (id % slots) * aql::kPacketSize;
 
     uint8_t raw[aql::kPacketSize];
-    if (!ReadProcMem(q.pid, addr, raw, sizeof(raw))) {
+    if (!ReadRing(qs, addr, raw, sizeof(raw))) {
         if (kDebug)
             fprintf(stderr, "[decode q%lu id%lu] read failed @0x%lx\n", q.uid,
                     id, addr);
@@ -441,10 +464,10 @@ bool RingParser::ReadRingDwords(QueueState* qs, uint64_t start_dw, uint32_t n,
         return false;
     uint64_t off = start_dw % ring_dw;
     uint64_t first = std::min<uint64_t>(n, ring_dw - off);
-    if (!ReadProcMem(q.pid, q.ring_base + off * 4, out, first * 4))
+    if (!ReadRing(qs, q.ring_base + off * 4, out, first * 4))
         return false;
     if (first < n)
-        return ReadProcMem(q.pid, q.ring_base, out + first, (n - first) * 4);
+        return ReadRing(qs, q.ring_base, out + first, (n - first) * 4);
     return true;
 }
 

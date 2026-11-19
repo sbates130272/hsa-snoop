@@ -49,8 +49,12 @@
   namespace PID. This can misattribute queues if two processes share the same
   comm prefix. Launch mode (`-- <command>`) avoids this by using the known
   child PID.
-* **Physical addresses** resolve for host/GTT-backed rings (the norm for AQL
-  host↔GPU queues). VRAM-resident pages have no pagemap PFN and report `0`.
+* **Physical addresses** resolve for host/GTT-backed rings. VRAM-resident pages
+  have no pagemap PFN and report `0`. From ROCm 10.2, AQL rings are placed in
+  device memory by default on gfx94x, gfx95x and gfx12 with Large BAR, so
+  `ring_phys` is `0x0` there; the ring is then read through `/proc/<pid>/mem`.
+  Setting `DEBUG_CLR_AQL_DEV_QUEUE=0` in the traced process restores host
+  rings.
 * **SDMA decode supports v4.x, v6.x, and v7.x packet layouts.** v4 covers gfx9
   CDNA (gfx90a / gfx942); v6 covers gfx11 RDNA3 (including gfx1101); v7 covers
   gfx12 (including gfx1250 / MI455X). Unknown generations are ignored to avoid

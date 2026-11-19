@@ -35,6 +35,9 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A kernel name that could not be resolved at first sight was cached as
   `kernel_0x<addr>` for the life of the process; the lookup is now retried a
   bounded number of times.
+- No packets were decoded on ROCm 10.2, which places AQL rings in device memory
+  by default on gfx94x, gfx95x and gfx12 with Large BAR. Those pages cannot be
+  read with `process_vm_readv`; ring reads now fall back to `/proc/<pid>/mem`.
 - A kprobe left enabled by an unclean exit is disabled before removal, instead
   of failing the next start with `File exists`.
 

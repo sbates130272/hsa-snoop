@@ -59,6 +59,9 @@ class RingParser {
         // it; the ring VA is then invalid in the new process. Evict after
         // threshold.
         int read_fail_count = 0;
+        // Set once process_vm_readv has failed on the ring and /proc/<pid>/mem
+        // has succeeded, so later reads skip the failing syscall.
+        bool ring_via_mem = false;
         bool evict = false;
     };
 
@@ -68,6 +71,8 @@ class RingParser {
     void PollQueue(QueueState* qs, double now);
     bool DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
                     PacketRecord* rec, bool* read_failed);
+
+    bool ReadRing(QueueState* qs, uint64_t va, void* out, size_t len);
 
     // SDMA path.
     void PollSdmaQueue(QueueState* qs, double now);
