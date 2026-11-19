@@ -132,10 +132,10 @@ void RingParser::AddQueue(const QueueInfo& q) {
 }
 
 // Read ring memory. A ring normally lives in host (GTT) memory that
-// process_vm_readv can reach. ROCm 10.2 puts AQL rings in device memory by
-// default on gfx94x/gfx95x/gfx12 with Large BAR; process_vm_readv refuses
-// those pages with EFAULT, so fall back to /proc/<pid>/mem as ReadQueuePtr
-// does.
+// process_vm_readv can reach. On ROCm 10.2 it can fail with EFAULT: rings are
+// in device memory by default on gfx94x/gfx125x with Large BAR, and gfx1201
+// rings are unreadable too for a reason not yet identified. /proc/<pid>/mem
+// reads them in both cases, so fall back to it as ReadQueuePtr does.
 bool RingParser::ReadRing(QueueState* qs, uint64_t va, void* out, size_t len) {
     const int pid = qs->info.pid;
     if (!qs->ring_via_mem) {
@@ -146,7 +146,7 @@ bool RingParser::ReadRing(QueueState* qs, uint64_t va, void* out, size_t len) {
         qs->ring_via_mem = true;
         fprintf(stderr,
                 "[parser] queue uid=%lu pid=%d: ring is not readable with "
-                "process_vm_readv (device-memory ring?); reading it through "
+                "process_vm_readv; reading it through "
                 "/proc/%d/mem\n",
                 qs->info.uid, pid, pid);
         return true;
