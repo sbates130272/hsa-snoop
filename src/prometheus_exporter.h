@@ -6,6 +6,7 @@
 #include <chrono>
 #include <deque>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -34,12 +35,28 @@ std::string DetectRocmVersion();
 // "gfx1151"). Returns "unknown" if not found.
 std::string DetectGpuType(uint32_t gpu_id);
 
+struct PrometheusExporterOptions {
+    // Value of the constant `host` label; empty = gethostname(). In a
+    // container the hostname is the container id, which changes on every
+    // recreate and forks every series.
+    std::string host_label;
+    // Value of the constant `rocm_version` label; empty = detect from
+    // /opt/rocm, which is absent when ROCm lives only in the traced
+    // containers.
+    std::string rocm_version;
+    // Truncate kernel_name label values to this many bytes; 0 = no limit.
+    size_t kernel_name_max = 0;
+};
+
 class PrometheusExporter {
   public:
     // discovery_mode: "kprobe" for native KFD, "dxg" for WSL2/librocdxg.
+    using Options = PrometheusExporterOptions;
+
     explicit PrometheusExporter(uint16_t port = 9488,
                                 double rate_window_sec = 10.0,
-                                const std::string& discovery_mode = "kprobe");
+                                const std::string& discovery_mode = "kprobe",
+                                const Options& options = {});
     ~PrometheusExporter();
 
     // Called for each newly discovered AQL queue. Thread-safe.
@@ -48,8 +65,9 @@ class PrometheusExporter {
     // Called for each completed PacketRecord from RingParser. Thread-safe.
     void Add(const PacketRecord& rec);
 
-    // n AQL packets on this queue went by without being decoded. Thread-safe.
-    void AddMissed(uint64_t queue_uid, uint64_t n);
+    // n AQL packets on this queue went by without being decoded, for the
+    // given RingParser::MissSink reason. Thread-safe.
+    void AddMissed(uint64_t queue_uid, uint64_t n, const std::string& reason);
 
     // Called for each completed SdmaRecord (DMA copy/op) from RingParser.
     // Thread-safe.
@@ -103,6 +121,12 @@ class PrometheusExporter {
         prometheus::Gauge* gauge{nullptr};
     };
 
+    std::string KernelLabel(const std::string& name) const;
+
+    // Declared before the families: they are initialised from it.
+    const std::map<std::string, std::string> const_labels_;
+    const size_t kernel_name_max_;
+
     std::shared_ptr<prometheus::Registry> registry_;
     std::unique_ptr<prometheus::Exposer> exposer_;
 
@@ -110,6 +134,7 @@ class PrometheusExporter {
     prometheus::Family<prometheus::Counter>& kernel_launches_family_;
     prometheus::Family<prometheus::Counter>& errors_family_;
     prometheus::Family<prometheus::Counter>& missed_family_;
+    prometheus::Family<prometheus::Counter>& unmeasured_family_;
     prometheus::Family<prometheus::Counter>& barrier_family_;
     prometheus::Family<prometheus::Gauge>& active_queues_family_;
     prometheus::Family<prometheus::Gauge>& launch_rate_family_;

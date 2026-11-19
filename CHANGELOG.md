@@ -7,10 +7,18 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
-- `hsa_dispatches_missed_total` counter: AQL packets that were never decoded, so
-  a consumer can compute the capture ratio.
+- `hsa_dispatches_missed_total` counter: AQL packets that were never decoded,
+  labelled by `reason`, so a consumer can see loss and tell a poller that is
+  behind from packets that could not be decoded.
 - Startup warning when pids from the `create_queue` probe are not visible in
   `/proc` (container outside the host PID namespace).
+- `hsa_kernel_durations_unmeasured_total` counter: launches that produced no
+  duration observation, which exposes the sample rate of
+  `hsa_kernel_duration_seconds`.
+- `--host-label` and `--rocm-version` (also `HSA_SNOOP_HOST_LABEL` and
+  `HSA_SNOOP_ROCM_VERSION`) to set the constant `host` and `rocm_version`
+  labels, for container deployments.
+- `--kernel-name-max` to cap the length of `kernel_name` label values.
 
 ### Fixed
 - `--mem-snoop` re-read `/proc/<pid>/maps` for every dispatch on the ring-poll
@@ -23,6 +31,10 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Queues discovered by the kprobe were labelled with the creating thread's id
   and name; they now carry the process id and name, matching the KFD
   startup scan.
+- `rocm_version` is detected on ROCm 10 layouts (`/opt/rocm/core/.info/version`).
+- A kernel name that could not be resolved at first sight was cached as
+  `kernel_0x<addr>` for the life of the process; the lookup is now retried a
+  bounded number of times.
 - A kprobe left enabled by an unclean exit is disabled before removal, instead
   of failing the next start with `File exists`.
 

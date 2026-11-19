@@ -19,11 +19,13 @@ class KernelSymbolResolver {
 
     // Returns a demangled kernel name for kernel_object, or "kernel_0x..." if
     // it cannot be resolved. Results are cached; a miss triggers a rescan of
-    // the process's loaded code objects.
+    // the process's loaded code objects, and an unresolved address is retried
+    // a bounded number of times on later calls.
     std::string Resolve(uint64_t kernel_object);
 
   private:
     void ScanCodeObjects();
+    void SettleUnresolved(bool charge_retry);
 
     int pid_;
     std::mutex mu_;
@@ -42,6 +44,16 @@ class KernelSymbolResolver {
     std::unordered_map<uint64_t, std::string>
         offset_cache_; // low bits -> name (empty = ambiguous)
     int scanned_generation_ = 0;
+    // Addresses cached under a hex label, with the number of retry scans
+    // already charged to each. A miss can be transient (the code object was
+    // mid-load or unreadable at that instant), so it is retried a few times.
+    // A scan is expensive and runs on the ring-poll thread, so retries are
+    // rate-limited and one scan is charged to every pending address: a
+    // resolver does at most kMaxRetries retry scans per batch of misses.
+    static constexpr int kMaxRetries = 3;
+    static constexpr double kRetryIntervalSec = 30.0;
+    std::unordered_map<uint64_t, int> unresolved_;
+    double last_scan_ts_ = 0;
 };
 
 std::string Demangle(const std::string& mangled);

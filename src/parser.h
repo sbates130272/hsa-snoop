@@ -22,9 +22,13 @@ class RingParser {
   public:
     using Sink = std::function<void(const PacketRecord&)>;
     using SdmaSink = std::function<void(const SdmaRecord&)>;
-    // (queue_uid, n): n AQL packets on that queue were overwritten or
-    // consumed before they could be decoded.
-    using MissSink = std::function<void(uint64_t, uint64_t)>;
+    // (queue_uid, n, reason): n AQL packets on that queue went by without
+    // being decoded. reason is a static string:
+    //   "overwritten" - the producer wrapped the ring before they were read
+    //   "consumed"    - already consumed, and the slot no longer holds a
+    //                   decodable packet
+    //   "unreadable"  - already consumed, and reading the slot failed
+    using MissSink = std::function<void(uint64_t, uint64_t, const char*)>;
 
     // poll_us: sleep between polls (microseconds). Lower catches faster
     // kernels/copies. sdma_sink may be empty if SDMA capture is not wanted.
@@ -63,7 +67,7 @@ class RingParser {
     // AQL path.
     void PollQueue(QueueState* qs, double now);
     bool DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
-                    PacketRecord* rec);
+                    PacketRecord* rec, bool* read_failed);
 
     // SDMA path.
     void PollSdmaQueue(QueueState* qs, double now);

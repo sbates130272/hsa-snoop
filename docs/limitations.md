@@ -5,13 +5,24 @@
   can be missed (the slot may read back as `INVALID` once consumed). Lower
   `--poll-us` to catch faster kernels; deeply-queued workloads are captured
   near-completely (195/200 in the bundled test). Missed packets are exported
-  as `hsa_dispatches_missed_total` in Prometheus mode, so the capture ratio is
-  `launches / (launches + missed)`.
+  as `hsa_dispatches_missed_total` in Prometheus mode, split by `reason`. The
+  count covers every AQL packet type, so `launches / (launches + missed)` is a
+  lower bound on the capture ratio for kernel dispatches.
 * **Durations are sampled.** `hsa_kernel_duration_seconds` is only observed for
   a packet the poller saw while it was still pending. A packet that was already
   consumed when first seen is counted as a launch but has no measurable
   duration, so on a workload of very short kernels the histogram count is well
-  below `hsa_kernel_launches_total`.
+  below `hsa_kernel_launches_total`. Those launches are counted in
+  `hsa_kernel_durations_unmeasured_total`, so the sample rate is one minus
+  unmeasured over launches (the query is in the Prometheus page); a lower
+  `--poll-us` raises it at the cost of CPU.
+  The sample is biased towards longer kernels, which are more likely to be seen
+  pending.
+* **Unresolved kernel names.** A kernel whose descriptor cannot be matched to a
+  symbol is labelled `kernel_0x<addr>`. The lookup is retried by up to three
+  further scans of the process, at least 30 s apart, so a name that was
+  unavailable at first sight is picked up for later launches under a new
+  series.
 * **`--mem-snoop` reuses a snapshot of the process's VM map for up to one
   second**, because reading `/proc/<pid>/maps` per dispatch stalls the poller on
   processes with thousands of mappings. A buffer mapped within the last second

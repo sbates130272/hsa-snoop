@@ -142,8 +142,9 @@ void RingParser::AddQueue(const QueueInfo& q) {
 // intact and we synthesize a KernelDispatch record rather than silently
 // dropping it.
 bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
-                            PacketRecord* rec) {
+                            PacketRecord* rec, bool* read_failed) {
     const QueueInfo& q = qs->info;
+    *read_failed = false;
     uint32_t slots = q.num_slots();
     if (!slots)
         return false;
@@ -154,6 +155,7 @@ bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
         if (kDebug)
             fprintf(stderr, "[decode q%lu id%lu] read failed @0x%lx\n", q.uid,
                     id, addr);
+        *read_failed = true;
         return false;
     }
 
@@ -295,8 +297,9 @@ void RingParser::PollQueue(QueueState* qs, double now) {
 
     // Guard against decoding slots the producer has already wrapped over.
     uint64_t slots = q.num_slots();
+    uint64_t overwritten = 0, consumed_undecodable = 0, unreadable = 0;
     if (wptr > qs->next_id + slots) {
-        qs->dropped += (wptr - qs->next_id) - slots;
+        overwritten = (wptr - qs->next_id) - slots;
         qs->next_id = wptr - slots;
     }
 
@@ -310,7 +313,8 @@ void RingParser::PollQueue(QueueState* qs, double now) {
     //                  skip.
     while (qs->next_id < wptr) {
         PacketRecord rec;
-        if (DecodeSlot(qs, qs->next_id, rptr, &rec)) {
+        bool read_failed = false;
+        if (DecodeSlot(qs, qs->next_id, rptr, &rec, &read_failed)) {
             rec.submit_ts = now;
             // Already consumed by the CP when first seen (id < rptr). Record
             // when, and let the retire loop below decide whether it has
@@ -320,11 +324,20 @@ void RingParser::PollQueue(QueueState* qs, double now) {
             qs->inflight.emplace(qs->next_id, std::move(rec));
             qs->next_id++;
         } else if (qs->next_id < rptr) {
-            qs->dropped++;
+            ++(read_failed ? unreadable : consumed_undecodable);
             qs->next_id++;
         } else {
             break; // genuinely pending publication
         }
+    }
+    qs->dropped += overwritten + consumed_undecodable + unreadable;
+    if (miss_sink_) {
+        if (overwritten)
+            miss_sink_(q.uid, overwritten, "overwritten");
+        if (consumed_undecodable)
+            miss_sink_(q.uid, consumed_undecodable, "consumed");
+        if (unreadable)
+            miss_sink_(q.uid, unreadable, "unreadable");
     }
 
     // Retire inflight packets in dispatch-id order.
@@ -395,13 +408,10 @@ void RingParser::Run() {
             // Timestamp per queue, not per pass: a slow pass over one queue
             // must not be charged to the next queue's durations.
             const double now = MonoNow();
-            const uint64_t dropped_before = qs->dropped;
             if (qs->info.is_sdma())
                 PollSdmaQueue(qs, now);
             else
                 PollQueue(qs, now);
-            if (miss_sink_ && qs->info.is_aql() && qs->dropped != dropped_before)
-                miss_sink_(qs->info.uid, qs->dropped - dropped_before);
         }
         // Remove evicted queues under the lock.
         {

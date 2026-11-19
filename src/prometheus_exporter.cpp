@@ -40,9 +40,10 @@ std::string DetectPlatform() {
 // Helper: DetectRocmVersion
 // ---------------------------------------------------------------------------
 std::string DetectRocmVersion() {
-    // 1. /opt/rocm/.info/version — plain-text version string
-    {
-        std::ifstream f("/opt/rocm/.info/version");
+    // 1. Plain-text version string. ROCm 10 moved it under core/.
+    for (const char* path :
+         {"/opt/rocm/.info/version", "/opt/rocm/core/.info/version"}) {
+        std::ifstream f(path);
         if (f.is_open()) {
             std::string v;
             std::getline(f, v);
@@ -169,113 +170,133 @@ std::string DetectGpuType(uint32_t gpu_id) {
 // ---------------------------------------------------------------------------
 
 static std::map<std::string, std::string>
-MakeConstLabels(const std::string& discovery_mode) {
-    char host[256] = {};
-    gethostname(host, sizeof(host) - 1);
+MakeConstLabels(const std::string& discovery_mode,
+                const PrometheusExporter::Options& options) {
+    std::string host = options.host_label;
+    if (host.empty()) {
+        char buf[256] = {};
+        gethostname(buf, sizeof(buf) - 1);
+        host = buf;
+    }
     return {
         {"host", host},
         {"platform", DetectPlatform()},
-        {"rocm_version", DetectRocmVersion()},
+        {"rocm_version", options.rocm_version.empty() ? DetectRocmVersion()
+                                                      : options.rocm_version},
         {"discovery_mode", discovery_mode},
     };
 }
 
 PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
-                                       const std::string& discovery_mode)
-    : registry_(std::make_shared<prometheus::Registry>()),
+                                       const std::string& discovery_mode,
+                                       const Options& options)
+    : const_labels_(MakeConstLabels(discovery_mode, options)),
+      kernel_name_max_(options.kernel_name_max),
+      registry_(std::make_shared<prometheus::Registry>()),
       // Metric families — registered at construction time with constant labels.
       up_family_(
           prometheus::BuildGauge()
               .Name("hsa_snoop_up")
               .Help("1 if hsa-snoop is running and attached, 0 otherwise")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       kernel_launches_family_(
           prometheus::BuildCounter()
               .Name("hsa_kernel_launches_total")
               .Help("Total HSA kernel dispatch packets observed")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       errors_family_(prometheus::BuildCounter()
                          .Name("hsa_errors_total")
                          .Help("Packet arrivals for unknown queues (missed "
                                "RegisterQueue races)")
-                         .Labels(MakeConstLabels(discovery_mode))
+                         .Labels(const_labels_)
                          .Register(*registry_)),
       missed_family_(prometheus::BuildCounter()
                          .Name("hsa_dispatches_missed_total")
-                         .Help("AQL packets overwritten or consumed before "
-                               "hsa-snoop could decode them (not counted in "
-                               "hsa_kernel_launches_total)")
-                         .Labels(MakeConstLabels(discovery_mode))
+                         .Help("AQL packets hsa-snoop did not decode, by "
+                               "reason: overwritten (ring wrapped first), "
+                               "consumed (slot no longer decodable), "
+                               "unreadable (slot read failed). Includes "
+                               "non-dispatch packets")
+                         .Labels(const_labels_)
                          .Register(*registry_)),
+      unmeasured_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_kernel_durations_unmeasured_total")
+              .Help("Kernel launches with no duration observation: the "
+                    "packet was already consumed when first seen. The "
+                    "duration sample rate is 1 - sum(unmeasured) / "
+                    "sum(launches)")
+              .Labels(const_labels_)
+              .Register(*registry_)),
       barrier_family_(prometheus::BuildCounter()
                           .Name("hsa_barrier_packets_total")
                           .Help("HSA barrier AQL packets observed")
-                          .Labels(MakeConstLabels(discovery_mode))
+                          .Labels(const_labels_)
                           .Register(*registry_)),
       active_queues_family_(prometheus::BuildGauge()
                                 .Name("hsa_active_queues")
                                 .Help("Number of currently tracked AQL queues")
-                                .Labels(MakeConstLabels(discovery_mode))
+                                .Labels(const_labels_)
                                 .Register(*registry_)),
       launch_rate_family_(
           prometheus::BuildGauge()
               .Name("hsa_kernel_launches_per_second")
               .Help("Rolling kernel launch rate over the configured window")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       last_launch_ts_family_(
           prometheus::BuildGauge()
               .Name("hsa_last_kernel_launch_timestamp_seconds")
               .Help("Unix timestamp (wall clock) of the most recent kernel "
                     "launch on this GPU")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       last_kernel_info_family_(
           prometheus::BuildGauge()
               .Name("hsa_last_kernel_launch_info")
               .Help(
                   "Most recently launched kernel name per GPU (value always 1)")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       duration_family_(prometheus::BuildHistogram()
                            .Name("hsa_kernel_duration_seconds")
                            .Help("GPU kernel execution duration from enqueue "
                                  "to completion observation")
-                           .Labels(MakeConstLabels(discovery_mode))
+                           .Labels(const_labels_)
                            .Register(*registry_)),
       triggered_family_(
           prometheus::BuildGauge()
               .Name("hsa_triggered")
               .Help("1 if at least one kernel dispatch has been observed on "
                     "this GPU since startup, 0 otherwise; latches at 1")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       sdma_copies_family_(
           prometheus::BuildCounter()
               .Name("hsa_sdma_copies_total")
               .Help("SDMA copy packets observed, by direction (h2d/d2h/d2d)")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       sdma_bytes_family_(
           prometheus::BuildCounter()
               .Name("hsa_sdma_bytes_total")
               .Help("Bytes moved by SDMA copy packets, by direction")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       sdma_packets_family_(
           prometheus::BuildCounter()
               .Name("hsa_sdma_packets_total")
               .Help(
                   "SDMA packets observed, by opcode (copy/fence/timestamp/...)")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       active_sdma_queues_family_(
           prometheus::BuildGauge()
               .Name("hsa_active_sdma_queues")
               .Help("Number of currently tracked SDMA queues")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       sdma_present_family_(
           prometheus::BuildGauge()
@@ -283,7 +304,7 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
               .Help("1 if at least one SDMA queue has been observed on this "
                     "system, 0 otherwise; always 0 on APU nodes (e.g. Strix "
                     "Halo) where no discrete SDMA engine exists")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       // AIS (AMD Infinity Storage) P2P direct-storage metrics.
       // Read (file→VRAM) and write (VRAM→file) are separate metric families.
@@ -292,71 +313,71 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
               .Name("ais_rx_ops_total")
               .Help("AIS read operations observed (file→VRAM, storage→GPU) "
                     "by GPU and PCIe storage device")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       ais_tx_ops_family_(
           prometheus::BuildCounter()
               .Name("ais_tx_ops_total")
               .Help("AIS write operations observed (VRAM→file, GPU→storage) "
                     "by GPU and PCIe storage device")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       ais_rx_bytes_family_(
           prometheus::BuildCounter()
               .Name("ais_rx_bytes_total")
               .Help("Bytes transferred by AIS read operations (file→VRAM)")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       ais_tx_bytes_family_(
           prometheus::BuildCounter()
               .Name("ais_tx_bytes_total")
               .Help("Bytes transferred by AIS write operations (VRAM→file)")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       ais_rx_errors_family_(prometheus::BuildCounter()
                                 .Name("ais_rx_errors_total")
                                 .Help("AIS read operations (file→VRAM) that "
                                       "returned a non-zero error code")
-                                .Labels(MakeConstLabels(discovery_mode))
+                                .Labels(const_labels_)
                                 .Register(*registry_)),
       ais_tx_errors_family_(prometheus::BuildCounter()
                                 .Name("ais_tx_errors_total")
                                 .Help("AIS write operations (VRAM→file) that "
                                       "returned a non-zero error code")
-                                .Labels(MakeConstLabels(discovery_mode))
+                                .Labels(const_labels_)
                                 .Register(*registry_)),
       ais_rx_latency_family_(
           prometheus::BuildHistogram()
               .Name("ais_rx_latency_seconds")
               .Help("AIS read ioctl end-to-end latency (file→VRAM) from kprobe "
                     "entry to return")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       ais_tx_latency_family_(
           prometheus::BuildHistogram()
               .Name("ais_tx_latency_seconds")
               .Help("AIS write ioctl end-to-end latency (VRAM→file) from "
                     "kprobe entry to return")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       ais_rx_io_size_family_(prometheus::BuildHistogram()
                                  .Name("ais_rx_io_size_bytes")
                                  .Help("AIS read IO size distribution (bytes "
                                        "requested per ioctl, file→VRAM)")
-                                 .Labels(MakeConstLabels(discovery_mode))
+                                 .Labels(const_labels_)
                                  .Register(*registry_)),
       ais_tx_io_size_family_(prometheus::BuildHistogram()
                                  .Name("ais_tx_io_size_bytes")
                                  .Help("AIS write IO size distribution (bytes "
                                        "requested per ioctl, VRAM→file)")
-                                 .Labels(MakeConstLabels(discovery_mode))
+                                 .Labels(const_labels_)
                                  .Register(*registry_)),
       ais_active_family_(
           prometheus::BuildGauge()
               .Name("ais_active")
               .Help("1 if at least one AIS IO operation has been observed "
                     "since startup, 0 otherwise; latches at 1")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       ais_snoop_armed_family_(
           prometheus::BuildGauge()
@@ -367,7 +388,7 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                     "together with ais_active, which latches on the first "
                     "observed operation: armed=1,active=0 means AIS is being "
                     "watched and no AIS IO happened.")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       ais_pcie_info_family_(
           prometheus::BuildGauge()
@@ -375,7 +396,7 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
               .Help("Static device metadata for each PCIe storage device seen "
                     "by AIS; value is always 1. Labels: pcie_id, device_type, "
                     "vendor, vendor_id, device_id, class_code.")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       xnack_total_family_(
           prometheus::BuildCounter()
@@ -383,7 +404,7 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
               .Help("GPU page-fault retry (XNACK) events observed via "
                     "kprobe:kfd_process_vm_fault; labeled by AMD Process ASID "
                     "(pasid) which uniquely identifies the GPU context")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       xnack_snoop_armed_family_(
           prometheus::BuildGauge()
@@ -391,7 +412,7 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
               .Help("1 if the XNACK kprobe monitor started successfully, 0 if "
                     "--xnack-snoop was requested but the monitor failed to "
                     "start. Absent when --xnack-snoop was not passed.")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       queue_info_family_(
           prometheus::BuildGauge()
@@ -399,7 +420,7 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
               .Help("Static metadata per discovered AQL/SDMA queue; value is "
                     "always 1. Labels: gpu_id, gpu_type, pid, comm, ring_base, "
                     "ring_phys (0 for VRAM-backed rings), ring_size.")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       mem_lds_family_(
           prometheus::BuildGauge()
@@ -407,7 +428,7 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
               .Help(
                   "LDS (group segment / shared memory) bytes per workgroup for "
                   "the most recent dispatch of this kernel")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       mem_scratch_family_(
           prometheus::BuildGauge()
@@ -417,7 +438,7 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                   "dispatch "
                   "grid (private_segment_size * grid_size) of the most recent "
                   "dispatch")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       mem_mapped_vram_family_(
           prometheus::BuildGauge()
@@ -426,14 +447,14 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                   "Upper-bound VRAM mapped by the most recent dispatch: sum of "
                   "backing region sizes for pointer-sized arguments found in "
                   "the kernarg buffer (heuristic; may over-count)")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       mem_mapped_vram_total_family_(
           prometheus::BuildCounter()
               .Name("hsa_kernel_mapped_vram_bytes_total")
               .Help("Cumulative hsa_kernel_mapped_vram_bytes across all "
                     "dispatches of this kernel")
-              .Labels(MakeConstLabels(discovery_mode))
+              .Labels(const_labels_)
               .Register(*registry_)),
       rate_window_sec_(rate_window_sec) {
     // Start the HTTP exposition endpoint.
@@ -501,10 +522,16 @@ void PrometheusExporter::RegisterQueue(const QueueInfo& q) {
     if (q.is_aql()) {
         // Created at 0 so the series exists before any loss: absent would be
         // indistinguishable from "this build cannot report loss".
-        missed_family_.Add({{"gpu_id", gpu_str},
-                            {"gpu_type", gpu_type},
-                            {"pid", std::to_string(q.pid)},
-                            {"comm", q.comm}});
+        for (const char* reason : {"overwritten", "consumed", "unreadable"})
+            missed_family_.Add({{"gpu_id", gpu_str},
+                                {"gpu_type", gpu_type},
+                                {"pid", std::to_string(q.pid)},
+                                {"comm", q.comm},
+                                {"reason", reason}});
+        unmeasured_family_.Add({{"gpu_id", gpu_str},
+                                {"gpu_type", gpu_type},
+                                {"pid", std::to_string(q.pid)},
+                                {"comm", q.comm}});
     }
     if (q.is_sdma()) {
         // Latch hsa_sdma_present = 1 on the first SDMA queue seen.
@@ -523,6 +550,15 @@ void PrometheusExporter::RegisterQueue(const QueueInfo& q) {
         g = &active_queues_family_.Add(
             {{"gpu_id", gpu_str}, {"gpu_type", gpu_type}});
     g->Increment();
+}
+
+std::string PrometheusExporter::KernelLabel(const std::string& name) const {
+    if (kernel_name_max_ == 0 || name.size() <= kernel_name_max_)
+        return name;
+    // Names that differ only past the cut share a series; that is the point.
+    if (kernel_name_max_ <= 3)
+        return name.substr(0, kernel_name_max_);
+    return name.substr(0, kernel_name_max_ - 3) + "...";
 }
 
 // ---------------------------------------------------------------------------
@@ -551,9 +587,10 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
                              rec.type == aql::PacketType::VendorSpecific;
 
     if (is_dispatch) {
+        const std::string kernel_name = KernelLabel(rec.kernel_name);
         // hsa_kernel_launches_total
         kernel_launches_family_
-            .Add({{"kernel_name", rec.kernel_name},
+            .Add({{"kernel_name", kernel_name},
                   {"gpu_id", gpu_str},
                   {"gpu_type", meta.gpu_type},
                   {"pid", pid_str},
@@ -587,11 +624,18 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
                 25e-3, 50e-3,  100e-3, 250e-3, 500e-3, 1.0,    5.0};
             double dur = rec.complete_ts - rec.submit_ts;
             duration_family_
-                .Add({{"kernel_name", rec.kernel_name},
+                .Add({{"kernel_name", kernel_name},
                       {"gpu_id", gpu_str},
                       {"gpu_type", meta.gpu_type}},
                      kBuckets)
                 .Observe(dur);
+        } else {
+            unmeasured_family_
+                .Add({{"gpu_id", gpu_str},
+                      {"gpu_type", meta.gpu_type},
+                      {"pid", pid_str},
+                      {"comm", meta.comm}})
+                .Increment();
         }
 
         // hsa_last_kernel_launch_timestamp_seconds
@@ -610,15 +654,15 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
         // hsa_last_kernel_launch_info — replace child when kernel name changes
         {
             auto& lks = last_kernel_state_[gpu_str];
-            if (lks.kernel_name != rec.kernel_name) {
+            if (lks.kernel_name != kernel_name) {
                 if (lks.gauge)
                     last_kernel_info_family_.Remove(lks.gauge);
                 lks.gauge = &last_kernel_info_family_.Add(
                     {{"gpu_id", gpu_str},
                      {"gpu_type", meta.gpu_type},
-                     {"kernel_name", rec.kernel_name}});
+                     {"kernel_name", kernel_name}});
                 lks.gauge->Set(1.0);
-                lks.kernel_name = rec.kernel_name;
+                lks.kernel_name = kernel_name;
             }
         }
 
@@ -650,7 +694,8 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
     }
 }
 
-void PrometheusExporter::AddMissed(uint64_t queue_uid, uint64_t n) {
+void PrometheusExporter::AddMissed(uint64_t queue_uid, uint64_t n,
+                                   const std::string& reason) {
     std::lock_guard<std::mutex> lk(meta_mu_);
     auto it = queue_meta_.find(queue_uid);
     if (it == queue_meta_.end())
@@ -660,7 +705,8 @@ void PrometheusExporter::AddMissed(uint64_t queue_uid, uint64_t n) {
         .Add({{"gpu_id", std::to_string(meta.gpu_id)},
               {"gpu_type", meta.gpu_type},
               {"pid", std::to_string(meta.pid)},
-              {"comm", meta.comm}})
+              {"comm", meta.comm},
+              {"reason", reason}})
         .Increment(static_cast<double>(n));
 }
 
@@ -844,6 +890,7 @@ void PrometheusExporter::Add(const XnackRecord& rec) {
 void PrometheusExporter::Add(const MemRecord& rec) {
     std::lock_guard<std::mutex> lk(meta_mu_);
 
+    const std::string kernel_name = KernelLabel(rec.kernel_name);
     std::string gpu_str = std::to_string(rec.gpu_id);
     // DetectGpuType walks sysfs; this runs per dispatch, so use the value
     // resolved when the queue was registered.
@@ -854,7 +901,7 @@ void PrometheusExporter::Add(const MemRecord& rec) {
 
     // Per-dispatch gauges: reflect the most recent value for each kernel.
     mem_lds_family_
-        .Add({{"kernel_name", rec.kernel_name},
+        .Add({{"kernel_name", kernel_name},
               {"gpu_id", gpu_str},
               {"gpu_type", gpu_type}})
         .Set(static_cast<double>(rec.group_seg_bytes));
@@ -862,7 +909,7 @@ void PrometheusExporter::Add(const MemRecord& rec) {
     uint64_t total_scratch =
         static_cast<uint64_t>(rec.private_seg_bytes) * rec.grid_size;
     mem_scratch_family_
-        .Add({{"kernel_name", rec.kernel_name},
+        .Add({{"kernel_name", kernel_name},
               {"gpu_id", gpu_str},
               {"gpu_type", gpu_type}})
         .Set(static_cast<double>(total_scratch));
@@ -877,14 +924,14 @@ void PrometheusExporter::Add(const MemRecord& rec) {
         return;
 
     mem_mapped_vram_family_
-        .Add({{"kernel_name", rec.kernel_name},
+        .Add({{"kernel_name", kernel_name},
               {"gpu_id", gpu_str},
               {"gpu_type", gpu_type}})
         .Set(static_cast<double>(rec.mapped_vram_bytes));
 
     // Cumulative counter: monotonically increases across all dispatches.
     mem_mapped_vram_total_family_
-        .Add({{"kernel_name", rec.kernel_name},
+        .Add({{"kernel_name", kernel_name},
               {"gpu_id", gpu_str},
               {"gpu_type", gpu_type}})
         .Increment(static_cast<double>(rec.mapped_vram_bytes));

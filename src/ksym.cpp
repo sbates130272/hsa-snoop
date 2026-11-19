@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <sstream>
 #include <vector>
@@ -105,6 +106,12 @@ std::vector<uint64_t> FindElfBases(int pid, const MemReader& m) {
             bases.push_back(start);
     }
     return bases;
+}
+
+double MonoNowSec() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
 } // namespace
@@ -237,14 +244,56 @@ void KernelSymbolResolver::ScanCodeObjects() {
                 pid_, bases.size(), cache_.size(), cache_.size() - before);
 }
 
+static std::string HexLabel(uint64_t kernel_object) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "kernel_0x%lx", kernel_object);
+    return buf;
+}
+
+// After a scan, settle every address still carrying a hex label: a scan covers
+// all loaded code objects, so it answers for all of them at once. Entries the
+// scan resolved are dropped; when the scan was a retry, the rest are charged
+// one attempt.
+void KernelSymbolResolver::SettleUnresolved(bool charge_retry) {
+    for (auto u = unresolved_.begin(); u != unresolved_.end();) {
+        auto c = cache_.find(u->first);
+        bool resolved = c != cache_.end() && c->second != HexLabel(u->first);
+        if (!resolved) {
+            auto oit = offset_cache_.find(u->first & kOffsetMask);
+            if (oit != offset_cache_.end() && !oit->second.empty()) {
+                cache_[u->first] = oit->second;
+                resolved = true;
+            }
+        }
+        if (resolved) {
+            u = unresolved_.erase(u);
+            continue;
+        }
+        if (charge_retry)
+            ++u->second;
+        ++u;
+    }
+}
+
 std::string KernelSymbolResolver::Resolve(uint64_t kernel_object) {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = cache_.find(kernel_object);
-    if (it != cache_.end())
-        return it->second;
+    if (it != cache_.end()) {
+        auto un = unresolved_.find(kernel_object);
+        if (un == unresolved_.end() || un->second >= kMaxRetries ||
+            MonoNowSec() - last_scan_ts_ < kRetryIntervalSec)
+            return it->second;
+        // Retry: one scan on behalf of every unresolved address.
+        ScanCodeObjects();
+        last_scan_ts_ = MonoNowSec();
+        SettleUnresolved(/*charge_retry=*/true);
+        return cache_[kernel_object];
+    }
 
     // Miss: (re)scan loaded code objects once and retry.
     ScanCodeObjects();
+    last_scan_ts_ = MonoNowSec();
+    SettleUnresolved(/*charge_retry=*/false);
     it = cache_.find(kernel_object);
     if (it != cache_.end())
         return it->second;
@@ -271,12 +320,12 @@ std::string KernelSymbolResolver::Resolve(uint64_t kernel_object) {
                 break;
         }
     }
-    char buf[32];
-    snprintf(buf, sizeof(buf), "kernel_0x%lx", kernel_object);
-    // Cache the hex label so the same unresolvable address doesn't trigger
-    // another ScanCodeObjects() scan on the next call.
-    cache_[kernel_object] = buf;
-    return buf;
+    // Cache the hex label so the same unresolvable address doesn't trigger a
+    // scan on every call; it is retried a bounded number of times.
+    std::string label = HexLabel(kernel_object);
+    cache_[kernel_object] = label;
+    unresolved_.emplace(kernel_object, 0);
+    return label;
 }
 
 } // namespace hsasnoop
