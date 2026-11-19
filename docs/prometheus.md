@@ -48,7 +48,7 @@ get the sample rate:
 | `hsa_sdma_present` | Gauge | — | 1 when first SDMA queue seen; 0 on APU/unified-memory nodes |
 | `hsa_triggered` | Gauge | `gpu_id`, `gpu_type` | 1 on first kernel dispatch on this GPU |
 | `hsa_errors_total` | Counter | `gpu_id`, `pid` | Packets before queue registration |
-| `hsa_dispatches_missed_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `reason` | AQL packets not decoded. `reason` is `overwritten` (the ring wrapped before they were read), `consumed` (already consumed and the slot no longer holds a decodable packet) or `unreadable` (the slot read failed). Counts every packet type, not only kernel dispatches |
+| `hsa_dispatches_missed_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm`, `reason` | AQL packets not decoded. `reason` is `overwritten` (the ring wrapped before they were read), `consumed` (already consumed and the slot no longer holds a packet that can be decoded) or `unreadable` (the slot read failed). Counts every packet type, not only kernel dispatches |
 | `hsa_xnack_total` | Counter | `pasid`, `comm` | GPU page-fault retries (`--xnack-snoop`) |
 
 ## AIS Metrics

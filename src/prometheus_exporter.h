@@ -5,8 +5,8 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
-#include <memory>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>

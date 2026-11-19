@@ -10,8 +10,8 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `hsa_dispatches_missed_total` counter: AQL packets that were never decoded,
   labelled by `reason`, so a consumer can see loss and tell a poller that is
   behind from packets that could not be decoded.
-- Startup warning when pids from the `create_queue` probe are not visible in
-  `/proc` (container outside the host PID namespace).
+- Startup warning when process ids from the `create_queue` probe are not
+  visible in `/proc` (container outside the host PID namespace).
 - `hsa_kernel_durations_unmeasured_total` counter: launches that produced no
   duration observation, which exposes the sample rate of
   `hsa_kernel_duration_seconds`.
