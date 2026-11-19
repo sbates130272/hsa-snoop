@@ -22,10 +22,14 @@ class RingParser {
   public:
     using Sink = std::function<void(const PacketRecord&)>;
     using SdmaSink = std::function<void(const SdmaRecord&)>;
+    // (queue_uid, n): n AQL packets on that queue were overwritten or
+    // consumed before they could be decoded.
+    using MissSink = std::function<void(uint64_t, uint64_t)>;
 
     // poll_us: sleep between polls (microseconds). Lower catches faster
     // kernels/copies. sdma_sink may be empty if SDMA capture is not wanted.
-    RingParser(Sink sink, SdmaSink sdma_sink = {}, int poll_us = 20);
+    RingParser(Sink sink, SdmaSink sdma_sink = {}, int poll_us = 20,
+               MissSink miss_sink = {});
     ~RingParser();
 
     // Begin polling a newly discovered queue (thread-safe). AQL and SDMA queues
@@ -70,6 +74,7 @@ class RingParser {
 
     Sink sink_;
     SdmaSink sdma_sink_;
+    MissSink miss_sink_;
     int poll_us_;
     std::mutex mu_;
     std::vector<std::unique_ptr<QueueState>> queues_;

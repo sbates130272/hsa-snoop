@@ -61,7 +61,12 @@ bool ProcAlive(int pid);
 // This is a best-effort heuristic: it will over-count if unrelated integer
 // fields happen to match VA ranges, and under-count for pointer-chasing
 // (nested pointers inside buffers). It requires no HSA runtime linkage.
+//
+// max_vma_age_sec > 0 lets the scan reuse a snapshot of the process's VM map
+// up to that old instead of re-reading /proc/<pid>/maps on every call; a
+// buffer mapped since the snapshot is then not counted until it refreshes.
 bool ScanKernargFootprint(int pid, uint64_t kernarg_va, uint32_t kernarg_bytes,
-                          uint64_t* mapped_vram_bytes, uint32_t* ptr_count);
+                          uint64_t* mapped_vram_bytes, uint32_t* ptr_count,
+                          double max_vma_age_sec = 0);
 
 } // namespace hsasnoop

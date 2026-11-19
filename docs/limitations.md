@@ -4,8 +4,18 @@
   packet that is enqueued *and* queue-consumed entirely within one poll interval
   can be missed (the slot may read back as `INVALID` once consumed). Lower
   `--poll-us` to catch faster kernels; deeply-queued workloads are captured
-  near-completely (195/200 in the bundled test). Missed packets are counted
-  internally as "dropped".
+  near-completely (195/200 in the bundled test). Missed packets are exported
+  as `hsa_dispatches_missed_total` in Prometheus mode, so the capture ratio is
+  `launches / (launches + missed)`.
+* **Durations are sampled.** `hsa_kernel_duration_seconds` is only observed for
+  a packet the poller saw while it was still pending. A packet that was already
+  consumed when first seen is counted as a launch but has no measurable
+  duration, so on a workload of very short kernels the histogram count is well
+  below `hsa_kernel_launches_total`.
+* **`--mem-snoop` reuses a snapshot of the process's VM map for up to one
+  second**, because reading `/proc/<pid>/maps` per dispatch stalls the poller on
+  processes with thousands of mappings. A buffer mapped within the last second
+  may be absent from `mapped_vram` for that dispatch.
 * **Timing is host-observed.** enqueue→queue-consumed uses host timestamps for
   queue pointer transitions, so a slice includes queue-wait time and may differ
   from true kernel execution or completion-signal timing. No profiling signals

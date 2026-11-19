@@ -193,6 +193,10 @@ void Discovery::Stop() {
 
 bool Discovery::InstallKprobe() {
     const std::string kp = tracefs_ + "/kprobe_events";
+    // A probe left behind by an unclean exit is still enabled, and an enabled
+    // probe cannot be removed; disable it first.
+    WriteFile(tracefs_ + "/events/kprobes/" + probe_name_ + "/enable", "0\n",
+              false);
     WriteFile(kp, "-:" + probe_name_ + "\n", /*append=*/true);
 
     // arg3 (the kfd_ioctl_create_queue_args*) is in %dx on x86-64 SysV.
@@ -296,9 +300,42 @@ void Discovery::RunKprobe() {
             if (s != std::string::npos)
                 comm = comm.substr(s);
 
-            // The ftrace comm can be a transient value (e.g. "<...>") if the
-            // queue is created mid-exec. Prefer the authoritative
-            // /proc/<pid>/comm.
+            // ftrace reports the calling thread: its tid and thread name. A
+            // queue belongs to the process, so resolve the thread-group id and
+            // the leader's comm. This also matches what the KFD startup scan
+            // reports for the same queue.
+            int tgid = 0;
+            {
+                char spath[64];
+                snprintf(spath, sizeof(spath), "/proc/%d/status", pid);
+                std::ifstream sf(spath);
+                std::string sl;
+                while (std::getline(sf, sl)) {
+                    if (sl.compare(0, 5, "Tgid:") == 0) {
+                        tgid = atoi(sl.c_str() + 5);
+                        break;
+                    }
+                }
+            }
+            if (tgid <= 0) {
+                // The probe reports pids of the root PID namespace. If they do
+                // not resolve here, ring reads will fail too and no dispatch
+                // will ever be counted.
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    fprintf(stderr,
+                            "hsa-snoop: warning: pid %d from the create_queue "
+                            "probe is not visible in /proc. If hsa-snoop runs "
+                            "in a container, it must share the host PID "
+                            "namespace (--pid=host) to see any dispatches.\n",
+                            pid);
+                }
+            } else {
+                pid = tgid;
+            }
+
+            // The ftrace comm can also be a transient value (e.g. "<...>").
             char cpath[64];
             snprintf(cpath, sizeof(cpath), "/proc/%d/comm", pid);
             std::ifstream cf(cpath);

@@ -48,6 +48,9 @@ class PrometheusExporter {
     // Called for each completed PacketRecord from RingParser. Thread-safe.
     void Add(const PacketRecord& rec);
 
+    // n AQL packets on this queue went by without being decoded. Thread-safe.
+    void AddMissed(uint64_t queue_uid, uint64_t n);
+
     // Called for each completed SdmaRecord (DMA copy/op) from RingParser.
     // Thread-safe.
     void Add(const SdmaRecord& rec);
@@ -106,6 +109,7 @@ class PrometheusExporter {
     prometheus::Family<prometheus::Gauge>& up_family_;
     prometheus::Family<prometheus::Counter>& kernel_launches_family_;
     prometheus::Family<prometheus::Counter>& errors_family_;
+    prometheus::Family<prometheus::Counter>& missed_family_;
     prometheus::Family<prometheus::Counter>& barrier_family_;
     prometheus::Family<prometheus::Gauge>& active_queues_family_;
     prometheus::Family<prometheus::Gauge>& launch_rate_family_;

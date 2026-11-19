@@ -4,7 +4,29 @@ All notable changes to hsa-snoop are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — v1.6.0
+## [Unreleased]
+
+### Added
+- `hsa_dispatches_missed_total` counter: AQL packets that were never decoded, so
+  a consumer can compute the capture ratio.
+- Startup warning when pids from the `create_queue` probe are not visible in
+  `/proc` (container outside the host PID namespace).
+
+### Fixed
+- `--mem-snoop` re-read `/proc/<pid>/maps` for every dispatch on the ring-poll
+  thread. On a process with thousands of mappings this stalled the poller, so
+  most launches were lost, one thread ran at 100% CPU regardless of `--poll-us`,
+  and it kept running for about a minute after the workload stopped while it
+  drained the ring. A snapshot of the map is now reused for up to one second.
+- Kernel durations were computed from one timestamp per pass over all queues,
+  so a slow pass on one queue appeared as a multi-second duration on another.
+- Queues discovered by the kprobe were labelled with the creating thread's id
+  and name; they now carry the process id and name, matching the KFD
+  startup scan.
+- A kprobe left enabled by an unclean exit is disabled before removal, instead
+  of failing the next start with `File exists`.
+
+## [1.6.0] — 2026-11-17
 
 ### Added
 - `gen-prom-snapshot.py`: converts `prom/snapshot.json` to Prometheus exposition

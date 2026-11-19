@@ -202,6 +202,13 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                                "RegisterQueue races)")
                          .Labels(MakeConstLabels(discovery_mode))
                          .Register(*registry_)),
+      missed_family_(prometheus::BuildCounter()
+                         .Name("hsa_dispatches_missed_total")
+                         .Help("AQL packets overwritten or consumed before "
+                               "hsa-snoop could decode them (not counted in "
+                               "hsa_kernel_launches_total)")
+                         .Labels(MakeConstLabels(discovery_mode))
+                         .Register(*registry_)),
       barrier_family_(prometheus::BuildCounter()
                           .Name("hsa_barrier_packets_total")
                           .Help("HSA barrier AQL packets observed")
@@ -491,6 +498,14 @@ void PrometheusExporter::RegisterQueue(const QueueInfo& q) {
         .Set(1.0);
 
     // SDMA and AQL queues are counted separately.
+    if (q.is_aql()) {
+        // Created at 0 so the series exists before any loss: absent would be
+        // indistinguishable from "this build cannot report loss".
+        missed_family_.Add({{"gpu_id", gpu_str},
+                            {"gpu_type", gpu_type},
+                            {"pid", std::to_string(q.pid)},
+                            {"comm", q.comm}});
+    }
     if (q.is_sdma()) {
         // Latch hsa_sdma_present = 1 on the first SDMA queue seen.
         if (sdma_present_gauge_)
@@ -633,6 +648,20 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
                   {"comm", meta.comm}})
             .Increment();
     }
+}
+
+void PrometheusExporter::AddMissed(uint64_t queue_uid, uint64_t n) {
+    std::lock_guard<std::mutex> lk(meta_mu_);
+    auto it = queue_meta_.find(queue_uid);
+    if (it == queue_meta_.end())
+        return;
+    const QueueMeta& meta = it->second;
+    missed_family_
+        .Add({{"gpu_id", std::to_string(meta.gpu_id)},
+              {"gpu_type", meta.gpu_type},
+              {"pid", std::to_string(meta.pid)},
+              {"comm", meta.comm}})
+        .Increment(static_cast<double>(n));
 }
 
 // ---------------------------------------------------------------------------
@@ -816,7 +845,12 @@ void PrometheusExporter::Add(const MemRecord& rec) {
     std::lock_guard<std::mutex> lk(meta_mu_);
 
     std::string gpu_str = std::to_string(rec.gpu_id);
-    std::string gpu_type = DetectGpuType(rec.gpu_id);
+    // DetectGpuType walks sysfs; this runs per dispatch, so use the value
+    // resolved when the queue was registered.
+    auto meta_it = queue_meta_.find(rec.queue_uid);
+    std::string gpu_type = meta_it != queue_meta_.end()
+                               ? meta_it->second.gpu_type
+                               : DetectGpuType(rec.gpu_id);
 
     // Per-dispatch gauges: reflect the most recent value for each kernel.
     mem_lds_family_

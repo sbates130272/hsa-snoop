@@ -96,9 +96,10 @@ bool TryReadGpuTs(int pid, uint64_t signal_handle, uint64_t* start_ticks,
 
 } // namespace
 
-RingParser::RingParser(Sink sink, SdmaSink sdma_sink, int poll_us)
+RingParser::RingParser(Sink sink, SdmaSink sdma_sink, int poll_us,
+                       MissSink miss_sink)
     : sink_(std::move(sink)), sdma_sink_(std::move(sdma_sink)),
-      poll_us_(poll_us) {
+      miss_sink_(std::move(miss_sink)), poll_us_(poll_us) {
     running_ = true;
     thread_ = std::thread(&RingParser::Run, this);
 }
@@ -378,7 +379,6 @@ void RingParser::PollQueue(QueueState* qs, double now) {
 
 void RingParser::Run() {
     while (running_) {
-        double now = MonoNow();
         std::vector<QueueState*> snapshot;
         {
             std::lock_guard<std::mutex> lk(mu_);
@@ -392,10 +392,16 @@ void RingParser::Run() {
                 qs->evict = true;
                 continue;
             }
+            // Timestamp per queue, not per pass: a slow pass over one queue
+            // must not be charged to the next queue's durations.
+            const double now = MonoNow();
+            const uint64_t dropped_before = qs->dropped;
             if (qs->info.is_sdma())
                 PollSdmaQueue(qs, now);
             else
                 PollQueue(qs, now);
+            if (miss_sink_ && qs->info.is_aql() && qs->dropped != dropped_before)
+                miss_sink_(qs->info.uid, qs->dropped - dropped_before);
         }
         // Remove evicted queues under the lock.
         {

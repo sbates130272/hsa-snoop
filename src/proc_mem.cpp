@@ -7,9 +7,13 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <ctime>
 #include <cstring>
+#include <algorithm>
 #include <fstream>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -143,21 +147,54 @@ std::vector<VmaRegion> ReadVmas(int pid) {
 }
 
 // Return the region whose [start, end) contains `addr`, or nullptr.
+// vmas from /proc/<pid>/maps arrive in ascending order.
 const VmaRegion* FindVma(const std::vector<VmaRegion>& vmas, uint64_t addr) {
-    // vmas from /proc/<pid>/maps arrive in ascending order.
-    for (const auto& v : vmas) {
-        if (addr >= v.start && addr < v.end)
-            return &v;
-        if (v.start > addr)
-            break;
-    }
-    return nullptr;
+    auto it = std::upper_bound(
+        vmas.begin(), vmas.end(), addr,
+        [](uint64_t a, const VmaRegion& v) { return a < v.start; });
+    if (it == vmas.begin())
+        return nullptr;
+    --it;
+    return addr < it->end ? &*it : nullptr;
+}
+
+double MonoSec() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+// Reading /proc/<pid>/maps costs milliseconds for a process with thousands of
+// mappings (PyTorch, vLLM) and takes the target's mmap lock. Doing it per
+// dispatch stalled the ring poller, so callers on the dispatch path reuse a
+// snapshot for up to max_age_sec.
+std::vector<VmaRegion> GetVmas(int pid, double max_age_sec) {
+    if (max_age_sec <= 0)
+        return ReadVmas(pid);
+    struct Entry {
+        std::vector<VmaRegion> vmas;
+        double read_at = 0;
+    };
+    static std::mutex mu;
+    static std::unordered_map<int, Entry> cache;
+    std::lock_guard<std::mutex> lk(mu);
+    const double now = MonoSec();
+    auto it = cache.find(pid);
+    if (it != cache.end() && now - it->second.read_at < max_age_sec)
+        return it->second.vmas;
+    if (cache.size() >= 64)
+        cache.clear();
+    Entry& e = cache[pid];
+    e.vmas = ReadVmas(pid);
+    e.read_at = now;
+    return e.vmas;
 }
 
 } // namespace
 
 bool ScanKernargFootprint(int pid, uint64_t kernarg_va, uint32_t kernarg_bytes,
-                          uint64_t* mapped_vram_bytes, uint32_t* ptr_count) {
+                          uint64_t* mapped_vram_bytes, uint32_t* ptr_count,
+                          double max_vma_age_sec) {
     *mapped_vram_bytes = 0;
     *ptr_count = 0;
 
@@ -181,7 +218,7 @@ bool ScanKernargFootprint(int pid, uint64_t kernarg_va, uint32_t kernarg_bytes,
         !ReadProcMemViaMem(pid, kernarg_va, buf.data(), scan_bytes))
         return false;
 
-    std::vector<VmaRegion> vmas = ReadVmas(pid);
+    std::vector<VmaRegion> vmas = GetVmas(pid, max_vma_age_sec);
     if (vmas.empty())
         return false;
 

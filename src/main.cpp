@@ -470,7 +470,8 @@ int main(int argc, char** argv) {
                                                   : 256; // pre-v3 descriptor
                         mr.footprint_valid = ScanKernargFootprint(
                             it->second.pid, r.kernarg_address, scan_bytes,
-                            &mr.mapped_vram_bytes, &mr.ptr_count);
+                            &mr.mapped_vram_bytes, &mr.ptr_count,
+                            /*max_vma_age_sec=*/1.0);
                     }
                     // else: the queue was never registered, so there is no pid
                     // to read from — footprint_valid stays false.
@@ -542,7 +543,15 @@ int main(int argc, char** argv) {
                 single_writer->Add(r);
             }
         },
-        poll_us);
+        poll_us,
+        [&](uint64_t queue_uid, uint64_t n) {
+            (void)queue_uid;
+            (void)n;
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+            if (prom_exporter)
+                prom_exporter->AddMissed(queue_uid, n);
+#endif
+        });
 
     // Launch mode: fork the child stopped so we can scope discovery to its pid
     // and arm the probe before it can create any queue. It is resumed

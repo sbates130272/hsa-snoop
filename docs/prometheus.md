@@ -30,6 +30,7 @@ All metrics carry constant labels `host`, `platform`, `rocm_version`,
 | `hsa_sdma_present` | Gauge | — | 1 when first SDMA queue seen; 0 on APU/unified-memory nodes |
 | `hsa_triggered` | Gauge | `gpu_id`, `gpu_type` | 1 on first kernel dispatch on this GPU |
 | `hsa_errors_total` | Counter | `gpu_id`, `pid` | Packets before queue registration |
+| `hsa_dispatches_missed_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm` | AQL packets overwritten or consumed before they could be decoded |
 | `hsa_xnack_total` | Counter | `pasid`, `comm` | GPU page-fault retries (`--xnack-snoop`) |
 
 ## AIS Metrics
