@@ -21,10 +21,14 @@ permissions:
 
 jobs:
   build-check:
-    name: build-check for hsa-snoop
+    name: build-check for hsa-snoop (ROCm ${{ matrix.rocm }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rocm: ['7.14.0', '10.1.0', '10.2.0']
     container:
-      image: rocm/dev-ubuntu-24.04:10.1.0-full
+      image: rocm/dev-ubuntu-24.04:${{ matrix.rocm }}-full
       options: --user root
     steps:
     - name: Check out code
@@ -71,10 +75,14 @@ jobs:
         /tmp/hsa-snoop-install/bin/hsa-snoop --help
 
   build-check-prometheus:
-    name: build-check for hsa-snoop (Prometheus exporter)
+    name: build-check for hsa-snoop (Prometheus exporter, ROCm ${{ matrix.rocm }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rocm: ['7.14.0', '10.1.0', '10.2.0']
     container:
-      image: rocm/dev-ubuntu-24.04:10.1.0-full
+      image: rocm/dev-ubuntu-24.04:${{ matrix.rocm }}-full
       options: --user root
     steps:
     - name: Check out code
