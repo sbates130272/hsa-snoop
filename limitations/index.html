@@ -734,8 +734,29 @@
   packet that is enqueued <em>and</em> queue-consumed entirely within one poll interval
   can be missed (the slot may read back as <code>INVALID</code> once consumed). Lower
   <code>--poll-us</code> to catch faster kernels; deeply-queued workloads are captured
-  near-completely (195/200 in the bundled test). Missed packets are counted
-  internally as "dropped".</li>
+  near-completely (195/200 in the bundled test). Missed packets are exported
+  as <code>hsa_dispatches_missed_total</code> in Prometheus mode, split by <code>reason</code>. The
+  count covers every AQL packet type, so <code>launches / (launches + missed)</code> is a
+  lower bound on the capture ratio for kernel dispatches.</li>
+<li><strong>Durations are sampled.</strong> <code>hsa_kernel_duration_seconds</code> is only observed for
+  a packet the poller saw while it was still pending. A packet that was already
+  consumed when first seen is counted as a launch but has no measurable
+  duration, so on a workload of very short kernels the histogram count is well
+  below <code>hsa_kernel_launches_total</code>. Those launches are counted in
+  <code>hsa_kernel_durations_unmeasured_total</code>, so the sample rate is one minus
+  unmeasured over launches (the query is in the Prometheus page); a lower
+  <code>--poll-us</code> raises it at the cost of CPU.
+  The sample is biased towards longer kernels, which are more likely to be seen
+  pending.</li>
+<li><strong>Unresolved kernel names.</strong> A kernel whose descriptor cannot be matched to a
+  symbol is labelled <code>kernel_0x&lt;addr&gt;</code>. The lookup is retried by up to three
+  further scans of the process, at least 30 s apart, so a name that was
+  unavailable at first sight is picked up for later launches under a new
+  series.</li>
+<li><strong><code>--mem-snoop</code> reuses a snapshot of the process's VM map for up to one
+  second</strong>, because reading <code>/proc/&lt;pid&gt;/maps</code> per dispatch stalls the poller on
+  processes with thousands of mappings. A buffer mapped within the last second
+  may be absent from <code>mapped_vram</code> for that dispatch.</li>
 <li><strong>Timing is host-observed.</strong> enqueue→queue-consumed uses host timestamps for
   queue pointer transitions, so a slice includes queue-wait time and may differ
   from true kernel execution or completion-signal timing. No profiling signals
@@ -758,8 +779,15 @@
   namespace PID. This can misattribute queues if two processes share the same
   comm prefix. Launch mode (<code>-- &lt;command&gt;</code>) avoids this by using the known
   child PID.</li>
-<li><strong>Physical addresses</strong> resolve for host/GTT-backed rings (the norm for AQL
-  host↔GPU queues). VRAM-resident pages have no pagemap PFN and report <code>0</code>.</li>
+<li><strong>Physical addresses</strong> resolve for host/GTT-backed rings. VRAM-resident pages
+  have no pagemap PFN and report <code>0</code>.</li>
+<li><strong>Rings that <code>process_vm_readv</code> cannot read</strong> are read through
+  <code>/proc/&lt;pid&gt;/mem</code> instead, and <code>ring_phys</code> is <code>0x0</code> for them. Two cases are
+  known on ROCm 10.2. On gfx94x and gfx125x with Large BAR, AQL rings are
+  placed in device memory by default; <code>DEBUG_CLR_AQL_DEV_QUEUE=0</code> in the traced
+  process restores host rings there. On gfx1201 the rings are also unreadable
+  with <code>process_vm_readv</code>, that variable has no effect, and the cause is not
+  yet known.</li>
 <li><strong>SDMA decode supports v4.x, v6.x, and v7.x packet layouts.</strong> v4 covers gfx9
   CDNA (gfx90a / gfx942); v6 covers gfx11 RDNA3 (including gfx1101); v7 covers
   gfx12 (including gfx1250 / MI455X). Unknown generations are ignored to avoid

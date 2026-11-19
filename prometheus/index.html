@@ -826,6 +826,39 @@
 <h2 id="hsa-gpu-metrics">HSA / GPU Metrics<a class="headerlink" href="#hsa-gpu-metrics" title="Permanent link">&para;</a></h2>
 <p>All metrics carry constant labels <code>host</code>, <code>platform</code>, <code>rocm_version</code>,
 <code>discovery_mode</code>.</p>
+<p>Options that shape the labels:</p>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Environment</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--host-label &lt;s&gt;</code></td>
+<td><code>HSA_SNOOP_HOST_LABEL</code></td>
+<td>Value of <code>host</code>. Defaults to the host name, which in a container is the container id and changes on every recreate; set it to the node name there.</td>
+</tr>
+<tr>
+<td><code>--rocm-version &lt;s&gt;</code></td>
+<td><code>HSA_SNOOP_ROCM_VERSION</code></td>
+<td>Value of <code>rocm_version</code>. Defaults to the version found under <code>/opt/rocm</code>, or <code>unknown</code> when ROCm is installed only in the traced containers.</td>
+</tr>
+<tr>
+<td><code>--kernel-name-max &lt;n&gt;</code></td>
+<td>—</td>
+<td>Truncate <code>kernel_name</code> values to <code>n</code> bytes (ending in <code>...</code>). Default 0, no limit. Names that differ only past the cut share one series.</td>
+</tr>
+</tbody>
+</table>
+<p><code>hsa_kernel_duration_seconds</code> is sampled. <code>hsa_kernel_launches_total</code> carries
+<code>kernel_name</code> and the unmeasured counter does not, so aggregate both sides to
+get the sample rate:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="mi">1</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">gpu_id</span><span class="p">,</span><span class="w"> </span><span class="nv">pid</span><span class="p">,</span><span class="w"> </span><span class="nv">comm</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">hsa_kernel_durations_unmeasured_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="o">/</span><span class="w"> </span><span class="k">sum</span><span class="w"> </span><span class="k">by</span><span class="w"> </span><span class="o">(</span><span class="nv">gpu_id</span><span class="p">,</span><span class="w"> </span><span class="nv">pid</span><span class="p">,</span><span class="w"> </span><span class="nv">comm</span><span class="o">)</span><span class="w"> </span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">hsa_kernel_launches_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span>
+</code></pre></div>
 <table>
 <thead>
 <tr>
@@ -853,6 +886,12 @@
 <td>Histogram</td>
 <td><code>kernel_name</code>, <code>gpu_id</code>, <code>gpu_type</code></td>
 <td>Kernel duration (host-observed, enqueue to queue-consumed)</td>
+</tr>
+<tr>
+<td><code>hsa_kernel_durations_unmeasured_total</code></td>
+<td>Counter</td>
+<td><code>gpu_id</code>, <code>gpu_type</code>, <code>pid</code>, <code>comm</code></td>
+<td>Launches with no duration observation (see the sample-rate query below)</td>
 </tr>
 <tr>
 <td><code>hsa_kernel_launches_per_second</code></td>
@@ -925,6 +964,12 @@
 <td>Counter</td>
 <td><code>gpu_id</code>, <code>pid</code></td>
 <td>Packets before queue registration</td>
+</tr>
+<tr>
+<td><code>hsa_dispatches_missed_total</code></td>
+<td>Counter</td>
+<td><code>gpu_id</code>, <code>gpu_type</code>, <code>pid</code>, <code>comm</code>, <code>reason</code></td>
+<td>AQL packets not decoded. <code>reason</code> is <code>overwritten</code> (the ring wrapped before they were read), <code>consumed</code> (already consumed and the slot no longer holds a packet that can be decoded) or <code>unreadable</code> (the slot read failed). Counts every packet type, not only kernel dispatches</td>
 </tr>
 <tr>
 <td><code>hsa_xnack_total</code></td>
