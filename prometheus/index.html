@@ -847,6 +847,11 @@
 <td>Value of <code>rocm_version</code>. Defaults to the version found under <code>/opt/rocm</code>, or <code>unknown</code> when ROCm is installed only in the traced containers.</td>
 </tr>
 <tr>
+<td><code>--gpu-clock-hz &lt;hz&gt;</code></td>
+<td><code>HSA_SNOOP_GPU_CLOCK_HZ</code></td>
+<td>GPU clock rate used for <code>hsa_kernel_gpu_duration_seconds</code>. Defaults to a rate measured through KFD.</td>
+</tr>
+<tr>
 <td><code>--kernel-name-max &lt;n&gt;</code></td>
 <td>—</td>
 <td>Truncate <code>kernel_name</code> values to <code>n</code> bytes (ending in <code>...</code>). Default 0, no limit. Names that differ only past the cut share one series.</td>
@@ -886,6 +891,18 @@ get the sample rate:</p>
 <td>Histogram</td>
 <td><code>kernel_name</code>, <code>gpu_id</code>, <code>gpu_type</code></td>
 <td>Kernel duration (host-observed, enqueue to queue-consumed)</td>
+</tr>
+<tr>
+<td><code>hsa_kernel_gpu_duration_seconds</code></td>
+<td>Histogram</td>
+<td><code>kernel_name</code>, <code>gpu_id</code>, <code>gpu_type</code></td>
+<td>Kernel duration from the command processor's own timestamps. Only for workloads run with queue profiling on (<code>GPU_FORCE_QUEUE_PROFILING=1</code> for HIP)</td>
+</tr>
+<tr>
+<td><code>hsa_gpu_clock_ticks_per_second</code></td>
+<td>Gauge</td>
+<td><code>gpu_id</code>, <code>gpu_type</code></td>
+<td>GPU clock rate used for that conversion</td>
 </tr>
 <tr>
 <td><code>hsa_kernel_durations_unmeasured_total</code></td>
