@@ -94,6 +94,41 @@ bool TryReadGpuTs(int pid, uint64_t signal_handle, uint64_t* start_ticks,
     return true;
 }
 
+void FillDispatch(const uint8_t* raw, PacketRecord* rec) {
+    aql::KernelDispatchPacket p;
+    memcpy(&p, raw, sizeof(p));
+    rec->kernel_object = p.kernel_object;
+    rec->grid[0] = p.grid_size_x;
+    rec->grid[1] = p.grid_size_y;
+    rec->grid[2] = p.grid_size_z;
+    rec->wg[0] = p.workgroup_size_x;
+    rec->wg[1] = p.workgroup_size_y;
+    rec->wg[2] = p.workgroup_size_z;
+    rec->private_seg = p.private_segment_size;
+    rec->group_seg = p.group_segment_size;
+    rec->completion_signal = p.completion_signal;
+    rec->kernarg_address = p.kernarg_address;
+}
+
+void FillExtDispatch(const uint8_t* raw, PacketRecord* rec) {
+    aql::ExtKernelDispatchPacket p;
+    memcpy(&p, raw, sizeof(p));
+    rec->kernel_object = p.kernel_object;
+    rec->grid[0] = aql::ExtGridSize(p.cluster_count_x, p.cluster_size_x,
+                                    p.workgroup_size_x);
+    rec->grid[1] = aql::ExtGridSize(p.cluster_count_y, p.cluster_size_y,
+                                    p.workgroup_size_y);
+    rec->grid[2] = aql::ExtGridSize(p.cluster_count_z, p.cluster_size_z,
+                                    p.workgroup_size_z);
+    rec->wg[0] = p.workgroup_size_x;
+    rec->wg[1] = p.workgroup_size_y;
+    rec->wg[2] = p.workgroup_size_z;
+    rec->private_seg = p.private_segment_size;
+    rec->group_seg = p.group_segment_size;
+    rec->completion_signal = p.completion_signal;
+    rec->kernarg_address = p.kernarg_address;
+}
+
 } // namespace
 
 RingParser::RingParser(Sink sink, SdmaSink sdma_sink, int poll_us,
@@ -111,6 +146,31 @@ void RingParser::Stop() {
         return;
     if (thread_.joinable())
         thread_.join();
+    std::lock_guard<std::mutex> lk(mu_);
+    for (const auto& q : queues_)
+        PrintSummary(*q);
+}
+
+// One line per queue when it stops being polled: what was decoded and what
+// went by undecoded. Without it a trace-mode run gives no way to tell a quiet
+// queue from one whose packets were missed.
+void RingParser::PrintSummary(const QueueState& qs) {
+    const QueueInfo& q = qs.info;
+    if (!qs.primed)
+        return;
+    if (q.is_sdma()) {
+        fprintf(stderr,
+                "[summary] sdma queue uid=%lu pid=%d decoded=%lu "
+                "skipped_dwords=%lu before_first_poll_dwords=%lu\n",
+                q.uid, q.pid, qs.decoded, qs.dropped, qs.skipped_at_start);
+        return;
+    }
+    fprintf(
+        stderr,
+        "[summary] aql queue uid=%lu pid=%d slots=%u decoded=%lu missed: "
+        "overwritten=%lu consumed=%lu unreadable=%lu before_first_poll=%lu\n",
+        q.uid, q.pid, q.num_slots(), qs.decoded, qs.missed_overwritten,
+        qs.missed_consumed, qs.missed_unreadable, qs.skipped_at_start);
 }
 
 void RingParser::AddQueue(const QueueInfo& q) {
@@ -198,32 +258,35 @@ bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
     if (type == aql::PacketType::Invalid) {
         if (id < rptr) {
             // Slot consumed; check if kernel_object is set (dispatch body
-            // intact).
+            // intact). kernel_object sits at the same offset in both dispatch
+            // layouts.
             aql::KernelDispatchPacket p;
             memcpy(&p, raw, sizeof(p));
-            if (p.kernel_object != 0) {
-                // Synthesize as KernelDispatch — header was reset by GPU.
+            // workgroup_size_x (bytes 4-5 in both dispatch layouts) is at
+            // least 1 in a real dispatch and reserved-zero in barrier packets.
+            // Without it a consumed barrier_value, whose condition field sits
+            // where kernel_object does, would be reported as a kernel launch.
+            if (p.kernel_object != 0 && p.workgroup_size_x != 0) {
+                // The header no longer says which layout the body has. A
+                // classic dispatch has a 16-bit setup field whose high byte
+                // (raw[3]) is always zero; an extended dispatch has its AMD
+                // format in raw[2] and its own non-zero setup in raw[3].
+                const bool ext =
+                    aql::IsExtKernelDispatch(raw[2]) && raw[3] != 0;
                 if (kDebug)
                     fprintf(stderr,
                             "[decode q%lu id%lu] fast-reset: synthesising "
-                            "KernelDispatch kernel_obj=0x%lx\n",
-                            q.uid, id, p.kernel_object);
+                            "%sKernelDispatch kernel_obj=0x%lx\n",
+                            q.uid, id, ext ? "Ext" : "", p.kernel_object);
                 rec->queue_uid = q.uid;
                 rec->dispatch_id = id;
                 rec->type = aql::PacketType::KernelDispatch;
                 rec->barrier = false;
-                rec->kernel_object = p.kernel_object;
-                rec->grid[0] = p.grid_size_x;
-                rec->grid[1] = p.grid_size_y;
-                rec->grid[2] = p.grid_size_z;
-                rec->wg[0] = p.workgroup_size_x;
-                rec->wg[1] = p.workgroup_size_y;
-                rec->wg[2] = p.workgroup_size_z;
-                rec->private_seg = p.private_segment_size;
-                rec->group_seg = p.group_segment_size;
-                rec->completion_signal = p.completion_signal;
-                rec->kernarg_address = p.kernarg_address;
-                rec->kernel_name = qs->ksym->Resolve(p.kernel_object);
+                if (ext)
+                    FillExtDispatch(raw, rec);
+                else
+                    FillDispatch(raw, rec);
+                rec->kernel_name = qs->ksym->Resolve(rec->kernel_object);
                 return true;
             }
         }
@@ -239,42 +302,15 @@ bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
     rec->barrier = aql::HeaderBarrier(header);
 
     if (type == aql::PacketType::KernelDispatch) {
-        aql::KernelDispatchPacket p;
-        memcpy(&p, raw, sizeof(p));
-        rec->kernel_object = p.kernel_object;
-        rec->grid[0] = p.grid_size_x;
-        rec->grid[1] = p.grid_size_y;
-        rec->grid[2] = p.grid_size_z;
-        rec->wg[0] = p.workgroup_size_x;
-        rec->wg[1] = p.workgroup_size_y;
-        rec->wg[2] = p.workgroup_size_z;
-        rec->private_seg = p.private_segment_size;
-        rec->group_seg = p.group_segment_size;
-        rec->completion_signal = p.completion_signal;
-        rec->kernarg_address = p.kernarg_address;
-        rec->kernel_name = qs->ksym->Resolve(p.kernel_object);
+        FillDispatch(raw, rec);
+        rec->kernel_name = qs->ksym->Resolve(rec->kernel_object);
     } else if (type == aql::PacketType::VendorSpecific &&
                aql::IsExtKernelDispatch(raw[2])) {
         // AMD extended kernel dispatch: a kernel launch in a vendor packet.
         // Report it as the KernelDispatch it is, so it gets a kernel name.
-        aql::ExtKernelDispatchPacket p;
-        memcpy(&p, raw, sizeof(p));
         rec->type = aql::PacketType::KernelDispatch;
-        rec->kernel_object = p.kernel_object;
-        rec->grid[0] = aql::ExtGridSize(p.cluster_count_x, p.cluster_size_x,
-                                        p.workgroup_size_x);
-        rec->grid[1] = aql::ExtGridSize(p.cluster_count_y, p.cluster_size_y,
-                                        p.workgroup_size_y);
-        rec->grid[2] = aql::ExtGridSize(p.cluster_count_z, p.cluster_size_z,
-                                        p.workgroup_size_z);
-        rec->wg[0] = p.workgroup_size_x;
-        rec->wg[1] = p.workgroup_size_y;
-        rec->wg[2] = p.workgroup_size_z;
-        rec->private_seg = p.private_segment_size;
-        rec->group_seg = p.group_segment_size;
-        rec->completion_signal = p.completion_signal;
-        rec->kernarg_address = p.kernarg_address;
-        rec->kernel_name = qs->ksym->Resolve(p.kernel_object);
+        FillExtDispatch(raw, rec);
+        rec->kernel_name = qs->ksym->Resolve(rec->kernel_object);
     } else if (type == aql::PacketType::VendorSpecific &&
                raw[2] == aql::kAmdFormatBarrierValue) {
         rec->kernel_name = "barrier_value";
@@ -304,12 +340,23 @@ void RingParser::PollQueue(QueueState* qs, double now) {
     }
     qs->read_fail_count = 0; // clear on success
 
+    const uint64_t slots = q.num_slots();
     if (!qs->primed) {
-        // Start from the current head so we only report new activity.
-        qs->next_id = wptr;
         qs->last_rptr = rptr;
         qs->primed = true;
-        return;
+        // A queue seen being created has nothing in its ring from before the
+        // trace, so everything up to wptr is new activity: the runtime can
+        // enqueue on it before the first poll gets here. Start from the
+        // beginning and decode on this pass; if the ring has already wrapped,
+        // the guard below counts what was overwritten. A queue found already
+        // running starts from the current head so only new activity is
+        // reported.
+        if (!q.created_during_trace) {
+            qs->next_id = wptr;
+            qs->skipped_at_start = wptr;
+            return;
+        }
+        qs->next_id = 0;
     }
 
     if (kDebug && (wptr != qs->next_id || rptr != qs->last_rptr)) {
@@ -319,7 +366,6 @@ void RingParser::PollQueue(QueueState* qs, double now) {
     }
 
     // Guard against decoding slots the producer has already wrapped over.
-    uint64_t slots = q.num_slots();
     uint64_t overwritten = 0, consumed_undecodable = 0, unreadable = 0;
     if (wptr > qs->next_id + slots) {
         overwritten = (wptr - qs->next_id) - slots;
@@ -346,6 +392,7 @@ void RingParser::PollQueue(QueueState* qs, double now) {
                 rec.consumed_ts = now;
             qs->inflight.emplace(qs->next_id, std::move(rec));
             qs->next_id++;
+            qs->decoded++;
         } else if (qs->next_id < rptr) {
             ++(read_failed ? unreadable : consumed_undecodable);
             qs->next_id++;
@@ -354,6 +401,9 @@ void RingParser::PollQueue(QueueState* qs, double now) {
         }
     }
     qs->dropped += overwritten + consumed_undecodable + unreadable;
+    qs->missed_overwritten += overwritten;
+    qs->missed_consumed += consumed_undecodable;
+    qs->missed_unreadable += unreadable;
     if (miss_sink_) {
         if (overwritten)
             miss_sink_(q.uid, overwritten, "overwritten");
@@ -439,6 +489,9 @@ void RingParser::Run() {
         // Remove evicted queues under the lock.
         {
             std::lock_guard<std::mutex> lk(mu_);
+            for (const auto& q : queues_)
+                if (q->evict)
+                    PrintSummary(*q);
             queues_.erase(
                 std::remove_if(queues_.begin(), queues_.end(),
                                [](const std::unique_ptr<QueueState>& q) {
@@ -547,11 +600,17 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
     }
 
     if (!qs->primed) {
-        // Start from the current head so we only report new activity.
-        qs->next_id = wptr;
         qs->last_rptr = rptr;
         qs->primed = true;
-        return;
+        // Same rule as for AQL queues: one seen being created is decoded from
+        // the start of its ring, one found already running from the current
+        // head.
+        if (!q.created_during_trace) {
+            qs->next_id = wptr;
+            qs->skipped_at_start = wptr;
+            return;
+        }
+        qs->next_id = 0;
     }
 
     if (kDebug && (wptr != qs->next_id || rptr != qs->last_rptr)) {
@@ -625,6 +684,7 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
         uint64_t end_dw = qs->next_id + len;
         qs->sdma_inflight.emplace(end_dw, std::move(rec));
         qs->next_id = end_dw;
+        qs->decoded++;
     }
 
     // Mark packets queue-consumed once the read pointer passes their last

@@ -579,12 +579,11 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
     std::string gpu_str = std::to_string(meta.gpu_id);
     std::string pid_str = std::to_string(meta.pid);
 
-    // On gfx1250/RDNA4 the GPU resets AQL headers via a fast-reset path that
-    // sets the header to VendorSpecific rather than Invalid, bypassing the
-    // KernelDispatch synthesis in the parser.  Count VendorSpecific as a
-    // kernel launch so hsa_kernel_launches_total increments on these platforms.
-    const bool is_dispatch = rec.type == aql::PacketType::KernelDispatch ||
-                             rec.type == aql::PacketType::VendorSpecific;
+    // Only KernelDispatch counts as a launch. The parser already reports an
+    // AMD extended dispatch (a kernel launch carried in a vendor packet) as
+    // KernelDispatch, so what is still VendorSpecific here is barrier_value or
+    // some other runtime-internal packet, not a kernel.
+    const bool is_dispatch = rec.type == aql::PacketType::KernelDispatch;
 
     if (is_dispatch) {
         const std::string kernel_name = KernelLabel(rec.kernel_name);

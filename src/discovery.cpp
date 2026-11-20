@@ -356,6 +356,7 @@ void Discovery::RunKprobe() {
             q.gpu_id = static_cast<uint32_t>(FindU64(line, "gpu_id"));
             q.qtype = static_cast<uint32_t>(FindU64(line, "qtype"));
             q.create_ts = MonoNow();
+            q.created_during_trace = true;
             q.uid = AllocQueueUid();
 
             if (q.ring_base && q.ring_size && cb_)

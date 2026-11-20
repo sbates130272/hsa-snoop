@@ -10,6 +10,9 @@
 # queue-observed dur_us. TIMING_REQUIRE_SHIM=1 makes a missing shim, or a
 # run with no GPU timestamps, an error.
 #
+# Environment: TIMING_ELEMENTS, TIMING_BATCH, TIMING_REQUIRE_SHIM,
+# TIMING_DEBUG, TIMING_LOG (see below).
+#
 # usage: capture-kernel-timing.sh <build-dir> <out.ndjson>
 set -euo pipefail
 
@@ -49,12 +52,23 @@ log=$(mktemp)
 sudo rm -f "$out"
 sudo env "${env_args[@]}" "$build/hsa-snoop" \
   --format json \
-  --out "$build/kernel-timing-trace.json" \
+  --out "${out%.ndjson}-trace.json" \
   --poll-us 1000 \
   --log-dispatches "$out" \
   -- "$build/deploy/examples/gfx-test" \
        --elements "$elements" --iters 1 --loops 1 --batch "$batch" --sleep-ms 0 \
-  > "$log" 2>&1 || { cat "$log"; exit 1; }
+  > "$log" 2>&1 && rc=0 || rc=$?
+# TIMING_LOG=<path> keeps hsa-snoop's whole log, debug lines included. Saved
+# before any check below can exit, since a failed capture is the one whose log
+# is wanted.
+if [ -n "${TIMING_LOG:-}" ]; then
+  cp "$log" "$TIMING_LOG"
+  chmod a+r "$TIMING_LOG"
+fi
+if [ "$rc" -ne 0 ]; then
+  cat "$log"
+  exit 1
+fi
 grep -v '^\[\(poll\|decode\|sdma\|ksym\|gputs\)' "$log" || true
 if [ "${TIMING_DEBUG:-0}" = 1 ]; then
   echo "completion-signal timestamp reads: $(grep -c '^\[gputs' "$log" || true)," \

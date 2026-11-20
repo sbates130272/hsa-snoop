@@ -358,11 +358,27 @@ jobs:
         sudo ctest -L hardware -V
         EOF
 
+    # The AIS tests pass on any non-zero event count and the workload exits 0
+    # even when its ioctls fail, so the guest's own AIS messages are the only
+    # record of why a run saw one event instead of ten.
+    - name: Show AIS kernel messages from the guest
+      if: always()
+      run: |
+        ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu \
+          "sudo dmesg | grep -i 'ais' | tail -n 100" || true
+
     - name: Collect test results
       if: always()
       run: |
         scp -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -P 2222 -r "$VM_USERNAME"@qemu:/tmp/hsa-snoop/build/Testing ./test-results || true
+        # The traces the hardware tests assert on. The published SDMA and AIS
+        # figures are derived from them, so keep them with the results.
+        mkdir -p ./test-results/traces
+        scp -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -P 2222 "$VM_USERNAME"@qemu:'/tmp/hsa-snoop/build/*-hardware-test.json' \
+          ./test-results/traces/ || true
 
     - name: Upload test results
       if: always()
@@ -409,6 +425,33 @@ jobs:
           --out-dir ./artifacts/kernel-timing \
           --summary "$GITHUB_STEP_SUMMARY"
 
+    # A second, unpublished capture with hsa-snoop's debug log on. The debug
+    # writes slow the poll loop, so this cannot be the published capture; it
+    # records the write/read pointers at every poll and how each dispatch was
+    # retired, which is what explains a capture with missing queue durations.
+    - name: Capture kernel timing debug log in VM
+      if: always() && steps.kernel-timing.outcome != 'skipped'
+      continue-on-error: true
+      timeout-minutes: 15
+      run: |
+        # Fetch the log whatever the capture returned: a failed capture is
+        # the one whose log is wanted.
+        rc=0
+        ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+          -p 2222 "$VM_USERNAME"@qemu \
+          env TIMING_DEBUG=1 \
+              TIMING_LOG=/tmp/hsa-snoop/build/kernel-timing-debug.log \
+          bash /tmp/hsa-snoop/.github/ci/report/capture-kernel-timing.sh \
+            /tmp/hsa-snoop/build /tmp/hsa-snoop/build/kernel-timing-debug.ndjson \
+          || rc=$?
+        mkdir -p ./artifacts
+        for f in kernel-timing-debug.log kernel-timing-debug.ndjson; do
+          scp -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
+            -P 2222 "$VM_USERNAME"@qemu:/tmp/hsa-snoop/build/"$f" \
+            ./artifacts/ || true
+        done
+        exit "$rc"
+
     - name: Upload kernel timing
       if: always() && steps.kernel-timing.outcome != 'skipped'
       uses: actions/upload-artifact@v7
@@ -417,6 +460,8 @@ jobs:
         path: |
           artifacts/kernel-timing.ndjson
           artifacts/kernel-timing/
+          artifacts/kernel-timing-debug.log
+          artifacts/kernel-timing-debug.ndjson
         if-no-files-found: ignore
         retention-days: 7
 

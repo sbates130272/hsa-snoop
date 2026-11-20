@@ -31,6 +31,13 @@
   queue pointer transitions, so a slice includes queue-wait time and may differ
   from true kernel execution or completion-signal timing. No profiling signals
   or counters are read; this is best used for structure and relative timing.
+* **Packets on a queue that already existed are reported from the first poll
+  onwards.** A queue seen being created by the KFD `create_queue` probe is
+  decoded from the start of its ring. Queues found by the startup scan, and
+  queues discovered through `librocdxg` on WSL2, start from the first poll.
+  The `[summary]` line printed when a queue stops being polled gives the
+  decoded and missed counts, and how much was in the ring before the first
+  poll.
 * **Attach mode only sees queues created after attach**, since the kprobe fires
   on `create_queue`. Use launch mode to guarantee capture from process start.
 * **`hsa_kernel_duration_seconds` is a coarse histogram by nature.** Its buckets

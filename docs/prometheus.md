@@ -33,7 +33,7 @@ get the sample rate:
 | Metric | Type | Labels | Description |
 | --- | --- | --- | --- |
 | `hsa_snoop_up` | Gauge | — | 1 when the exporter is running |
-| `hsa_kernel_launches_total` | Counter | `kernel_name`, `gpu_id`, `gpu_type`, `pid`, `comm` | Kernel dispatch count |
+| `hsa_kernel_launches_total` | Counter | `kernel_name`, `gpu_id`, `gpu_type`, `pid`, `comm` | Kernel dispatch count. Vendor packets that are not kernel launches are not counted |
 | `hsa_kernel_duration_seconds` | Histogram | `kernel_name`, `gpu_id`, `gpu_type` | Kernel duration (host-observed, enqueue to queue-consumed) |
 | `hsa_kernel_durations_unmeasured_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm` | Launches with no duration observation (see the sample-rate query below) |
 | `hsa_kernel_launches_per_second` | Gauge | `gpu_id`, `gpu_type` | Rolling 10 s launch rate |

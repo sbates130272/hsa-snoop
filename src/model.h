@@ -19,6 +19,12 @@ struct QueueInfo {
     uint32_t qtype = 0;     // KFD_IOC_QUEUE_TYPE_*
     sdma::Version sdma_version = sdma::Version::Unknown;
     double create_ts = 0; // host CLOCK_MONOTONIC_RAW seconds
+    // True when the queue was seen being created by the KFD create_queue
+    // kprobe, rather than found already running by the startup scan. Its ring
+    // then holds nothing older than the trace, so polling starts from the
+    // beginning. Not set by the bpftrace/WSL2 path, where the ring's start
+    // has not been verified.
+    bool created_during_trace = false;
 
     // Physical address of the first ring page (from /proc/pid/pagemap), or 0.
     uint64_t ring_phys = 0;

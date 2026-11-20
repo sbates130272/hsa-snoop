@@ -119,12 +119,7 @@ foreach(trace_file IN LISTS trace_files)
   # Match on the packet type, not the event name: the name is the resolved
   # kernel name, so a name-based count only ever saw unresolved kernels.
   string(REGEX MATCHALL "\"type\":\"kernel_dispatch\"" typed "${tj}")
-  # On gfx1250/RDNA4 with large-BAR rocjitsu the GPU resets AQL headers in the
-  # fast-reset path; packets appear as vendor_specific rather than kernel_dispatch.
-  string(REGEX MATCHALL "\"name\":\"vendor_specific\"" vendor "${tj}")
-  list(LENGTH typed n1)
-  list(LENGTH vendor n2)
-  math(EXPR kevt "${n1} + ${n2}")
+  list(LENGTH typed kevt)
   # In --all mode hsa-snoop writes one trace file per queue; small command
   # queues (64 slots) carry no kernel dispatches, so only assert that the
   # total across all files is non-zero.
