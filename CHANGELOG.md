@@ -6,6 +6,8 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.8.0] — 2026-11-20
+
 ### Added
 - A `[summary]` line per queue when it stops being polled, with the number of
   packets decoded, the number missed by reason, and how much was already in
@@ -24,6 +26,8 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   pointer at the first poll, which skipped anything enqueued before then.
   Queues found by the startup scan, and queues discovered through `librocdxg`
   on WSL2, still start from the first poll.
+- The VM hardware test runs on a guest with ROCm 10.2 and Linux 7.2.6
+  (previously ROCm 10.0 and 7.2.4).
 
 ### Fixed
 - An extended kernel dispatch seen only after it was consumed was decoded with
@@ -184,7 +188,8 @@ Initial public release. Core features:
 - Debian package with systemd service and logrotate config.
 - Tag-triggered GitHub Release with `.deb` asset via `debian-publish` CI.
 
-[Unreleased]: https://github.com/sbates130272/hsa-snoop/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/sbates130272/hsa-snoop/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.4.0...v1.5.0
