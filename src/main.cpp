@@ -458,11 +458,10 @@ int main(int argc, char** argv) {
         [&](const PacketRecord& r) {
             // Memory footprint mode: for kernel dispatches, scan the kernarg
             // buffer and emit a MemRecord before the normal trace/prom path.
-            // Include VendorSpecific: on gfx1250/RDNA4 the GPU fast-reset path
-            // emits real dispatch packets as VendorSpecific type.
+            // The parser reports extended (vendor-packet) dispatches as
+            // KernelDispatch, so no other packet type is a kernel launch.
             const bool is_kern_dispatch =
-                r.type == aql::PacketType::KernelDispatch ||
-                r.type == aql::PacketType::VendorSpecific;
+                r.type == aql::PacketType::KernelDispatch;
             if (mem_mode && is_kern_dispatch && r.kernarg_address != 0) {
                 MemRecord mr;
                 mr.queue_uid = r.queue_uid;
@@ -527,10 +526,8 @@ int main(int argc, char** argv) {
             }
             // Before the prometheus early-return: the dispatch log is an
             // additional sink, not an alternative one, so it must fire in every
-            // mode.  On gfx1250/RDNA4 the fast-reset path emits VendorSpecific
-            // records for real kernel dispatches, so include that type too.
-            if (dispatch_log && (r.type == aql::PacketType::KernelDispatch ||
-                                 r.type == aql::PacketType::VendorSpecific))
+            // mode.
+            if (dispatch_log && is_kern_dispatch)
                 dispatch_log->LogDispatch(r, queue_ctx(r.queue_uid));
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
             if (prom_exporter) {

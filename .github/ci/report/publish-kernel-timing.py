@@ -7,7 +7,10 @@ Reads the NDJSON written by `hsa-snoop --log-dispatches`, groups the
 dispatch events by kernel name, and records two durations for each:
 
   queue_us   dur_us, the enqueue-to-queue-consumed residency hsa-snoop
-             observes by polling the ring. Always present.
+             observes by polling the ring. Absent for a dispatch that
+             was already consumed when first seen, so n can be below
+             the dispatch count, and the whole entry is null when no
+             dispatch was seen pending.
   gpu_ticks  gpu_end_ticks - gpu_start_ticks, the shader-clock interval
              the command processor wrote into the completion signal.
              Present only when the workload ran under

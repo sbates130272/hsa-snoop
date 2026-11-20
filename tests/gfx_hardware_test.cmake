@@ -37,23 +37,14 @@ if(NOT EXISTS "${TRACE_OUTPUT}")
 endif()
 file(READ "${TRACE_OUTPUT}" trace_json)
 
-# AQL dispatch events can appear in several forms depending on GPU and ksym state:
-#   "type":"kernel_dispatch" in args  — typed dispatch (ksym resolved or generic name)
-#   "name":"kernel_0x<addr>"          — process exited before ksym could resolve
-#   "name":"vendor_specific"          — fast-reset path on gfx1250/RDNA4: the GPU resets
-#                                       the AQL header before the parser can read it; the
-#                                       packet body is intact and is emitted as vendor_specific
-# Count all three; any non-zero total confirms the AQL ring was active.
+# Count kernel dispatches by packet type. The event name is the kernel name
+# (or kernel_0x<addr> when it could not be resolved); vendor_specific events
+# are runtime-internal packets, not launches.
 string(REGEX MATCHALL "\"type\":\"kernel_dispatch\"" typed_events "${trace_json}")
-string(REGEX MATCHALL "\"name\":\"kernel_0x[0-9a-f]+" addr_events "${trace_json}")
-string(REGEX MATCHALL "\"name\":\"vendor_specific\"" vendor_events "${trace_json}")
-list(LENGTH typed_events typed_count)
-list(LENGTH addr_events addr_count)
-list(LENGTH vendor_events vendor_count)
-math(EXPR dispatch_count "${typed_count} + ${addr_count} + ${vendor_count}")
+list(LENGTH typed_events dispatch_count)
 if(dispatch_count EQUAL 0)
   message(FATAL_ERROR
-    "no AQL dispatch events were decoded (tried type=kernel_dispatch, name=kernel_0x*, vendor_specific)\n${snoop_stderr}")
+    "no AQL kernel dispatch events were decoded\n${snoop_stderr}")
 endif()
 
 # Barrier packets are expected in the AQL stream.

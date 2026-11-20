@@ -40,6 +40,11 @@ if(NOT EXISTS "${TRACE_OUTPUT}")
 endif()
 file(READ "${TRACE_OUTPUT}" trace_json)
 
+# Printed on success too: the workload exits 0 even when its ioctls fail, and
+# the number of AIS events varies from run to run for reasons its own summary
+# and error lines are needed to explain.
+message(STATUS "hsa-snoop and ais-test output:\n${snoop_stdout}\n${snoop_stderr}")
+
 string(REGEX MATCHALL "\"name\":\"ais/write" ais_write_events "${trace_json}")
 list(LENGTH ais_write_events write_count)
 if(write_count EQUAL 0)

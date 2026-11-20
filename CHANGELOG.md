@@ -6,6 +6,31 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- A `[summary]` line per queue when it stops being polled, with the number of
+  packets decoded, the number missed by reason, and how much was already in
+  the ring before the first poll.
+- The VM hardware test keeps the traces its tests assert on, a second kernel
+  timing capture with the debug log on, the AIS workload's own output and the
+  guest's AIS kernel messages.
+
+### Changed
+- Only kernel dispatches count in `hsa_kernel_launches_total`, the dispatch log
+  and `--mem-snoop`. Vendor packets that are not kernel launches, such as
+  the internal barrier packets of the runtime, were counted as launches named
+  `vendor_specific`; they are still shown in traces.
+- A queue seen being created by the KFD `create_queue` probe, AQL or SDMA, is
+  decoded from the start of its ring. Polling used to start from the write
+  pointer at the first poll, which skipped anything enqueued before then.
+  Queues found by the startup scan, and queues discovered through `librocdxg`
+  on WSL2, still start from the first poll.
+
+### Fixed
+- An extended kernel dispatch seen only after it was consumed was decoded with
+  the classic packet layout and reported a wrong grid size.
+- A barrier packet seen only after it was consumed could be reported as a
+  kernel launch.
+
 ## [1.7.0] — 2026-11-19
 
 ### Added

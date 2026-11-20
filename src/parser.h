@@ -49,6 +49,14 @@ class RingParser {
         uint64_t last_rptr = 0;
         bool primed = false;
         uint64_t dropped = 0;
+        // Totals for the exit summary. AQL: packets; SDMA: packets decoded.
+        uint64_t decoded = 0;
+        uint64_t missed_overwritten = 0;
+        uint64_t missed_consumed = 0;
+        uint64_t missed_unreadable = 0;
+        // Ring position at the first poll of a queue that already existed:
+        // everything before it predates the poller and was not looked at.
+        uint64_t skipped_at_start = 0;
         std::map<uint64_t, PacketRecord> inflight;    // AQL: id -> record
         uint64_t sdma_seq = 0;                        // SDMA packet counter
         std::map<uint64_t, SdmaRecord> sdma_inflight; // SDMA: end-dword -> rec
@@ -66,6 +74,7 @@ class RingParser {
     };
 
     void Run();
+    static void PrintSummary(const QueueState& qs);
 
     // AQL path.
     void PollQueue(QueueState* qs, double now);

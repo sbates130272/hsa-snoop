@@ -88,3 +88,14 @@ endif()
 message(STATUS
   "SDMA v${detected_sdma_version}: decoded ${copy_count} COPY_LINEAR and "
   "${nop_count} bounded NOP packets")
+
+# Per-direction split and hsa-snoop's own log (queue and summary lines), so a
+# run with an unusual copy count can be explained from the test output alone.
+foreach(_dir h2d d2h d2d h2h unknown)
+  string(REGEX MATCHALL "\"direction\":\"${_dir}\"" _dir_events "${trace_json}")
+  list(LENGTH _dir_events _dir_count)
+  list(APPEND dir_summary "${_dir}=${_dir_count}")
+endforeach()
+string(REPLACE ";" " " dir_summary "${dir_summary}")
+message(STATUS "SDMA copy directions: ${dir_summary}")
+message(STATUS "hsa-snoop log:\n${snoop_stderr}")

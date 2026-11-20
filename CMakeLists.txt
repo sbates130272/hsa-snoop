@@ -113,6 +113,20 @@ if(BUILD_TESTING)
   target_include_directories(parser-eviction-test PRIVATE src)
   target_link_libraries(parser-eviction-test PRIVATE Threads::Threads)
   add_test(NAME parser-eviction-test COMMAND parser-eviction-test)
+
+  # Decode paths that need no GPU: consumed packets whose header was reset,
+  # and where polling starts on a queue seen being created.
+  add_executable(parser-decode-test
+    tests/parser_decode_test.cpp
+    src/aql.cpp
+    src/ksym.cpp
+    src/parser.cpp
+    src/proc_mem.cpp
+    src/sdma.cpp
+  )
+  target_include_directories(parser-decode-test PRIVATE src)
+  target_link_libraries(parser-decode-test PRIVATE Threads::Threads)
+  add_test(NAME parser-decode-test COMMAND parser-decode-test)
 endif()
 
 if(HSA_SNOOP_PROMETHEUS)
