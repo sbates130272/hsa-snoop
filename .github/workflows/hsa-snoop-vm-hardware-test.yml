@@ -47,8 +47,9 @@ env:
   VM_NVME: '1'
   QEMU_TOOL_SRC: /var/lib/qemu-tool/src
   QEMU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user:20260929.g2bdbd16-qemu11.1.2-vfu.8039244
-  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20260929.g2bdbd16-rocjitsu.f2d13fb
-  ROCJITSU_VM_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-qcow2-gen-ernic-rocjitsu:20260929.g2bdbd16-vm.resolute-ernic-rocjitsu-qm.54cc234-qcow2
+  ROCJITSU_IMAGE: docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20261119.gc3dd883-rocjitsu.50be05a
+  # rocm-golden guest from qemu-minimal: ROCm 10.2 on mainline 7.2.6.
+  ROCJITSU_VM_IMAGE: docker.io/sbates130272/qemu-tool-rocm-golden:20261120.gfddac6f
 
 jobs:
   vm-hardware-test:
