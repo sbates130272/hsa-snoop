@@ -84,6 +84,17 @@ jobs:
         mkdir -p /var/lib/qemu-tool/src
         cp -r qemu-minimal/qemu /var/lib/qemu-tool/src/
 
+    # GitHub sometimes runs this job on an Intel host. Under KVM a named QEMU
+    # CPU model keeps the host's vendor string, so "-cpu EPYC" then boots as an
+    # Intel-vendor CPU and the guest kernel refuses PCI peer-to-peer DMA
+    # through the emulated host bridge. AIS needs it: on those boots every AIS
+    # request failed and the tests saw one event instead of ten.
+    - name: Advertise the vCPU as AMD whatever the runner's CPU is
+      run: |
+        f=/var/lib/qemu-tool/src/qemu/qemu-tool/run_vm.py
+        sed -i 's/"-cpu", "EPYC"\]/"-cpu", "EPYC,vendor=AuthenticAMD"]/' "$f"
+        test "$(grep -c '"EPYC,vendor=AuthenticAMD"' "$f")" -eq 2
+
     - name: Ensure images directory exists
       run: mkdir -p "$VM_IMAGES_DIR" && chmod 777 "$VM_IMAGES_DIR"
 
@@ -355,18 +366,21 @@ jobs:
           -p 2222 "$VM_USERNAME"@qemu bash -s <<'EOF'
         set -euo pipefail
         cd /tmp/hsa-snoop/build
-        sudo ctest -L hardware -V
+        # The emulated GPU reports no clock counter through KFD; its dispatch
+        # timestamps are in nanoseconds.
+        sudo env HSA_SNOOP_GPU_CLOCK_HZ=1000000000 ctest -L hardware -V
         EOF
 
-    # The AIS tests pass on any non-zero event count and the workload exits 0
-    # even when its ioctls fail, so the guest's own AIS messages are the only
-    # record of why a run saw one event instead of ten.
-    - name: Show AIS kernel messages from the guest
+    # The AIS tests need ten successful requests: they fail on an AMD guest
+    # and skip on any other vendor. The workload exits 0 even when its
+    # requests fail, so the guest's CPU vendor and its AIS and peer-to-peer
+    # kernel messages say why a run was red or skipped.
+    - name: Show guest CPU vendor and AIS kernel messages
       if: always()
       run: |
         ssh -i "$HOME/.ssh/id_rsa" -o StrictHostKeyChecking=no \
           -p 2222 "$VM_USERNAME"@qemu \
-          "sudo dmesg | grep -i 'ais' | tail -n 100" || true
+          "grep -m1 vendor_id /proc/cpuinfo; grep -m1 'model name' /proc/cpuinfo; sudo dmesg | grep -iE 'ais|p2p|peer-to-peer|smpboot: CPU0' | tail -n 100" || true
 
     - name: Collect test results
       if: always()

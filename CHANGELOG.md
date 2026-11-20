@@ -6,6 +6,57 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `hsa_kernel_gpu_duration_seconds`: kernel durations from the command
+  processor's own timestamps, for workloads run with queue profiling on
+  (`GPU_FORCE_QUEUE_PROFILING=1` for HIP). Unlike the host-observed histogram
+  it does not depend on the poller seeing a packet while it is pending.
+  `hsa_gpu_clock_ticks_per_second` reports the clock rate used, which is
+  measured through KFD or set with `--gpu-clock-hz`.
+- `--poll-idle-us`: the longest interval between polls of a queue that has
+  stopped moving.
+- The `[queue]` line reports what backs the ring as `ring_backing=`.
+- The SDMA `[summary]` line reports how much of the ring was still waiting to
+  be decoded when polling stopped.
+
+### Changed
+- A queue with no activity for 10 ms is polled at a growing interval, up to
+  1 ms by default, and returns to `--poll-us` as soon as it moves. Idle CPU
+  use drops accordingly. The first packets after an idle spell can be seen up
+  to that much later; `--poll-idle-us 0` restores the old behaviour.
+- A poll pass makes fewer system calls: both queue pointers are read in one
+  call, and whether a process is still alive is checked every 100 ms instead of
+  every pass.
+- AIS requests are reported with their return status. A failed request is
+  counted as an error and no longer adds to the byte totals.
+- The AIS hardware tests require all ten requests to succeed, and skip on a
+  guest whose CPU vendor is not AMD, where the kernel refuses the peer-to-peer
+  path AIS needs.
+- The VM hardware test advertises its virtual CPU as AMD whatever the host is.
+  On Intel hosts the guest used to inherit the Intel vendor, every AIS request
+  failed, and the published AIS byte counts dropped tenfold on those runs.
+- The SDMA hardware tests fail when a ring was not fully decoded.
+
+### Fixed
+- SDMA copies were dropped on gfx12.5 and later (gfx1250 / MI455X). The runtime
+  writes copies there with optional wait and signal blocks, so their length
+  varies; the decoder assumed a fixed length, lost its place in the ring and
+  skipped to the write pointer. On the test workload 25 to 37 of 41 copies were
+  reported, and device-to-host copies were shown as device-to-device. The
+  64-bit fence and poll packets and the wider cache-rinse request used there
+  are decoded too.
+- On gfx12 below gfx12.5 a linear copy was assumed to be eight dwords; the
+  runtime writes seven, as on gfx11.
+- The AIS monitor discarded requests still buffered when it was stopped, and
+  left its tracefs instance behind on exit.
+- SDMA swap copies on gfx9.4 and later are decoded; an indirect copy on
+  gfx12.5 and later reports the buffers it copies, not the cells that hold
+  their addresses.
+- A descriptor on `/proc/<pid>/mem` was kept after its process exited, so a
+  reused process id could not be read.
+- GPU timestamps were read from a completion signal that had timed out, where
+  they belong to a later dispatch.
+
 ## [1.8.0] — 2026-11-20
 
 ### Added

@@ -1,8 +1,8 @@
 // ais_monitor.cpp - AIS IO monitor via tracefs kprobe/kretprobe.
 //
-// Installs two tracefs kprobes on kfd_ioctl_ais:
-//   entry (p:) — captures op, size_req, gpu_id, fd from the args struct
-//   return (r:) — captures size_copied, status, retval from the same struct
+// Installs two tracefs probes on kfd_ioctl_ais:
+//   entry (p:)  — captures op, size_req, gpu_id, fd from the args struct
+//   return (r:) — captures the ioctl's return value
 //
 // Reads from trace_pipe, correlates entry and return by TID, and calls the
 // sink for each completed AIS operation.  Uses tracefs directly (no bpftrace)
@@ -326,12 +326,42 @@ bool AisMonitor::InstallKprobes() {
         return false;
     }
 
+    // Return probe: the ioctl's return value, which says whether the transfer
+    // happened. Optional: without it every request is reported as successful,
+    // as before, so a failure to install it is not fatal.
+    probe_return_ = "hsasnoop_ais_r_" + suffix;
+    WriteTracefs(kpe, "-:" + probe_return_ + "\n", true);
+    if (!WriteTracefs(kpe,
+                      // 1024 concurrent calls; the default is about twice
+                      // the CPU count, beyond which returns go unreported.
+                      "r1024:" + probe_return_ +
+                          " kfd_ioctl_ais ret=$retval:s32\n",
+                      true) ||
+        !WriteTracefs(instance_ + "/events/kprobes/" + probe_return_ +
+                          "/enable",
+                      "1\n", false)) {
+        fprintf(stderr,
+                "hsa-snoop: AIS return probe unavailable (%s); "
+                "failed AIS requests will be counted as transfers\n",
+                strerror(errno));
+        WriteTracefs(kpe, "-:" + probe_return_ + "\n", true);
+        probe_return_.clear();
+    }
+
     WriteTracefs(instance_ + "/tracing_on", "1\n", false);
     return true;
 }
 
 void AisMonitor::RemoveKprobes() {
     const std::string kpe = tracefs_ + "/kprobe_events";
+    if (!probe_return_.empty()) {
+        if (!instance_.empty())
+            WriteTracefs(instance_ + "/events/kprobes/" + probe_return_ +
+                             "/enable",
+                         "0\n", false);
+        WriteTracefs(kpe, "-:" + probe_return_ + "\n", true);
+        probe_return_.clear();
+    }
     if (!probe_entry_.empty()) {
         if (!instance_.empty())
             WriteTracefs(instance_ + "/events/kprobes/" + probe_entry_ +
@@ -341,7 +371,19 @@ void AisMonitor::RemoveKprobes() {
         probe_entry_.clear();
     }
     if (!instance_.empty()) {
-        rmdir(instance_.c_str());
+        // The kernel releases the instance a little after its last user
+        // goes, so an immediate rmdir can still find it busy.
+        int rc = -1;
+        for (int i = 0; i < 50; ++i) {
+            rc = rmdir(instance_.c_str());
+            if (rc == 0 || errno != EBUSY)
+                break;
+            usleep(10 * 1000);
+        }
+        if (rc != 0 && errno != ENOENT)
+            fprintf(stderr,
+                    "hsa-snoop: could not remove tracefs instance %s: %s\n",
+                    instance_.c_str(), strerror(errno));
         instance_.clear();
     }
 }
@@ -391,17 +433,152 @@ void AisMonitor::Stop() {
         close(cancel_wfd_);
         cancel_wfd_ = -1;
     }
-    RemoveKprobes();
+    // Join before tearing down: the reader drains what is already buffered,
+    // and must not have its probes or its fd removed underneath it.
+    if (reader_thread_.joinable())
+        reader_thread_.join();
+    // Close the pipe first: the tracefs instance cannot be removed while it
+    // is open.
     if (trace_pipe_fd_ >= 0) {
         close(trace_pipe_fd_);
         trace_pipe_fd_ = -1;
     }
+    RemoveKprobes();
     if (cancel_rfd_ >= 0) {
         close(cancel_rfd_);
         cancel_rfd_ = -1;
     }
-    if (reader_thread_.joinable())
-        reader_thread_.join();
+}
+
+// ---------------------------------------------------------------------------
+// Trace line parsing
+// ---------------------------------------------------------------------------
+
+// tracefs kprobe line format:
+//   <comm>-<tid>  [cpu] flags  <ts>: <probe>: (<func>...) field=value ...
+bool ParseAisTraceLine(const std::string& line, const std::string& entry_probe,
+                       const std::string& return_probe, AisTraceLine* out) {
+    const std::string entry_tag = ": " + entry_probe + ": ";
+    const std::string return_tag = ": " + return_probe + ": ";
+    size_t tag = line.find(entry_tag);
+    size_t tag_len = entry_tag.size();
+    out->kind = AisTraceLine::Kind::Entry;
+    if (tag == std::string::npos) {
+        if (return_probe.empty())
+            return false;
+        tag = line.find(return_tag);
+        tag_len = return_tag.size();
+        out->kind = AisTraceLine::Kind::Return;
+        if (tag == std::string::npos)
+            return false;
+    }
+
+    // TID: rightmost '-' before the CPU field, which is the last '[' ahead
+    // of the probe tag. A comm may itself contain '[' or '-'.
+    size_t bracket = line.rfind('[', tag);
+    if (bracket == std::string::npos)
+        return false;
+    size_t dash = line.rfind('-', bracket);
+    if (dash == std::string::npos)
+        return false;
+    out->tid = atoi(line.c_str() + dash + 1);
+    out->comm = line.substr(0, dash);
+    size_t sp = out->comm.find_first_not_of(" ");
+    if (sp != std::string::npos)
+        out->comm = out->comm.substr(sp);
+
+    // Timestamp: the token that ends at the probe tag.
+    size_t ts_start = line.rfind(' ', tag);
+    out->ts = ts_start == std::string::npos
+                  ? 0
+                  : strtod(line.c_str() + ts_start + 1, nullptr);
+
+    // Fields follow the parenthesised function reference.
+    const char* rest = line.c_str() + tag + tag_len;
+    const char* paren_end = strchr(rest, ')');
+    const char* fields = paren_end ? paren_end + 1 : rest;
+    while (*fields == ' ')
+        ++fields;
+
+    if (out->kind == AisTraceLine::Kind::Return)
+        return sscanf(fields, "ret=%d", &out->ret) == 1;
+    unsigned gpu_id = 0, op = 0;
+    unsigned long size_req = 0;
+    int fd = -1;
+    if (sscanf(fields, "gpu_id=%u size_req=%lu op=%u fd=%d", &gpu_id, &size_req,
+               &op, &fd) != 4)
+        return false;
+    out->gpu_id = gpu_id;
+    out->size_req = size_req;
+    out->op = op;
+    out->fd = fd;
+    return true;
+}
+
+void AisMonitor::HandleLine(const std::string& line, const Sink& sink) {
+    AisTraceLine t;
+    if (!ParseAisTraceLine(line, probe_entry_, probe_return_, &t))
+        return;
+
+    struct timespec ts {};
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+    const double now = ts.tv_sec + ts.tv_nsec * 1e-9;
+
+    if (t.kind == AisTraceLine::Kind::Return) {
+        auto it = pending_.find(t.tid);
+        if (it == pending_.end())
+            return; // entered before the probes were armed
+        AisRecord rec = std::move(it->second.rec);
+        const double took = t.ts - it->second.entry_trace_ts;
+        pending_.erase(it);
+        rec.error = t.ret;
+        // The request size stands in for the bytes moved: the probe cannot
+        // read the ioctl's output struct at return. A failed request moved
+        // none.
+        rec.size_copied = t.ret == 0 ? rec.size_req : 0;
+        rec.complete_ts = rec.submit_ts + (took > 0 ? took : 0);
+        rec.completed = true;
+        sink(rec);
+        return;
+    }
+
+    AisRecord rec;
+    rec.seq = ++seq_;
+    rec.pid = t.tid;
+    rec.comm = t.comm;
+    rec.op = (t.op == 1)   ? AisOp::Read
+             : (t.op == 2) ? AisOp::Write
+                           : AisOp::Unknown;
+    rec.gpu_id = t.gpu_id;
+    rec.size_req = t.size_req;
+    rec.submit_ts = now;
+    if (rec.pid > 0 && t.fd >= 0) {
+        rec.pcie_info = ResolvePcieDeviceInfo(rec.pid, t.fd);
+        rec.pcie_id = rec.pcie_info.bdf;
+    }
+
+    if (!probe_return_.empty()) {
+        // A request still parked for this thread lost its return line;
+        // report it the old way before it is replaced.
+        auto stale = pending_.find(t.tid);
+        if (stale != pending_.end()) {
+            EmitAssumedOk(std::move(stale->second.rec), sink);
+            pending_.erase(stale);
+        }
+        pending_[t.tid] = Pending{std::move(rec), t.ts};
+        return;
+    }
+    EmitAssumedOk(std::move(rec), sink);
+}
+
+// For a request whose status is not known: no return probe, or its return
+// line never arrived. Reported as before the return probe existed.
+void AisMonitor::EmitAssumedOk(AisRecord rec, const Sink& sink) {
+    rec.size_copied = rec.size_req;
+    rec.error = 0;
+    rec.complete_ts = rec.submit_ts;
+    rec.completed = true;
+    sink(rec);
 }
 
 // ---------------------------------------------------------------------------
@@ -409,11 +586,11 @@ void AisMonitor::Stop() {
 // ---------------------------------------------------------------------------
 
 void AisMonitor::ReadLoop(Sink sink) {
-    uint64_t seq = 0;
     char buf[4096];
     std::string partial;
+    bool stopping = false;
 
-    while (running_) {
+    for (;;) {
         // Poll both trace_pipe and the cancel pipe so Stop() can wake us.
         struct pollfd pfds[2];
         pfds[0].fd = trace_pipe_fd_;
@@ -421,13 +598,19 @@ void AisMonitor::ReadLoop(Sink sink) {
         pfds[1].fd = cancel_rfd_;
         pfds[1].events = POLLIN;
 
-        int r = poll(pfds, 2, 200); // 200 ms timeout to recheck running_
+        // Once Stop() has signalled, keep reading only while lines are
+        // already buffered, so the last requests before shutdown are not
+        // lost.
+        int r = poll(pfds, 2, stopping ? 0 : 200);
         if (r < 0)
             break;
         if (pfds[1].revents & POLLIN)
-            break; // cancel pipe signalled by Stop()
-        if (!(pfds[0].revents & POLLIN))
-            continue; // timeout — recheck running_
+            stopping = true;
+        if (!(pfds[0].revents & POLLIN)) {
+            if (stopping || !running_)
+                break;
+            continue;
+        }
 
         ssize_t n = read(trace_pipe_fd_, buf, sizeof(buf) - 1);
         if (n <= 0)
@@ -435,84 +618,17 @@ void AisMonitor::ReadLoop(Sink sink) {
         buf[n] = '\0';
         partial += buf;
 
-        // Process all complete lines.
         size_t pos;
         while ((pos = partial.find('\n')) != std::string::npos) {
-            std::string line = partial.substr(0, pos);
+            HandleLine(partial.substr(0, pos), sink);
             partial.erase(0, pos + 1);
-
-            if (!running_)
-                break;
-
-            // tracefs kprobe line format:
-            //   <comm>-<tid>  [cpu] ....  <ts>: <probe>: (<func>+N/M) f=v ...
-            // Only process lines from our entry probe.
-            if (line.find(probe_entry_) == std::string::npos)
-                continue;
-
-            // Find the fields section after the second ": ".
-            size_t p1 = line.find(": ");
-            if (p1 == std::string::npos)
-                continue;
-            size_t p2 = line.find(": ", p1 + 2);
-            if (p2 == std::string::npos)
-                continue;
-            // After "<probe>: " comes "(<func>+offset/size [mod]) field=val..."
-            // Skip past the parenthesised function reference to the fields.
-            const char* fields_raw = line.c_str() + p2 + 2;
-            const char* paren_end = strchr(fields_raw, ')');
-            const char* fields = paren_end ? paren_end + 2 : fields_raw;
-
-            // Extract TID: rightmost '-' before first '['.
-            size_t bracket = line.find('[');
-            if (bracket == std::string::npos)
-                continue;
-            size_t dash = line.rfind('-', bracket);
-            if (dash == std::string::npos)
-                continue;
-            int tid = atoi(line.c_str() + dash + 1);
-            std::string comm = line.substr(0, dash);
-            size_t sp = comm.find_first_not_of(" ");
-            if (sp != std::string::npos)
-                comm = comm.substr(sp);
-
-            // Parse: gpu_id=N size_req=N op=N fd=N  (tracefs outputs decimal)
-            unsigned gpu_id_val = 0;
-            uint64_t size_req = 0;
-            unsigned op_val = 0;
-            int file_fd = -1;
-            sscanf(fields, "gpu_id=%u size_req=%lu op=%u fd=%d", &gpu_id_val,
-                   &size_req, &op_val, &file_fd);
-
-            AisRecord rec;
-            rec.seq = ++seq;
-            rec.pid = tid;
-            rec.comm = comm;
-            rec.op = (op_val == 1)   ? AisOp::Read
-                     : (op_val == 2) ? AisOp::Write
-                                     : AisOp::Unknown;
-            rec.gpu_id = gpu_id_val;
-            rec.size_req = size_req;
-            rec.size_copied = size_req; // approximation at entry time
-            rec.error = 0;
-            rec.completed = true;
-
-            struct timespec ts {};
-            clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-            rec.submit_ts = ts.tv_sec + ts.tv_nsec * 1e-9;
-            rec.complete_ts = rec.submit_ts;
-
-            if (rec.pid > 0 && file_fd >= 0) {
-                rec.pcie_info = ResolvePcieDeviceInfo(rec.pid, file_fd);
-                rec.pcie_id = rec.pcie_info.bdf;
-            }
-
-            sink(rec);
         }
     }
 
+    for (auto& kv : pending_)
+        EmitAssumedOk(std::move(kv.second.rec), sink);
+    pending_.clear();
     running_ = false;
-    // fd == trace_pipe_fd_; Stop() owns closing it.
 }
 
 } // namespace hsasnoop

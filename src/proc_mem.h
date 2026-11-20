@@ -3,6 +3,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace hsasnoop {
 
@@ -40,6 +41,12 @@ uint32_t ReadKernargSize(int pid, uint64_t kernel_object);
 // Returns 0 if not present/swapped or if the page is device memory (no PFN).
 // Requires CAP_SYS_ADMIN (run under sudo).
 uint64_t VirtToPhys(int pid, uint64_t va);
+
+// What backs the mapping that contains `va` in `pid`: the path from
+// /proc/<pid>/maps, "anonymous" when it has none, or "" when the address is
+// not mapped or the map cannot be read. A ring mapped from a /dev/dri/renderD*
+// node is a GPU buffer object, which process_vm_readv and pagemap cannot see.
+std::string MappingBacking(int pid, uint64_t va);
 
 // True if the process is still alive.
 bool ProcAlive(int pid);

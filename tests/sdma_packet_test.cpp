@@ -31,7 +31,9 @@ bool TestVersionMapping() {
     ok &= Expect(sdma::VersionFromGfxTarget(110001) == sdma::Version::V6,
                  "gfx1101 must map to SDMA v6");
     ok &= Expect(sdma::VersionFromGfxTarget(120001) == sdma::Version::V7,
-                 "gfx1201 must map to unsupported SDMA v7");
+                 "gfx1201 must map to SDMA v7");
+    ok &= Expect(sdma::VersionFromGfxTarget(120500) == sdma::Version::V7Gfx125,
+                 "gfx1250 must map to the gfx12.5+ SDMA v7 packet set");
     ok &= Expect(sdma::VersionFromGfxTarget(0) == sdma::Version::Unknown,
                  "missing gfx target must remain unknown");
     return ok;
@@ -130,6 +132,89 @@ bool TestLinearCopyLayouts() {
     return ok;
 }
 
+// What ROCr writes to a user-mode queue on gfx12, by GPU generation.
+bool TestGfx12Layouts() {
+    bool ok = true;
+    const sdma::Version v7 = sdma::Version::V7;
+    const sdma::Version g125 = sdma::Version::V7Gfx125;
+    uint32_t packet[16] = {};
+
+    // Below gfx12.5 a linear copy is the v6 seven-dword packet.
+    packet[0] = Header(sdma::OP_COPY, sdma::SUBOP_COPY_LINEAR);
+    ok &= Expect(sdma::PacketLenDwords(v7, packet, 1) == 7,
+                 "v7 linear copy must be 7 dwords");
+    ok &= Expect(sdma::CopyBodyOffset(v7, packet[0]) == 1,
+                 "v7 copy block must follow the header");
+
+    // gfx12.5+: the wait and signal header bits add 7 and 5 dwords.
+    const uint32_t kWait = 1u << 30, kSignal = 1u << 31;
+    ok &= Expect(sdma::PacketLenDwords(g125, packet, 1) == 7,
+                 "gfx12.5 plain linear copy must be 7 dwords");
+    packet[0] = Header(sdma::OP_COPY) | kWait;
+    ok &= Expect(sdma::PacketLenDwords(g125, packet, 1) == 14,
+                 "gfx12.5 copy with wait must be 14 dwords");
+    ok &= Expect(sdma::CopyBodyOffset(g125, packet[0]) == 8,
+                 "gfx12.5 copy block must follow the wait block");
+    packet[0] = Header(sdma::OP_COPY) | kSignal;
+    ok &= Expect(sdma::PacketLenDwords(g125, packet, 1) == 12,
+                 "gfx12.5 copy with signal must be 12 dwords");
+    ok &= Expect(sdma::CopyBodyOffset(g125, packet[0]) == 1,
+                 "gfx12.5 copy block must follow the header without wait");
+    packet[0] = Header(sdma::OP_COPY) | kWait | kSignal;
+    ok &= Expect(sdma::PacketLenDwords(g125, packet, 1) == 19,
+                 "gfx12.5 copy with wait and signal must be 19 dwords");
+    // The same bits mean something else on older generations.
+    ok &= Expect(sdma::PacketLenDwords(v7, packet, 1) == 7,
+                 "wait/signal bits must not change a v7 copy length");
+
+    packet[0] = Header(sdma::OP_COPY, sdma::SUBOP_COPY_SWAP) | kSignal;
+    ok &= Expect(sdma::PacketLenDwords(g125, packet, 1) == 12,
+                 "gfx12.5 swap copy with signal must be 12 dwords");
+    packet[0] = Header(sdma::OP_COPY, sdma::SUBOP_COPY_SWAP);
+    ok &= Expect(sdma::PacketLenDwords(v7, packet, 1) == 7,
+                 "v7 swap copy must be 7 dwords");
+    ok &= Expect(sdma::PacketLenDwords(sdma::Version::V4, packet, 1) == 7,
+                 "v4 swap copy must be 7 dwords");
+
+    // Multicast: one address pair per destination, count minus one in the
+    // parameters dword, which follows the count dword.
+    packet[0] = Header(sdma::OP_COPY, sdma::SUBOP_COPY_MULTICAST);
+    packet[2] = 2; // three destinations
+    ok &= Expect(sdma::PacketLenDwords(g125, packet, 16) == 1 + 4 + 6,
+                 "gfx12.5 multicast copy to 3 destinations must be 11 dwords");
+    ok &= Expect(sdma::PacketLenDwords(g125, packet, 2) ==
+                     sdma::kLenNeedMoreDwords,
+                 "multicast length must wait for the parameters dword");
+    packet[0] |= kWait | kSignal;
+    packet[2] = 0;
+    packet[9] = 1; // two destinations, parameters after the wait block
+    ok &= Expect(sdma::PacketLenDwords(g125, packet, 16) == 1 + 7 + 4 + 4 + 5,
+                 "gfx12.5 multicast with wait and signal has the wrong length");
+    packet[2] = 0;
+    packet[9] = 0;
+
+    // 64-bit fence and poll, and the wider cache-rinse request.
+    packet[0] = Header(sdma::OP_FENCE, 2);
+    ok &= Expect(sdma::PacketLenDwords(g125, packet, 1) == 5,
+                 "gfx12.5 64-bit fence must be 5 dwords");
+    ok &= Expect(sdma::PacketLenDwords(v7, packet, 1) == 4,
+                 "v7 fence must be 4 dwords");
+    packet[0] = Header(sdma::OP_FENCE);
+    ok &= Expect(sdma::PacketLenDwords(g125, packet, 1) == 4,
+                 "gfx12.5 32-bit fence must be 4 dwords");
+    packet[0] = Header(sdma::OP_POLL_REGMEM, 5);
+    ok &= Expect(sdma::PacketLenDwords(g125, packet, 1) == 8,
+                 "gfx12.5 64-bit poll must be 8 dwords");
+    ok &= Expect(sdma::PacketLenDwords(v7, packet, 1) == 0,
+                 "64-bit poll must be unknown below gfx12.5");
+    packet[0] = Header(sdma::OP_GCR_REQ, 1);
+    ok &= Expect(sdma::PacketLenDwords(g125, packet, 1) == 6,
+                 "gfx12.5 cache-rinse request must be 6 dwords");
+    ok &= Expect(sdma::PacketLenDwords(v7, packet, 1) == 5,
+                 "v7 cache-rinse request must be 5 dwords");
+    return ok;
+}
+
 bool TestControlPacketLayouts() {
     bool ok = true;
     uint32_t packet[4] = {};
@@ -207,8 +292,9 @@ bool TestPacketNames() {
 
 int main() {
     return TestVersionMapping() && TestTopologyDetection() &&
-                   TestLinearCopyLayouts() && TestControlPacketLayouts() &&
-                   TestWritePacketLayouts() && TestPacketNames()
+                   TestLinearCopyLayouts() && TestGfx12Layouts() &&
+                   TestControlPacketLayouts() && TestWritePacketLayouts() &&
+                   TestPacketNames()
                ? 0
                : 1;
 }

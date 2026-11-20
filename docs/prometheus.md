@@ -19,6 +19,7 @@ Options that shape the labels:
 | --- | --- | --- |
 | `--host-label <s>` | `HSA_SNOOP_HOST_LABEL` | Value of `host`. Defaults to the host name, which in a container is the container id and changes on every recreate; set it to the node name there. |
 | `--rocm-version <s>` | `HSA_SNOOP_ROCM_VERSION` | Value of `rocm_version`. Defaults to the version found under `/opt/rocm`, or `unknown` when ROCm is installed only in the traced containers. |
+| `--gpu-clock-hz <hz>` | `HSA_SNOOP_GPU_CLOCK_HZ` | GPU clock rate used for `hsa_kernel_gpu_duration_seconds`. Defaults to a rate measured through KFD. |
 | `--kernel-name-max <n>` | — | Truncate `kernel_name` values to `n` bytes (ending in `...`). Default 0, no limit. Names that differ only past the cut share one series. |
 
 `hsa_kernel_duration_seconds` is sampled. `hsa_kernel_launches_total` carries
@@ -35,6 +36,8 @@ get the sample rate:
 | `hsa_snoop_up` | Gauge | — | 1 when the exporter is running |
 | `hsa_kernel_launches_total` | Counter | `kernel_name`, `gpu_id`, `gpu_type`, `pid`, `comm` | Kernel dispatch count. Vendor packets that are not kernel launches are not counted |
 | `hsa_kernel_duration_seconds` | Histogram | `kernel_name`, `gpu_id`, `gpu_type` | Kernel duration (host-observed, enqueue to queue-consumed) |
+| `hsa_kernel_gpu_duration_seconds` | Histogram | `kernel_name`, `gpu_id`, `gpu_type` | Kernel duration from the command processor's own timestamps. Only for workloads run with queue profiling on (`GPU_FORCE_QUEUE_PROFILING=1` for HIP) |
+| `hsa_gpu_clock_ticks_per_second` | Gauge | `gpu_id`, `gpu_type` | GPU clock rate used for that conversion |
 | `hsa_kernel_durations_unmeasured_total` | Counter | `gpu_id`, `gpu_type`, `pid`, `comm` | Launches with no duration observation (see the sample-rate query below) |
 | `hsa_kernel_launches_per_second` | Gauge | `gpu_id`, `gpu_type` | Rolling 10 s launch rate |
 | `hsa_last_kernel_launch_timestamp_seconds` | Gauge | `gpu_id`, `gpu_type` | Wall-clock time of most recent launch |

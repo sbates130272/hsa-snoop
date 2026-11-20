@@ -13,6 +13,8 @@ if(NOT id_result EQUAL 0 OR NOT effective_uid STREQUAL "0")
     "ais-hardware-test must run as root; use sudo ctest --test-dir <build> -L hardware")
 endif()
 
+set(AIS_ITERS 10)
+
 # Run hsa-snoop wrapping a short ais-test workload and verify that AIS
 # events appear in the JSON trace.
 file(REMOVE "${TRACE_OUTPUT}")
@@ -23,7 +25,7 @@ execute_process(
     --out "${TRACE_OUTPUT}"
     --ais-snoop
     --poll-us 1000
-    -- "${AIS_TEST}" --iters 10 --duration 10 "${AIS_TARGET}"
+    -- "${AIS_TEST}" --iters ${AIS_ITERS} --duration 10 "${AIS_TARGET}"
   RESULT_VARIABLE snoop_result
   OUTPUT_VARIABLE snoop_stdout
   ERROR_VARIABLE  snoop_stderr
@@ -54,6 +56,32 @@ math(EXPR ais_count "${read_count} + ${write_count}")
 if(ais_count EQUAL 0)
   message(FATAL_ERROR
     "no AIS events decoded in the trace\n${snoop_stderr}")
+endif()
+
+# The workload issues exactly ${AIS_ITERS} requests. Fewer events, or any that
+# failed, mean the transfers did not happen: ais-test stops at the first
+# ENODEV and still exits 0. The one known benign cause is a guest whose CPU
+# does not report AMD as its vendor, where the kernel refuses the peer-to-peer
+# path AIS needs; that is skipped. Anything else is a failure.
+string(REGEX MATCHALL "\"error\":-[0-9]+" ais_failed_events "${trace_json}")
+list(LENGTH ais_failed_events failed_count)
+if(failed_count GREATER 0 OR NOT ais_count EQUAL AIS_ITERS)
+  set(cpu_vendor "unknown")
+  if(EXISTS "/proc/cpuinfo")
+    file(STRINGS "/proc/cpuinfo" _vendor_lines REGEX "^vendor_id" LIMIT_COUNT 1)
+    if(_vendor_lines MATCHES ": *([A-Za-z]+)")
+      set(cpu_vendor "${CMAKE_MATCH_1}")
+    endif()
+  endif()
+  set(_what
+    "AIS: ${ais_count} event(s), ${failed_count} failed, expected ${AIS_ITERS} successful (CPU vendor ${cpu_vendor})")
+  if(NOT cpu_vendor STREQUAL "AuthenticAMD")
+    message(STATUS
+      "SKIP: ${_what}. AIS needs PCI peer-to-peer DMA, which the kernel "
+      "only allows through this host bridge on AMD CPUs.")
+    return()
+  endif()
+  message(FATAL_ERROR "${_what}\n${snoop_stderr}")
 endif()
 
 message(STATUS

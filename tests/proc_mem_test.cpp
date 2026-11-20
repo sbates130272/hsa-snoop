@@ -392,9 +392,36 @@ void TestVirtToPhysHighVa() {
     munmap(p, 4096);
 }
 
+void TestMappingBacking() {
+    const int pid = getpid();
+    void* anon = mmap(nullptr, 4096, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    Check(anon != MAP_FAILED, "anonymous mmap");
+    Check(MappingBacking(pid, reinterpret_cast<uint64_t>(anon) + 16) ==
+              "anonymous",
+          "MappingBacking should report an anonymous mapping as such");
+    munmap(anon, 4096);
+
+    // A shared file mapping, as a ring mapped from a device node would be.
+    char tmpl[] = "/tmp/hsa-snoop-backing-XXXXXX";
+    int fd = mkstemp(tmpl);
+    Check(fd >= 0 && ftruncate(fd, 4096) == 0, "temp file for mapping");
+    void* file = mmap(nullptr, 4096, PROT_READ, MAP_SHARED, fd, 0);
+    Check(file != MAP_FAILED, "file mmap");
+    Check(MappingBacking(pid, reinterpret_cast<uint64_t>(file)) == tmpl,
+          "MappingBacking should report the file behind a mapping");
+    munmap(file, 4096);
+    close(fd);
+    unlink(tmpl);
+
+    Check(MappingBacking(pid, kUnmappedVa).empty(),
+          "MappingBacking should return nothing for an unmapped address");
+}
+
 } // namespace
 
 int main() {
+    TestMappingBacking();
     TestReadProcMem();
     TestReadProcMemViaMem();
     TestScanKernargFootprint();

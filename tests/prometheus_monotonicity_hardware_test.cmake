@@ -80,6 +80,7 @@ rm -f \"\$SNOOP_LOG\" \"\$S1\" \"\$S2\" \"\$S3\"
 # 1. Start hsa-snoop wrapping a gfx-test workload long enough for scrapes.
 #    --loops 20 --sleep-ms 250 gives ~5+ seconds of active dispatch time,
 #    enough for 3 or more 1-second scrapes to land while the process is alive.
+GPU_FORCE_QUEUE_PROFILING=1 \\
 \"\$HSA_SNOOP\" --prometheus --prometheus-port ${PROM_PORT} \
   ${SNAPSHOT_ARG} \
   --poll-us 500 \
@@ -219,6 +220,39 @@ endforeach()
 if(NOT up_found)
   message(FATAL_ERROR "hsa_snoop_up was never 1 in any scrape")
 endif()
+
+# The workload runs with queue profiling on, so its dispatches carry the
+# command processor's timestamps. Once the GPU clock rate is known (measured
+# through KFD, or HSA_SNOOP_GPU_CLOCK_HZ where KFD reports no GPU counter, as
+# under emulation) they must reach hsa_kernel_gpu_duration_seconds.
+set(gpu_series 0)
+foreach(f IN LISTS scrape_files)
+  if(NOT EXISTS "${f}")
+    continue()
+  endif()
+  file(READ "${f}" scrape_text)
+  string(REGEX MATCHALL
+    "hsa_kernel_gpu_duration_seconds_count[^\n]* [1-9][0-9]*\n"
+    _gpu_counts "${scrape_text}")
+  list(LENGTH _gpu_counts _n)
+  if(_n GREATER gpu_series)
+    set(gpu_series "${_n}")
+  endif()
+endforeach()
+if(gpu_series GREATER 0)
+  set(gpu_duration_note "${gpu_series} kernel(s) with GPU durations")
+elseif(NOT "$ENV{HSA_SNOOP_GPU_CLOCK_HZ}" STREQUAL "" AND
+       NOT "$ENV{HSA_SNOOP_GPU_CLOCK_HZ}" STREQUAL "0")
+  # With the rate given there is nothing to wait for: every timestamped
+  # dispatch is observed as it retires.
+  message(FATAL_ERROR
+    "HSA_SNOOP_GPU_CLOCK_HZ is set and the workload ran with queue profiling "
+    "on, but no scrape has hsa_kernel_gpu_duration_seconds observations")
+else()
+  set(gpu_duration_note
+    "no GPU durations (clock rate not known in time); not checked")
+endif()
+message(STATUS "prometheus-monotonicity-hardware-test: ${gpu_duration_note}")
 
 # Synthesise SDMA and AIS metric lines from earlier hardware test traces and
 # append them to PROM_SNAPSHOT.  The Prometheus HTTP-server thread starves the

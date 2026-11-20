@@ -32,14 +32,22 @@ class RingParser {
 
     // poll_us: sleep between polls (microseconds). Lower catches faster
     // kernels/copies. sdma_sink may be empty if SDMA capture is not wanted.
+    //
+    // poll_idle_us: the longest a queue that has stopped moving goes between
+    // polls. A queue is polled every poll_us while it has activity, and for a
+    // short hold after; then its interval grows up to this. -1 picks the
+    // default, the larger of poll_us and 1000; 0 turns the backoff off.
     RingParser(Sink sink, SdmaSink sdma_sink = {}, int poll_us = 20,
-               MissSink miss_sink = {});
+               MissSink miss_sink = {}, int poll_idle_us = -1);
     ~RingParser();
 
     // Begin polling a newly discovered queue (thread-safe). AQL and SDMA queues
     // are both accepted; the ring format is chosen from q.is_sdma().
     void AddQueue(const QueueInfo& q);
     void Stop();
+
+    // Number of times any queue's pointers have been read. For tests.
+    uint64_t QueuePolls() const { return queue_polls_.load(); }
 
   private:
     struct QueueState {
@@ -57,6 +65,22 @@ class RingParser {
         // Ring position at the first poll of a queue that already existed:
         // everything before it predates the poller and was not looked at.
         uint64_t skipped_at_start = 0;
+        // Write pointer at the last successful poll, in ring units. Whatever
+        // lies between next_id and it when polling stops was never decoded.
+        uint64_t last_wptr = 0;
+
+        // Pointer reads: true once process_vm_readv has failed and
+        // /proc/<pid>/mem worked, so the failing call is not repeated.
+        bool ptr_via_mem = false;
+        // Raw pointer values at the previous poll, to tell an idle queue
+        // from one that moved.
+        bool ptrs_seen = false;
+        bool moved = false;
+        uint64_t seen_wptr = 0, seen_rptr = 0;
+        // Idle backoff and liveness scheduling (CLOCK_MONOTONIC_RAW seconds).
+        double last_active_ts = 0;
+        double next_poll_ts = 0;
+        double next_alive_ts = 0;
         std::map<uint64_t, PacketRecord> inflight;    // AQL: id -> record
         uint64_t sdma_seq = 0;                        // SDMA packet counter
         std::map<uint64_t, SdmaRecord> sdma_inflight; // SDMA: end-dword -> rec
@@ -74,6 +98,7 @@ class RingParser {
     };
 
     void Run();
+    bool ReadPtrs(QueueState* qs, uint64_t* wptr, uint64_t* rptr);
     static void PrintSummary(const QueueState& qs);
 
     // AQL path.
@@ -94,6 +119,8 @@ class RingParser {
     SdmaSink sdma_sink_;
     MissSink miss_sink_;
     int poll_us_;
+    int poll_idle_us_;
+    std::atomic<uint64_t> queue_polls_{0};
     std::mutex mu_;
     std::vector<std::unique_ptr<QueueState>> queues_;
     std::thread thread_;

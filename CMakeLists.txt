@@ -114,6 +114,28 @@ if(BUILD_TESTING)
   target_link_libraries(parser-eviction-test PRIVATE Threads::Threads)
   add_test(NAME parser-eviction-test COMMAND parser-eviction-test)
 
+  # Idle backoff of the poll loop.
+  add_executable(parser-idle-test
+    tests/parser_idle_test.cpp
+    src/aql.cpp
+    src/ksym.cpp
+    src/parser.cpp
+    src/proc_mem.cpp
+    src/sdma.cpp
+  )
+  target_include_directories(parser-idle-test PRIVATE src)
+  target_link_libraries(parser-idle-test PRIVATE Threads::Threads)
+  add_test(NAME parser-idle-test COMMAND parser-idle-test)
+
+  # Parsing of the AIS probes' trace_pipe lines.
+  add_executable(ais-trace-test
+    tests/ais_trace_test.cpp
+    src/ais_monitor.cpp
+  )
+  target_include_directories(ais-trace-test PRIVATE src)
+  target_link_libraries(ais-trace-test PRIVATE Threads::Threads)
+  add_test(NAME ais-trace-test COMMAND ais-trace-test)
+
   # Decode paths that need no GPU: consumed packets whose header was reset,
   # and where polling starts on a queue seen being created.
   add_executable(parser-decode-test
@@ -262,6 +284,7 @@ if(HSA_SNOOP_HARDWARE_TESTS)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/ais_hardware_test.cmake)
   set_tests_properties(ais-hardware-test PROPERTIES
     LABELS "hardware;ais"
+    SKIP_REGULAR_EXPRESSION "SKIP:"
     TIMEOUT 120)
 
   add_test(
@@ -274,6 +297,7 @@ if(HSA_SNOOP_HARDWARE_TESTS)
       -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/ais_write_hardware_test.cmake)
   set_tests_properties(ais-write-hardware-test PROPERTIES
     LABELS "hardware;ais"
+    SKIP_REGULAR_EXPRESSION "SKIP:"
     TIMEOUT 120)
 
   # --all mode: launches two concurrent gfx-test processes and verifies that

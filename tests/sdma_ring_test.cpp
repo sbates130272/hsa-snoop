@@ -144,9 +144,136 @@ bool RunParserTest(sdma::Version version, uint8_t copy_sub_op, bool broadcast,
     return true;
 }
 
+// gfx12.5+: one copy submission as ROCr 10.2 builds it for a user-mode queue
+// (amd_blit_sdma.cpp, the WaitSignal path), followed by a 64-bit fence. The
+// copies come in the three shapes the header bits allow.
+uint32_t WriteCopyGfx125(uint32_t* dst, bool wait, bool signal,
+                         uint32_t bytes) {
+    uint32_t n = 0;
+    dst[n++] = sdma::OP_COPY | (wait ? 1u << 30 : 0) | (signal ? 1u << 31 : 0);
+    if (wait) {
+        dst[n++] = 0x3;    // wait function: equal
+        dst[n++] = 0x7000; // wait address low
+        dst[n++] = 0x7f00; // wait address high
+        dst[n++] = 0;      // reference
+        dst[n++] = 0;
+        dst[n++] = 0xffffffff; // mask
+        dst[n++] = 0xffffffff;
+    }
+    dst[n++] = bytes - 1;
+    dst[n++] = 0;
+    dst[n++] = static_cast<uint32_t>(kSrcAddress);
+    dst[n++] = static_cast<uint32_t>(kSrcAddress >> 32);
+    dst[n++] = static_cast<uint32_t>(kDstAddress);
+    dst[n++] = static_cast<uint32_t>(kDstAddress >> 32);
+    if (signal) {
+        dst[n++] = 0x70;   // signal operation: 64-bit subtract
+        dst[n++] = 0x9000; // signal address low
+        dst[n++] = 0x7f00; // signal address high
+        dst[n++] = 1;      // data
+        dst[n++] = 0;
+    }
+    return n;
+}
+
+uint32_t WriteSequenceGfx125(uint32_t* dst) {
+    uint32_t n = 0;
+    auto packet = [&](uint32_t header, uint32_t dwords) {
+        dst[n] = header;
+        // Non-zero payload: a decoder that strides short lands on these and
+        // reads them as headers.
+        for (uint32_t i = 1; i < dwords; ++i)
+            dst[n + i] = 0x5a5a0000u + i;
+        n += dwords;
+    };
+    packet(sdma::OP_GCR_REQ | (1u << 8), 6);     // cache rinse
+    packet(sdma::OP_POLL_REGMEM | (5u << 8), 8); // 64-bit poll on a dependency
+    packet(sdma::OP_TIMESTAMP | (2u << 8), 3);
+    n += WriteCopyGfx125(dst + n, /*wait=*/true, /*signal=*/false, 0x100000);
+    n += WriteCopyGfx125(dst + n, /*wait=*/false, /*signal=*/false, 0x100000);
+    n += WriteCopyGfx125(dst + n, /*wait=*/false, /*signal=*/true, 0x100000);
+    n += WriteCopyGfx125(dst + n, /*wait=*/true, /*signal=*/true, 0x100000);
+    packet(sdma::OP_TIMESTAMP | (2u << 8), 3);
+    packet(sdma::OP_GCR_REQ | (1u << 8), 6);
+    packet(sdma::OP_FENCE, 4);
+    packet(sdma::OP_TRAP, 2);
+    packet(sdma::OP_FENCE | (2u << 8), 5); // 64-bit fence
+    return n;
+}
+
+bool TestGfx125Sequence() {
+    constexpr uint64_t kSequences = 8;
+    constexpr size_t kPacketsPerSequence = 12;
+    constexpr size_t kCopiesPerSequence = 4;
+
+    std::vector<uint32_t> ring(4096, 0);
+    alignas(uint64_t) std::atomic<uint64_t> wptr_bytes{0};
+    alignas(uint64_t) std::atomic<uint64_t> rptr_bytes{0};
+
+    std::mutex records_mu;
+    std::vector<hsasnoop::SdmaRecord> records;
+    hsasnoop::RingParser parser(
+        {},
+        [&](const hsasnoop::SdmaRecord& record) {
+            std::lock_guard<std::mutex> lock(records_mu);
+            records.push_back(record);
+        },
+        1000);
+
+    hsasnoop::QueueInfo queue;
+    queue.pid = getpid();
+    queue.ring_base = reinterpret_cast<uint64_t>(ring.data());
+    queue.wptr_addr = reinterpret_cast<uint64_t>(&wptr_bytes);
+    queue.rptr_addr = reinterpret_cast<uint64_t>(&rptr_bytes);
+    queue.ring_size = static_cast<uint32_t>(ring.size() * sizeof(uint32_t));
+    queue.qtype = 1; // KFD_IOC_QUEUE_TYPE_SDMA
+    queue.uid = 99;
+    queue.sdma_version = sdma::Version::V7Gfx125;
+    // Decode from the start of the ring, so the counts below are exact.
+    queue.created_during_trace = true;
+    parser.AddQueue(queue);
+
+    uint64_t committed_dwords = 0;
+    for (uint64_t i = 0; i < kSequences; ++i) {
+        committed_dwords += WriteSequenceGfx125(ring.data() + committed_dwords);
+        const uint64_t committed_bytes = committed_dwords * sizeof(uint32_t);
+        wptr_bytes.store(committed_bytes, std::memory_order_release);
+        rptr_bytes.store(committed_bytes, std::memory_order_release);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    parser.Stop();
+
+    size_t copies = 0;
+    bool bad_copy = false;
+    std::lock_guard<std::mutex> lock(records_mu);
+    for (const auto& record : records) {
+        if (record.opcode != sdma::OP_COPY)
+            continue;
+        ++copies;
+        if (record.bytes != 0x100000 || record.src_addr != kSrcAddress ||
+            record.dst_addr != kDstAddress || record.op_name != "copy_linear")
+            bad_copy = true;
+    }
+    if (records.size() != kSequences * kPacketsPerSequence ||
+        copies != kSequences * kCopiesPerSequence || bad_copy) {
+        std::fprintf(
+            stderr,
+            "unexpected gfx12.5 SDMA decode: %zu packets (expected "
+            "%zu), %zu copies (expected %zu), bad_copy=%d\n",
+            records.size(),
+            static_cast<size_t>(kSequences * kPacketsPerSequence), copies,
+            static_cast<size_t>(kSequences * kCopiesPerSequence), bad_copy);
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main() {
+    if (!TestGfx125Sequence())
+        return 1;
     constexpr uint32_t kCountWithV6HighBit = 0x04000003;
     if (!RunParserTest(sdma::Version::V4, sdma::SUBOP_COPY_LINEAR, false,
                        kCountWithV6HighBit, 4, "copy_linear", true))

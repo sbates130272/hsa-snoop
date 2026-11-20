@@ -96,6 +96,18 @@ message(STATUS
   "SDMA v${detected_sdma_version} stress: ${copy_count} COPY_LINEAR, "
   "${nop_count} bounded NOP, ${sdma_queue_count} SDMA queue(s)")
 
+# An SDMA queue whose decoder met a packet it does not recognise skips to the
+# write pointer and loses everything queued behind it. That is a decoder
+# defect for this GPU, so fail on it instead of passing on a partial count.
+string(REGEX MATCHALL "\\[summary\\] sdma queue[^\n]*" sdma_summaries "${snoop_stderr}")
+foreach(_summary IN LISTS sdma_summaries)
+  if(NOT _summary MATCHES "skipped_dwords=0 " OR
+     NOT _summary MATCHES "undecoded_dwords=0")
+    message(FATAL_ERROR
+      "SDMA ring was not fully decoded: ${_summary}\n${snoop_stderr}")
+  endif()
+endforeach()
+
 # Per-direction split and hsa-snoop's own log (queue and summary lines), so a
 # run with an unusual copy count can be explained from the test output alone.
 foreach(_dir h2d d2h d2d h2h unknown)

@@ -28,6 +28,8 @@ struct QueueInfo {
 
     // Physical address of the first ring page (from /proc/pid/pagemap), or 0.
     uint64_t ring_phys = 0;
+    // What the ring's mapping is backed by (see MappingBacking).
+    std::string ring_backing;
 
     // Stable per-run identifier used as the Perfetto track id.
     uint64_t uid = 0;

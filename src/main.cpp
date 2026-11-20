@@ -58,6 +58,11 @@ void Usage(const char* p) {
         "                     (default /var/log/hsa-snoop)\n"
         "  --format <fmt>     perfetto (default) | json\n"
         "  --poll-us <n>      Ring poll interval in microseconds (default 20)\n"
+        "  --poll-idle-us <n> Longest interval between polls of a queue that "
+        "has\n"
+        "                     stopped moving (default: the larger of --poll-us "
+        "and\n"
+        "                     1000). 0 polls every queue at --poll-us always\n"
         "  --duration <sec>   Auto-stop after N seconds (0 = until "
         "Ctrl-C/exit)\n"
         "  --tracefs <path>   tracefs mount (default /sys/kernel/tracing)\n"
@@ -84,6 +89,10 @@ void Usage(const char* p) {
         "  --rocm-version <s> Value of the constant `rocm_version` label\n"
         "                     (default: detected from /opt/rocm; env\n"
         "                     HSA_SNOOP_ROCM_VERSION)\n"
+        "  --gpu-clock-hz <hz> GPU clock rate for converting dispatch "
+        "timestamps to\n"
+        "                     seconds (default: measured through KFD; env\n"
+        "                     HSA_SNOOP_GPU_CLOCK_HZ)\n"
         "  --kernel-name-max <n>\n"
         "                     Truncate kernel_name label values to <n> bytes\n"
         "                     (default 0 = no limit)\n"
@@ -139,7 +148,7 @@ void Usage(const char* p) {
 } // namespace
 
 int main(int argc, char** argv) {
-    int pid_filter = 0, poll_us = 20, duration = 0;
+    int pid_filter = 0, poll_us = 20, poll_idle_us = -1, duration = 0;
     bool all_mode = false;
     bool prometheus_mode = false;
     bool ais_mode = false;
@@ -153,6 +162,8 @@ int main(int argc, char** argv) {
         prom_options.host_label = e;
     if (const char* e = getenv("HSA_SNOOP_ROCM_VERSION"))
         prom_options.rocm_version = e;
+    if (const char* e = getenv("HSA_SNOOP_GPU_CLOCK_HZ"))
+        prom_options.gpu_clock_hz = std::max(0.0, atof(e));
 #endif
     std::string out, out_dir, tracefs = "/sys/kernel/tracing";
     std::string mode_str, librocdxg_path, dispatch_log_path;
@@ -171,6 +182,8 @@ int main(int argc, char** argv) {
             out_dir = argv[++i];
         else if (a == "--poll-us" && i + 1 < argc)
             poll_us = atoi(argv[++i]);
+        else if (a == "--poll-idle-us" && i + 1 < argc)
+            poll_idle_us = std::max(0, atoi(argv[++i]));
         else if (a == "--duration" && i + 1 < argc)
             duration = atoi(argv[++i]);
         else if (a == "--tracefs" && i + 1 < argc)
@@ -198,6 +211,8 @@ int main(int argc, char** argv) {
             prom_options.host_label = argv[++i];
         else if (a == "--rocm-version" && i + 1 < argc)
             prom_options.rocm_version = argv[++i];
+        else if (a == "--gpu-clock-hz" && i + 1 < argc)
+            prom_options.gpu_clock_hz = std::max(0.0, atof(argv[++i]));
         else if (a == "--kernel-name-max" && i + 1 < argc)
             prom_options.kernel_name_max =
                 static_cast<size_t>(std::max(0, atoi(argv[++i])));
@@ -572,7 +587,8 @@ int main(int argc, char** argv) {
             if (prom_exporter)
                 prom_exporter->AddMissed(queue_uid, n, reason);
 #endif
-        });
+        },
+        poll_idle_us);
 
     // Launch mode: fork the child stopped so we can scope discovery to its pid
     // and arm the probe before it can create any queue. It is resumed
@@ -675,6 +691,9 @@ int main(int argc, char** argv) {
         const char* sdma_version =
             q.is_sdma() ? sdma::VersionName(q.sdma_version) : "n/a";
         q.ring_phys = VirtToPhys(q.pid, q.ring_base);
+        q.ring_backing = MappingBacking(q.pid, q.ring_base);
+        if (q.ring_backing.empty())
+            q.ring_backing = "unknown";
         // Registered for every traced queue, not just AQL under --mem-snoop:
         // the dispatch log needs the same lookup for SDMA records, and the map
         // is one small entry per queue.
@@ -696,10 +715,11 @@ int main(int argc, char** argv) {
             ++queue_count;
             fprintf(stderr,
                     "[queue] kind=%s pid=%d comm=%s uid=%u ring_va=0x%lx "
-                    "ring_phys=0x%lx size=%uB slots=%u gpu=%u sdma=%s\n",
+                    "ring_phys=0x%lx ring_backing=%s size=%uB slots=%u gpu=%u "
+                    "sdma=%s\n",
                     kind, q.pid, q.comm.c_str(), (unsigned)q.uid, q.ring_base,
-                    q.ring_phys, q.ring_size, (unsigned)q.num_slots(), q.gpu_id,
-                    sdma_version);
+                    q.ring_phys, q.ring_backing.c_str(), q.ring_size,
+                    (unsigned)q.num_slots(), q.gpu_id, sdma_version);
             return;
         }
 #endif
@@ -711,9 +731,11 @@ int main(int argc, char** argv) {
         ++queue_count;
         fprintf(stderr,
                 "[queue] kind=%s pid=%d comm=%s uid=%lu ring_va=0x%lx "
-                "ring_phys=0x%lx size=%uB slots=%u gpu=%u sdma=%s\n",
+                "ring_phys=0x%lx ring_backing=%s size=%uB slots=%u gpu=%u "
+                "sdma=%s\n",
                 kind, q.pid, q.comm.c_str(), q.uid, q.ring_base, q.ring_phys,
-                q.ring_size, q.num_slots(), q.gpu_id, sdma_version);
+                q.ring_backing.c_str(), q.ring_size, q.num_slots(), q.gpu_id,
+                sdma_version);
     };
 
     if (child_cmd.empty()) {
@@ -775,6 +797,7 @@ int main(int argc, char** argv) {
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
     if (prometheus_mode) {
         if (!prometheus_snapshot_path.empty() && prom_exporter) {
+            prom_exporter->Flush();
             std::string snap = prom_exporter->Snapshot();
             FILE* f = fopen(prometheus_snapshot_path.c_str(), "w");
             if (f) {
