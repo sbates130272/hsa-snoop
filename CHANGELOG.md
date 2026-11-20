@@ -6,6 +6,8 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-11-19
+
 ### Added
 - `hsa_dispatches_missed_total` counter: AQL packets that were never decoded,
   labelled by `reason`, so a consumer can see loss and tell a poller that is
@@ -19,6 +21,10 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `HSA_SNOOP_ROCM_VERSION`) to set the constant `host` and `rocm_version`
   labels, for container deployments.
 - `--kernel-name-max` to cap the length of `kernel_name` label values.
+
+### Changed
+- The build-check CI jobs run against ROCm 7.14.0, 10.1.0 and 10.2.0 instead of
+  10.1.0 only.
 
 ### Fixed
 - `--mem-snoop` re-read `/proc/<pid>/maps` for every dispatch on the ring-poll
@@ -153,7 +159,9 @@ Initial public release. Core features:
 - Debian package with systemd service and logrotate config.
 - Tag-triggered GitHub Release with `.deb` asset via `debian-publish` CI.
 
-[Unreleased]: https://github.com/sbates130272/hsa-snoop/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/sbates130272/hsa-snoop/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.6.0...v1.7.0
+[1.6.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.2.0...v1.3.0
