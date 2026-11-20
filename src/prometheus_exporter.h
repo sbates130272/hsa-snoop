@@ -46,6 +46,9 @@ struct PrometheusExporterOptions {
     std::string rocm_version;
     // Truncate kernel_name label values to this many bytes; 0 = no limit.
     size_t kernel_name_max = 0;
+    // GPU clock rate in ticks per second, for turning the command processor's
+    // dispatch timestamps into seconds; 0 = measure it through KFD.
+    double gpu_clock_hz = 0;
 };
 
 class PrometheusExporter {
@@ -91,6 +94,10 @@ class PrometheusExporter {
     // Reports whether the XNACK kprobe monitor came up. Call once, only when
     // --xnack-snoop was requested.
     void SetXnackArmed(bool armed);
+
+    // Call once before a final Snapshot(): stops the background thread and
+    // releases GPU durations still waiting for a clock rate.
+    void Flush();
 
     // Returns the current /metrics payload as a UTF-8 string, using the same
     // text format served by the HTTP endpoint.
@@ -141,6 +148,8 @@ class PrometheusExporter {
     prometheus::Family<prometheus::Gauge>& last_launch_ts_family_;
     prometheus::Family<prometheus::Gauge>& last_kernel_info_family_;
     prometheus::Family<prometheus::Histogram>& duration_family_;
+    prometheus::Family<prometheus::Histogram>& gpu_duration_family_;
+    prometheus::Family<prometheus::Gauge>& gpu_clock_family_;
     prometheus::Family<prometheus::Gauge>& triggered_family_;
     // SDMA (DMA copy engine) telemetry.
     prometheus::Family<prometheus::Counter>& sdma_copies_family_;
@@ -183,6 +192,27 @@ class PrometheusExporter {
 
     // Guards all metadata maps and per-gpu gauge pointer caches.
     std::mutex meta_mu_;
+
+    // GPU-timestamped durations. The clock rate of a GPU is measured once, off
+    // the record path, by the rate thread; durations that arrive before it is
+    // known wait in gpu_pending_.
+    void ObserveGpuDuration(const std::string& kernel_name,
+                            const std::string& gpu_str,
+                            const std::string& gpu_type, double seconds);
+    void CalibrateGpuClocks();
+    struct GpuClockState {
+        double hz = 0;
+        bool unavailable = false;
+    };
+    struct PendingGpuDuration {
+        std::string kernel_name;
+        uint32_t gpu_id;
+        std::string gpu_type;
+        uint64_t ticks;
+    };
+    const double gpu_clock_hz_override_;
+    std::unordered_map<uint32_t, GpuClockState> gpu_clocks_;
+    std::deque<PendingGpuDuration> gpu_pending_;
     std::unordered_map<uint32_t, QueueMeta> queue_meta_; // uid -> meta
     std::unordered_map<std::string, prometheus::Gauge*>
         active_queue_gauges_; // gpu_id_str -> gauge

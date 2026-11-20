@@ -21,15 +21,26 @@ namespace sdma {
 
 // KFD topology exposes gfx_target_version rather than the SDMA IP version.
 // gfx9 uses SDMA v4, gfx10 uses v5, gfx11 uses v6, and gfx12 uses v7. v4,
-// v6, and v7 are supported; v7 reuses the v6 packet layout. v5 and unknown
-// generations fail closed.
+// v6, and v7 are supported; v5 and unknown generations fail closed.
+//
+// What matters here is what the ROCr runtime writes to a user-mode queue, not
+// what the kernel driver writes to its own rings. Up to gfx12.4 ROCr uses the
+// v6 packet set unchanged. From gfx12.5 it switches to variable-length
+// wait/signal copy packets and 64-bit fence, poll and cache-rinse forms, so
+// those GPUs get their own value.
 enum class Version : uint8_t {
     Unknown = 0,
     V4 = 4,
     V5 = 5,
     V6 = 6,
     V7 = 7,
+    V7Gfx125 = 75, // gfx12.5 and later
 };
+
+// True for every version whose packets follow the v6 layout family.
+constexpr bool IsV6Layout(Version v) {
+    return v == Version::V6 || v == Version::V7 || v == Version::V7Gfx125;
+}
 
 const char* VersionName(Version version);
 bool IsSupportedVersion(Version version);
@@ -78,6 +89,9 @@ enum CopySubOp : uint8_t {
     SUBOP_COPY_T2T_SUB_WIND = 6,
     SUBOP_COPY_DIRTY_PAGE = 7,
     SUBOP_COPY_LINEAR_PHY = 8,
+    // ROCr swap (gfx9.4 and gfx12.5 on) and multicast (gfx12.5 on) copies.
+    SUBOP_COPY_SWAP = 9,
+    SUBOP_COPY_MULTICAST = 10,
     // SDMA v6 additions.
     SUBOP_COPY_LINEAR_BC = 16,
     SUBOP_COPY_TILED_BC = 17,
@@ -126,6 +140,25 @@ struct CopyLinearPacket {
 static_assert(sizeof(CopyLinearPacket) == 28, "SDMA linear copy is 7 dwords");
 #pragma pack(pop)
 
+// gfx12.5+ copy headers: bit 30 says a 7-dword wait block follows the header,
+// bit 31 that a 5-dword signal block ends the packet.
+inline bool HeaderWait(uint32_t dw0) { return (dw0 & (1u << 30)) != 0; }
+inline bool HeaderSignal(uint32_t dw0) { return (dw0 & (1u << 31)) != 0; }
+// gfx12.5+ linear copies: bit 20 / 21 say the source / destination dwords
+// hold the address of a cell containing the real address, not the address.
+inline bool HeaderIndirectSrc(uint32_t dw0) { return (dw0 & (1u << 20)) != 0; }
+inline bool HeaderIndirectDst(uint32_t dw0) { return (dw0 & (1u << 21)) != 0; }
+
+// Index of the copy block's first dword (count), followed by parameters and
+// the source and destination addresses. It is 1 except on gfx12.5+ when a wait
+// block sits between the header and the copy block.
+uint32_t CopyBodyOffset(Version version, uint32_t dw0);
+
+// PacketLenDwords returns this when the opcode is known but more dwords than
+// were passed are needed to work out the length. The caller should wait for
+// more of the packet to be published rather than treat it as unknown.
+constexpr uint32_t kLenNeedMoreDwords = UINT32_MAX;
+
 // Human-readable opcode / copy sub-opcode names.
 const char* OpName(Version version, uint8_t op);
 const char* CopySubOpName(Version version, uint8_t sub_op);
@@ -134,7 +167,8 @@ const char* CopySubOpName(Version version, uint8_t sub_op);
 // A few opcodes (NOP, WRITE) carry the length in a later dword, so the caller
 // passes a small window. Returns 0 when the opcode is unknown, or when navail
 // is too small to determine the length -- in both cases the caller stops and
-// resyncs rather than mis-striding the ring.
+// resyncs rather than mis-striding the ring. A gfx12.5+ multicast copy whose
+// destination count is not yet in the window returns kLenNeedMoreDwords.
 uint32_t PacketLenDwords(Version version, const uint32_t* dw, uint32_t navail);
 
 } // namespace sdma

@@ -2,6 +2,8 @@
 
 #include "prometheus_exporter.h"
 
+#include "gpu_clock.h"
+
 #include <dirent.h>
 #include <time.h>
 #include <unistd.h>
@@ -12,6 +14,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <prometheus/counter.h>
 #include <prometheus/gauge.h>
@@ -266,6 +269,23 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                                  "to completion observation")
                            .Labels(const_labels_)
                            .Register(*registry_)),
+      gpu_duration_family_(
+          prometheus::BuildHistogram()
+              .Name("hsa_kernel_gpu_duration_seconds")
+              .Help("GPU kernel duration from the command processor's own "
+                    "start and end timestamps. Present only for workloads "
+                    "run with queue profiling on "
+                    "(GPU_FORCE_QUEUE_PROFILING=1 for HIP)")
+              .Labels(const_labels_)
+              .Register(*registry_)),
+      gpu_clock_family_(
+          prometheus::BuildGauge()
+              .Name("hsa_gpu_clock_ticks_per_second")
+              .Help("GPU clock rate used to convert dispatch timestamps to "
+                    "seconds: measured through KFD, or the --gpu-clock-hz "
+                    "value")
+              .Labels(const_labels_)
+              .Register(*registry_)),
       triggered_family_(
           prometheus::BuildGauge()
               .Name("hsa_triggered")
@@ -456,6 +476,7 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                     "dispatches of this kernel")
               .Labels(const_labels_)
               .Register(*registry_)),
+      gpu_clock_hz_override_(options.gpu_clock_hz),
       rate_window_sec_(rate_window_sec) {
     // Start the HTTP exposition endpoint.
     std::string addr = "0.0.0.0:" + std::to_string(port);
@@ -635,6 +656,33 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
                       {"pid", pid_str},
                       {"comm", meta.comm}})
                 .Increment();
+        }
+
+        // hsa_kernel_gpu_duration_seconds — the command processor's own
+        // timestamps, when the workload ran with queue profiling on. Unlike
+        // the host-observed duration above this does not depend on the poller
+        // catching the packet while it was pending.
+        if (rec.gpu_start_ticks != 0 &&
+            rec.gpu_end_ticks > rec.gpu_start_ticks) {
+            const uint64_t ticks = rec.gpu_end_ticks - rec.gpu_start_ticks;
+            GpuClockState& clock = gpu_clocks_[meta.gpu_id];
+            const bool first_use = clock.hz == 0 && gpu_clock_hz_override_ > 0;
+            if (first_use)
+                clock.hz = gpu_clock_hz_override_;
+            if (clock.hz > 0) {
+                ObserveGpuDuration(kernel_name, gpu_str, meta.gpu_type,
+                                   static_cast<double>(ticks) / clock.hz);
+                // After the observation, so a scrape that shows the rate
+                // also shows a duration.
+                if (first_use)
+                    gpu_clock_family_
+                        .Add({{"gpu_id", gpu_str}, {"gpu_type", meta.gpu_type}})
+                        .Set(clock.hz);
+            } else if (!clock.unavailable && gpu_pending_.size() < 65536) {
+                // Rate not measured yet; the rate thread will do it.
+                gpu_pending_.push_back(
+                    {kernel_name, meta.gpu_id, meta.gpu_type, ticks});
+            }
         }
 
         // hsa_last_kernel_launch_timestamp_seconds
@@ -936,15 +984,105 @@ void PrometheusExporter::Add(const MemRecord& rec) {
         .Increment(static_cast<double>(rec.mapped_vram_bytes));
 }
 
+// Caller holds meta_mu_.
+void PrometheusExporter::ObserveGpuDuration(const std::string& kernel_name,
+                                            const std::string& gpu_str,
+                                            const std::string& gpu_type,
+                                            double seconds) {
+    // 1-2.5-5 from 1 us to 1 s. Finer at the low end than the host-observed
+    // histogram because these values are not limited by the poll interval.
+    static const prometheus::Histogram::BucketBoundaries kBuckets{
+        1e-6,   2.5e-6, 5e-6,   10e-6,  25e-6, 50e-6, 100e-6,
+        250e-6, 500e-6, 1e-3,   2.5e-3, 5e-3,  10e-3, 25e-3,
+        50e-3,  100e-3, 250e-3, 500e-3, 1.0};
+    gpu_duration_family_
+        .Add({{"kernel_name", kernel_name},
+              {"gpu_id", gpu_str},
+              {"gpu_type", gpu_type}},
+             kBuckets)
+        .Observe(seconds);
+}
+
+// Measure the clock rate of every GPU that has durations waiting, then
+// release them. The measurement takes about 200 ms per GPU, so it runs here
+// on the rate thread and without the lock.
+void PrometheusExporter::CalibrateGpuClocks() {
+    std::vector<uint32_t> wanted;
+    {
+        std::lock_guard<std::mutex> lk(meta_mu_);
+        for (const auto& p : gpu_pending_) {
+            const GpuClockState& c = gpu_clocks_[p.gpu_id];
+            if (c.hz == 0 && !c.unavailable &&
+                std::find(wanted.begin(), wanted.end(), p.gpu_id) ==
+                    wanted.end())
+                wanted.push_back(p.gpu_id);
+        }
+    }
+    if (wanted.empty())
+        return;
+
+    std::unordered_map<uint32_t, double> measured;
+    for (uint32_t gpu_id : wanted) {
+        double hz = 0;
+        measured[gpu_id] = MeasureGpuClockHz(gpu_id, &hz) ? hz : 0;
+    }
+
+    std::lock_guard<std::mutex> lk(meta_mu_);
+    for (const auto& [gpu_id, hz] : measured) {
+        GpuClockState& c = gpu_clocks_[gpu_id];
+        if (hz > 0) {
+            c.hz = hz;
+        } else {
+            c.unavailable = true;
+            fprintf(stderr,
+                    "hsa-snoop: dispatches on gpu %u carry GPU timestamps but "
+                    "the GPU clock rate could not be read from KFD; pass "
+                    "--gpu-clock-hz to export "
+                    "hsa_kernel_gpu_duration_seconds\n",
+                    gpu_id);
+        }
+    }
+    std::deque<PendingGpuDuration> pending;
+    pending.swap(gpu_pending_);
+    for (auto& p : pending) {
+        const GpuClockState& c = gpu_clocks_[p.gpu_id];
+        if (c.hz > 0)
+            ObserveGpuDuration(p.kernel_name, std::to_string(p.gpu_id),
+                               p.gpu_type, static_cast<double>(p.ticks) / c.hz);
+        else if (!c.unavailable)
+            gpu_pending_.push_back(std::move(p)); // GPU not measured yet
+    }
+    // Publish the rates last, so a scrape that shows one also shows the
+    // durations it released.
+    for (const auto& [gpu_id, hz] : measured)
+        if (hz > 0)
+            gpu_clock_family_
+                .Add({{"gpu_id", std::to_string(gpu_id)},
+                      {"gpu_type", DetectGpuType(gpu_id)}})
+                .Set(hz);
+}
+
+// Stop the background thread and release any GPU durations still waiting for
+// a clock rate, so a final snapshot of a short run includes them.
+void PrometheusExporter::Flush() {
+    rate_running_ = false;
+    if (rate_thread_.joinable())
+        rate_thread_.join();
+    CalibrateGpuClocks();
+}
+
 // ---------------------------------------------------------------------------
 // Rate thread
 // ---------------------------------------------------------------------------
 void PrometheusExporter::RateThread() {
     while (rate_running_) {
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        // In short steps, so Flush() and the destructor are not held up.
+        for (int i = 0; i < 20 && rate_running_; ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         if (!rate_running_)
             break;
         UpdateRateGauges();
+        CalibrateGpuClocks();
     }
 }
 

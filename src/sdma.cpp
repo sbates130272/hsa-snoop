@@ -18,6 +18,7 @@ const char* VersionName(Version version) {
     case Version::V6:
         return "v6";
     case Version::V7:
+    case Version::V7Gfx125:
         return "v7";
     case Version::Unknown:
         return "unknown";
@@ -26,8 +27,7 @@ const char* VersionName(Version version) {
 }
 
 bool IsSupportedVersion(Version version) {
-    return version == Version::V4 || version == Version::V6 ||
-           version == Version::V7;
+    return version == Version::V4 || IsV6Layout(version);
 }
 
 Version VersionFromGfxTarget(uint32_t gfx_target_version) {
@@ -39,7 +39,9 @@ Version VersionFromGfxTarget(uint32_t gfx_target_version) {
     case 11:
         return Version::V6;
     case 12:
-        return Version::V7;
+        // ROCr's is_gfx125plus_: major 12, minor 5 or later.
+        return (gfx_target_version / 100) % 100 >= 5 ? Version::V7Gfx125
+                                                     : Version::V7;
     default:
         return Version::Unknown;
     }
@@ -77,17 +79,20 @@ Version DetectVersion(uint32_t gpu_id, const char* topology_root) {
     return result;
 }
 
+uint32_t CopyBodyOffset(Version version, uint32_t dw0) {
+    return version == Version::V7Gfx125 && HeaderWait(dw0) ? 8 : 1;
+}
+
 bool IsLinearCopy(Version version, uint8_t sub_op) {
     return (version == Version::V4 && sub_op == SUBOP_COPY_LINEAR) ||
-           ((version == Version::V6 || version == Version::V7) &&
+           (IsV6Layout(version) &&
             (sub_op == SUBOP_COPY_LINEAR || sub_op == SUBOP_COPY_LINEAR_BC));
 }
 
 uint64_t LinearCopyBytes(Version version, uint8_t sub_op, uint32_t count_dw) {
     if (!IsLinearCopy(version, sub_op))
         return 0;
-    const uint32_t mask = (version == Version::V6 || version == Version::V7) &&
-                                  sub_op == SUBOP_COPY_LINEAR
+    const uint32_t mask = IsV6Layout(version) && sub_op == SUBOP_COPY_LINEAR
                               ? kLinearCopyCountMask30
                               : kLinearCopyCountMask22;
     return static_cast<uint64_t>(count_dw & mask) + 1;
@@ -128,15 +133,13 @@ const char* OpName(Version version, uint8_t op) {
     case OP_VERSION_SPECIFIC_16:
         if (version == Version::V4)
             return "dummy_trap";
-        if (version == Version::V6 || version == Version::V7)
+        if (IsV6Layout(version))
             return "gpuvm_inv";
         return "unknown";
     case OP_GCR_REQ:
-        return (version == Version::V6 || version == Version::V7) ? "gcr_req"
-                                                                  : "unknown";
+        return IsV6Layout(version) ? "gcr_req" : "unknown";
     case OP_V6_DUMMY_TRAP:
-        return (version == Version::V6 || version == Version::V7) ? "dummy_trap"
-                                                                  : "unknown";
+        return IsV6Layout(version) ? "dummy_trap" : "unknown";
     }
     return "unknown";
 }
@@ -159,28 +162,22 @@ const char* CopySubOpName(Version version, uint8_t sub_op) {
         return "dirty_page";
     case SUBOP_COPY_LINEAR_PHY:
         return "linear_physical";
+    case SUBOP_COPY_SWAP:
+        return "swap";
+    case SUBOP_COPY_MULTICAST:
+        return version == Version::V7Gfx125 ? "multicast" : "unknown";
     case SUBOP_COPY_LINEAR_BC:
-        return (version == Version::V6 || version == Version::V7) ? "linear_bc"
-                                                                  : "unknown";
+        return IsV6Layout(version) ? "linear_bc" : "unknown";
     case SUBOP_COPY_TILED_BC:
-        return (version == Version::V6 || version == Version::V7) ? "tiled_bc"
-                                                                  : "unknown";
+        return IsV6Layout(version) ? "tiled_bc" : "unknown";
     case SUBOP_COPY_LINEAR_SUB_WIND_BC:
-        return (version == Version::V6 || version == Version::V7)
-                   ? "linear_subwindow_bc"
-                   : "unknown";
+        return IsV6Layout(version) ? "linear_subwindow_bc" : "unknown";
     case SUBOP_COPY_TILED_SUB_WIND_BC:
-        return (version == Version::V6 || version == Version::V7)
-                   ? "tiled_subwindow_bc"
-                   : "unknown";
+        return IsV6Layout(version) ? "tiled_subwindow_bc" : "unknown";
     case SUBOP_COPY_T2T_SUB_WIND_BC:
-        return (version == Version::V6 || version == Version::V7)
-                   ? "t2t_subwindow_bc"
-                   : "unknown";
+        return IsV6Layout(version) ? "t2t_subwindow_bc" : "unknown";
     case SUBOP_COPY_LINEAR_SUB_WIND_LARGE:
-        return (version == Version::V6 || version == Version::V7)
-                   ? "linear_subwindow_large"
-                   : "unknown";
+        return IsV6Layout(version) ? "linear_subwindow_large" : "unknown";
     }
     return "unknown";
 }
@@ -205,6 +202,7 @@ uint32_t CopyPacketLenV4(uint32_t header) {
     case SUBOP_COPY_LINEAR:
     case SUBOP_COPY_DIRTY_PAGE:
     case SUBOP_COPY_LINEAR_PHY:
+    case SUBOP_COPY_SWAP: // ROCr emits it on gfx9.4 and later
         return 7;
     case SUBOP_COPY_SOA:
         return 8;
@@ -229,6 +227,7 @@ uint32_t CopyPacketLenV6(uint32_t header) {
     case SUBOP_COPY_DIRTY_PAGE:
     case SUBOP_COPY_LINEAR_PHY:
     case SUBOP_COPY_LINEAR_BC:
+    case SUBOP_COPY_SWAP:
         return 7;
     case SUBOP_COPY_SOA:
         return 8;
@@ -252,14 +251,32 @@ uint32_t CopyPacketLenV6(uint32_t header) {
     }
 }
 
-// v7 (gfx12) adds an unconditional DCC metadata word to COPY_LINEAR, making it
-// 8 DW instead of 7. All other sub-op lengths are unchanged from v6.
-uint32_t CopyPacketLenV7(uint32_t header) {
+// gfx12.5+ linear, indirect, swap and multicast copies as ROCr builds them
+// (BuildWaitSignal*CopyCommand): header, an optional 7-dword wait block, the
+// copy block, and an optional 5-dword signal block. Blocks that are absent are
+// not reserved, so the length depends on the two header bits. A linear,
+// indirect or swap copy block is count, parameters, source and destination (6
+// dwords); a multicast one is count, parameters, source and one address pair
+// per destination, with the destination count minus one in the parameters
+// dword.
+constexpr uint32_t kWaitBlockDwords = 7;
+constexpr uint32_t kSignalBlockDwords = 5;
+constexpr uint32_t kMulticastDestMask = 0x3FF;
+
+uint32_t CopyPacketLenGfx125(const uint32_t* dw, uint32_t navail) {
+    const uint32_t header = dw[0];
     const uint8_t sub = HeaderSubOp(header);
-    if (HeaderBroadcast(header))
-        return BroadcastCopyPacketLen(sub);
-    if (sub == SUBOP_COPY_LINEAR || sub == SUBOP_COPY_LINEAR_BC)
-        return 8;
+    const uint32_t wait = HeaderWait(header) ? kWaitBlockDwords : 0;
+    const uint32_t signal = HeaderSignal(header) ? kSignalBlockDwords : 0;
+    if (sub == SUBOP_COPY_LINEAR || sub == SUBOP_COPY_SWAP)
+        return 1 + wait + 6 + signal;
+    if (sub == SUBOP_COPY_MULTICAST) {
+        const uint32_t param_index = 1 + wait + 1;
+        if (navail <= param_index)
+            return kLenNeedMoreDwords;
+        const uint32_t dests = (dw[param_index] & kMulticastDestMask) + 1;
+        return 1 + wait + 4 + 2 * dests + signal;
+    }
     return CopyPacketLenV6(header);
 }
 
@@ -274,7 +291,9 @@ uint32_t PollPacketLen(Version version, uint8_t sub) {
     case 3: // POLL_MEM_VERIFY
         return 13;
     case 4: // VM_INVALIDATION (v6+)
-        return (version == Version::V6 || version == Version::V7) ? 4 : 0;
+        return IsV6Layout(version) ? 4 : 0;
+    case 5: // POLL_MEM_64B (gfx12.5+)
+        return version == Version::V7Gfx125 ? 8 : 0;
     default:
         return 0;
     }
@@ -311,8 +330,8 @@ uint32_t PacketLenDwords(Version version, const uint32_t* dw, uint32_t navail) {
     case OP_COPY:
         if (version == Version::V4)
             return CopyPacketLenV4(dw0);
-        if (version == Version::V7)
-            return CopyPacketLenV7(dw0);
+        if (version == Version::V7Gfx125)
+            return CopyPacketLenGfx125(dw, navail);
         return CopyPacketLenV6(dw0);
     case OP_WRITE: {
         // header, dst_addr_lo, dst_addr_hi, count(dwords-1), data[count+1].
@@ -321,6 +340,9 @@ uint32_t PacketLenDwords(Version version, const uint32_t* dw, uint32_t navail) {
         return 5 + (dw[3] & kWriteCountMask20);
     }
     case OP_FENCE:
+        // gfx12.5+ adds a 64-bit form (sub-op 2) with a second data dword.
+        if (version == Version::V7Gfx125 && sub == 2)
+            return 5;
         return 4;
     case OP_TRAP:
         return 2;
@@ -347,9 +369,12 @@ uint32_t PacketLenDwords(Version version, const uint32_t* dw, uint32_t navail) {
     case OP_VERSION_SPECIFIC_16:
         return version == Version::V4 ? 2 : 4;
     case OP_GCR_REQ:
-        return (version == Version::V6 || version == Version::V7) ? 5 : 0;
+        // gfx12.5+ widens the address range fields by one dword.
+        if (version == Version::V7Gfx125)
+            return 6;
+        return IsV6Layout(version) ? 5 : 0;
     case OP_V6_DUMMY_TRAP:
-        return (version == Version::V6 || version == Version::V7) ? 2 : 0;
+        return IsV6Layout(version) ? 2 : 0;
     }
     return 0; // unknown opcode
 }

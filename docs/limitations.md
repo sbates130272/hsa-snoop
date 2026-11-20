@@ -8,6 +8,21 @@
   as `hsa_dispatches_missed_total` in Prometheus mode, split by `reason`. The
   count covers every AQL packet type, so `launches / (launches + missed)` is a
   lower bound on the capture ratio for kernel dispatches.
+* **GPU-timestamped durations need queue profiling in the workload.** With
+  `GPU_FORCE_QUEUE_PROFILING=1` set for a HIP workload, the command processor
+  stamps each dispatch, and `hsa_kernel_gpu_duration_seconds` reports those
+  durations for every dispatch whose completion signal was read, however short
+  the kernel. Three caveats. The stamps are in GPU clock ticks, whose rate is
+  measured through KFD or given with `--gpu-clock-hz`; where neither is
+  available the histogram stays empty. The runtime reuses a small pool of
+  completion signals, so in a dense burst a dispatch can lose its stamps before
+  they are read. And the interval starts when the command processor accepts
+  the dispatch, so it can include time queued behind earlier kernels.
+* **An idle queue is polled less often.** A queue that has not moved for 10 ms
+  is polled at a growing interval, up to `--poll-idle-us` (1000 by default).
+  The first packets after an idle spell are therefore seen up to that much
+  later, which can cost them their host-observed duration. `--poll-idle-us 0`
+  polls every queue at `--poll-us` always.
 * **Durations are sampled.** `hsa_kernel_duration_seconds` is only observed for
   a packet the poller saw while it was still pending. A packet that was already
   consumed when first seen is counted as a launch but has no measurable
@@ -40,6 +55,10 @@
   poll.
 * **Attach mode only sees queues created after attach**, since the kprobe fires
   on `create_queue`. Use launch mode to guarantee capture from process start.
+* **AIS byte counts are the requested sizes of requests that succeeded.** The
+  return probe gives each request's status but not the bytes moved, so a short
+  transfer is reported at its requested size. A failed request counts as an
+  error and moves nothing.
 * **`hsa_kernel_duration_seconds` is a coarse histogram by nature.** Its buckets
   run 50 µs to 5 s on a 1-2.5-5 ladder, chosen against 96,749 measured
   dispatches so the fullest bucket holds ~42% of samples rather than the 72% the
@@ -56,20 +75,25 @@
   namespace PID. This can misattribute queues if two processes share the same
   comm prefix. Launch mode (`-- <command>`) avoids this by using the known
   child PID.
-* **Physical addresses** resolve for host/GTT-backed rings. VRAM-resident pages
-  have no pagemap PFN and report `0`.
-* **Rings that `process_vm_readv` cannot read** are read through
-  `/proc/<pid>/mem` instead, and `ring_phys` is `0x0` for them. Two cases are
-  known on ROCm 10.2. On gfx94x and gfx125x with Large BAR, AQL rings are
-  placed in device memory by default; `DEBUG_CLR_AQL_DEV_QUEUE=0` in the traced
-  process restores host rings there. On gfx1201 the rings are also unreadable
-  with `process_vm_readv`, that variable has no effect, and the cause is not
-  yet known.
+* **Physical addresses** resolve for rings in ordinary process memory. A ring
+  with no frame visible in pagemap reports `ring_phys=0x0`; that is also what
+  a run without `CAP_SYS_ADMIN` sees.
+* **From ROCm 10.2 every ring is a GPU buffer object.** The runtime allocates
+  AQL and SDMA rings as non-paged buffers mapped through the DRM render node,
+  where 10.1 used anonymous memory. `process_vm_readv` cannot read such a
+  mapping, so hsa-snoop reads it through `/proc/<pid>/mem`, which costs more
+  per read. This applies to every GPU, and no runtime setting restores the old
+  layout. The `[queue]` line shows what backs each ring as `ring_backing=`.
 * **SDMA decode supports v4.x, v6.x, and v7.x packet layouts.** v4 covers gfx9
   CDNA (gfx90a / gfx942); v6 covers gfx11 RDNA3 (including gfx1101); v7 covers
-  gfx12 (including gfx1250 / MI455X). Unknown generations are ignored to avoid
-  losing ring synchronisation. Non-linear copy layouts (tiled, sub-window) are
-  counted and stepped over but do not yet contribute a byte total.
+  gfx12. Up to gfx12.4 the runtime writes the v6 packet set; from gfx12.5
+  (gfx1250 / MI455X) it writes variable-length copies with optional wait and
+  signal blocks and 64-bit fence and poll packets, which are decoded as such.
+  Unknown generations are ignored to avoid losing ring synchronisation. A
+  packet the decoder does not recognise makes it skip to the write pointer;
+  the `[summary]` line reports the skipped amount, which should be zero.
+  Non-linear copy layouts (tiled, sub-window) and copies to several destinations are counted
+  and stepped over but do not yet contribute a byte total.
 * **SDMA copy direction is a pagemap heuristic.** A src/dst page with no PFN is
   treated as device (VRAM) memory; this also matches a not-present/swapped host
   page, so a copy touching a paged-out host buffer can be misclassified. For

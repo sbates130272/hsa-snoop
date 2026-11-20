@@ -1,5 +1,6 @@
 #include "parser.h"
 
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -36,17 +37,6 @@ constexpr uint32_t kSdmaWindow = 16;
 // Bound the direction-classification page cache so a long-lived --all daemon
 // cannot grow it without limit.
 constexpr size_t kPageCacheMax = 1u << 16;
-
-// Read a u64 queue pointer (wptr or rptr). On most platforms (CDNA gfx90a /
-// gfx942) these live in GTT memory that process_vm_readv can reach. On RDNA4
-// (gfx1201) and similar, the KFD maps them inside /dev/dri/renderD128 DRM
-// pages that process_vm_readv refuses with EFAULT -- fall back to
-// /proc/<pid>/mem in that case.
-bool ReadQueuePtr(int pid, uint64_t va, uint64_t* out) {
-    if (ReadU64(pid, va, out))
-        return true;
-    return ReadU64ViaMem(pid, va, out);
-}
 
 // amd_signal_s is 64-byte aligned, so bits 0-5 of a valid handle are normally
 // zero. Newer CP firmware uses bits 4-5 as per-dispatch timestamp hint flags
@@ -87,7 +77,8 @@ bool TryReadGpuTs(int pid, uint64_t signal_handle, uint64_t* start_ticks,
         fprintf(stderr,
                 "[gputs pid=%d] signal=0x%lx read=%s start_ts=%lu end_ts=%lu\n",
                 pid, signal_handle, read_ok ? "ok" : "FAILED", s, e);
-    if (!read_ok || s == 0)
+    // An end at or before the start is a signal caught between dispatches.
+    if (!read_ok || s == 0 || e <= s)
         return false;
     *start_ticks = s;
     *end_ticks = e;
@@ -129,12 +120,24 @@ void FillExtDispatch(const uint8_t* raw, PacketRecord* rec) {
     rec->kernarg_address = p.kernarg_address;
 }
 
+// Idle backoff. A queue is polled at the full rate while it has activity and
+// for kIdleHoldSec after; its interval then grows with the time it has been
+// idle, up to the configured ceiling.
+constexpr int kDefaultPollIdleUs = 1000;
+constexpr double kIdleHoldSec = 0.010;
+constexpr double kIdleGrowthDivisor = 8.0;
+// A dead process is also caught by its pointer reads failing, so the /proc
+// check need not run on every pass.
+constexpr double kAliveCheckSec = 0.1;
+
 } // namespace
 
 RingParser::RingParser(Sink sink, SdmaSink sdma_sink, int poll_us,
-                       MissSink miss_sink)
+                       MissSink miss_sink, int poll_idle_us)
     : sink_(std::move(sink)), sdma_sink_(std::move(sdma_sink)),
-      miss_sink_(std::move(miss_sink)), poll_us_(poll_us) {
+      miss_sink_(std::move(miss_sink)), poll_us_(poll_us),
+      poll_idle_us_(poll_idle_us < 0 ? std::max(poll_us, kDefaultPollIdleUs)
+                                     : std::max(poll_us, poll_idle_us)) {
     running_ = true;
     thread_ = std::thread(&RingParser::Run, this);
 }
@@ -161,8 +164,10 @@ void RingParser::PrintSummary(const QueueState& qs) {
     if (q.is_sdma()) {
         fprintf(stderr,
                 "[summary] sdma queue uid=%lu pid=%d decoded=%lu "
-                "skipped_dwords=%lu before_first_poll_dwords=%lu\n",
-                q.uid, q.pid, qs.decoded, qs.dropped, qs.skipped_at_start);
+                "skipped_dwords=%lu before_first_poll_dwords=%lu "
+                "undecoded_dwords=%lu\n",
+                q.uid, q.pid, qs.decoded, qs.dropped, qs.skipped_at_start,
+                qs.last_wptr > qs.next_id ? qs.last_wptr - qs.next_id : 0);
         return;
     }
     fprintf(
@@ -320,11 +325,53 @@ bool RingParser::DecodeSlot(QueueState* qs, uint64_t id, uint64_t rptr,
     return true;
 }
 
+// Read a queue's write and read pointers. Normally one process_vm_readv call
+// fetches both. Where that cannot reach them (DRM-backed pointer pages on
+// RDNA4 and others) both are read through /proc/<pid>/mem instead, and that
+// choice sticks so the failing call is not repeated on every poll.
+bool RingParser::ReadPtrs(QueueState* qs, uint64_t* wptr, uint64_t* rptr) {
+    const QueueInfo& q = qs->info;
+    bool ok = false;
+    if (!qs->ptr_via_mem) {
+        struct iovec local[2] = {{wptr, sizeof(*wptr)}, {rptr, sizeof(*rptr)}};
+        struct iovec remote[2] = {
+            {reinterpret_cast<void*>(q.wptr_addr), sizeof(*wptr)},
+            {reinterpret_cast<void*>(q.rptr_addr), sizeof(*rptr)}};
+        // Anything short of both values counts as a failure: a partial read
+        // returns the bytes it got and leaves errno alone.
+        ok = process_vm_readv(q.pid, local, 2, remote, 2, 0) ==
+             static_cast<ssize_t>(sizeof(*wptr) + sizeof(*rptr));
+        if (!ok) {
+            ok = ReadU64ViaMem(q.pid, q.wptr_addr, wptr) &&
+                 ReadU64ViaMem(q.pid, q.rptr_addr, rptr);
+            qs->ptr_via_mem = ok;
+        }
+    } else {
+        ok = ReadU64ViaMem(q.pid, q.wptr_addr, wptr) &&
+             ReadU64ViaMem(q.pid, q.rptr_addr, rptr);
+        if (!ok)
+            qs->ptr_via_mem = false; // try both paths again next time
+    }
+    if (!ok)
+        return false;
+    qs->moved =
+        !qs->ptrs_seen || *wptr != qs->seen_wptr || *rptr != qs->seen_rptr;
+    qs->ptrs_seen = true;
+    qs->seen_wptr = *wptr;
+    qs->seen_rptr = *rptr;
+    return true;
+}
+
 void RingParser::PollQueue(QueueState* qs, double now) {
     const QueueInfo& q = qs->info;
     uint64_t wptr = 0, rptr = 0;
-    if (!ReadQueuePtr(q.pid, q.wptr_addr, &wptr) ||
-        !ReadQueuePtr(q.pid, q.rptr_addr, &rptr)) {
+    if (!ReadPtrs(qs, &wptr, &rptr)) {
+        // A process that has exited is the usual reason; drop its queue
+        // quietly instead of reporting it as stale 50 polls later.
+        if (!ProcAlive(q.pid)) {
+            qs->evict = true;
+            return;
+        }
         // On WSL2 --all mode, PID reuse can leave queue records with VAs that
         // are invalid in the new process. Evict after sustained read failures.
         // Threshold 50 (not 5): gfx1250/RDNA4 reads transiently fail between
@@ -339,6 +386,7 @@ void RingParser::PollQueue(QueueState* qs, double now) {
         return;
     }
     qs->read_fail_count = 0; // clear on success
+    qs->last_wptr = wptr;
 
     const uint64_t slots = q.num_slots();
     if (!qs->primed) {
@@ -453,7 +501,10 @@ void RingParser::PollQueue(QueueState* qs, double now) {
                     signalled ? "signal" : "rptr after signal timeout", rptr);
         r.complete_ts = timed_out ? r.consumed_ts : now;
         r.completed = true;
-        if (r.completion_signal != 0)
+        // Only a signal seen fired holds this dispatch's timestamps. One that
+        // timed out was reused by the runtime, and its ticks belong to a
+        // later dispatch.
+        if (signalled)
             TryReadGpuTs(q.pid, r.completion_signal, &r.gpu_start_ticks,
                          &r.gpu_end_ticks);
         if (sink_)
@@ -471,20 +522,55 @@ void RingParser::Run() {
             for (auto& q : queues_)
                 snapshot.push_back(q.get());
         }
+        // When the next queue is due. Stays at "now" while any queue is
+        // active, which keeps the loop at the full poll rate.
+        double next_due = -1;
+        bool any_active = false;
         for (QueueState* qs : snapshot) {
             if (qs->evict)
                 continue;
-            if (!ProcAlive(qs->info.pid)) {
-                qs->evict = true;
-                continue;
-            }
             // Timestamp per queue, not per pass: a slow pass over one queue
             // must not be charged to the next queue's durations.
             const double now = MonoNow();
+            if (now < qs->next_poll_ts) {
+                if (next_due < 0 || qs->next_poll_ts < next_due)
+                    next_due = qs->next_poll_ts;
+                continue;
+            }
+            if (now >= qs->next_alive_ts) {
+                if (!ProcAlive(qs->info.pid)) {
+                    qs->evict = true;
+                    continue;
+                }
+                qs->next_alive_ts = now + kAliveCheckSec;
+            }
+            qs->moved = false;
             if (qs->info.is_sdma())
                 PollSdmaQueue(qs, now);
             else
                 PollQueue(qs, now);
+            queue_polls_.fetch_add(1, std::memory_order_relaxed);
+
+            // Never back off with work outstanding: packets in flight, a
+            // backlog not yet decoded, or reads that are failing.
+            const bool busy = qs->moved || qs->read_fail_count > 0 ||
+                              !qs->inflight.empty() ||
+                              !qs->sdma_inflight.empty() ||
+                              (qs->primed && qs->next_id < qs->last_wptr);
+            if (busy || qs->last_active_ts == 0)
+                qs->last_active_ts = now;
+            const double idle_for = now - qs->last_active_ts;
+            if (poll_idle_us_ <= poll_us_ || idle_for < kIdleHoldSec) {
+                qs->next_poll_ts = 0;
+                any_active = true;
+                continue;
+            }
+            const double interval = std::min(
+                poll_idle_us_ * 1e-6,
+                std::max(poll_us_ * 1e-6, idle_for / kIdleGrowthDivisor));
+            qs->next_poll_ts = now + interval;
+            if (next_due < 0 || qs->next_poll_ts < next_due)
+                next_due = qs->next_poll_ts;
         }
         // Remove evicted queues under the lock.
         {
@@ -499,7 +585,19 @@ void RingParser::Run() {
                                }),
                 queues_.end());
         }
-        usleep(poll_us_);
+        // Sleep one poll interval while anything is active. Otherwise sleep
+        // until the first idle queue is due, or for the idle ceiling when
+        // there is nothing to poll at all, so a queue added meanwhile waits
+        // no longer than that.
+        double sleep_us = poll_us_;
+        if (!any_active) {
+            sleep_us = poll_idle_us_;
+            if (next_due >= 0)
+                sleep_us = std::min<double>(
+                    sleep_us,
+                    std::max<double>(poll_us_, (next_due - MonoNow()) * 1e6));
+        }
+        usleep(static_cast<useconds_t>(sleep_us));
     }
 }
 
@@ -553,8 +651,11 @@ CopyDir RingParser::ClassifyDir(QueueState* qs, uint64_t src, uint64_t dst) {
 void RingParser::PollSdmaQueue(QueueState* qs, double now) {
     const QueueInfo& q = qs->info;
     uint64_t wptr_raw = 0, rptr_raw = 0;
-    if (!ReadQueuePtr(q.pid, q.wptr_addr, &wptr_raw) ||
-        !ReadQueuePtr(q.pid, q.rptr_addr, &rptr_raw)) {
+    if (!ReadPtrs(qs, &wptr_raw, &rptr_raw)) {
+        if (!ProcAlive(q.pid)) {
+            qs->evict = true;
+            return;
+        }
         if (++qs->read_fail_count >= 50) {
             fprintf(stderr,
                     "[parser] evicting stale sdma queue uid=%lu pid=%d "
@@ -574,6 +675,7 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
     // the dword indices used by the packet decoder and ring-size arithmetic.
     uint64_t wptr = sdma::RingBytesToDwords(wptr_raw);
     uint64_t rptr = sdma::RingBytesToDwords(rptr_raw);
+    qs->last_wptr = wptr;
 
     // Calibration dump: raw pointer magnitudes + head of the ring, so the
     // pointer unit and packet layout can be read off against a known workload.
@@ -668,13 +770,33 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
                           sdma::CopySubOpName(q.sdma_version, rec.sub_opcode);
             if (sdma::HeaderBroadcast(dws[0]))
                 rec.op_name += "_broadcast";
+            // The copy block (count, parameters, source, destination)
+            // follows the header directly, or a wait block on gfx12.5+.
+            const uint32_t body = sdma::CopyBodyOffset(q.sdma_version, dws[0]);
             if (sdma::IsLinearCopy(q.sdma_version, rec.sub_opcode) &&
-                win >= 7) {
+                win >= body + 6) {
                 rec.bytes = sdma::LinearCopyBytes(q.sdma_version,
-                                                  rec.sub_opcode, dws[1]);
-                rec.src_addr = dws[3] | (static_cast<uint64_t>(dws[4]) << 32);
-                rec.dst_addr = dws[5] | (static_cast<uint64_t>(dws[6]) << 32);
-                rec.dir = ClassifyDir(qs, rec.src_addr, rec.dst_addr);
+                                                  rec.sub_opcode, dws[body]);
+                rec.src_addr = dws[body + 2] |
+                               (static_cast<uint64_t>(dws[body + 3]) << 32);
+                rec.dst_addr = dws[body + 4] |
+                               (static_cast<uint64_t>(dws[body + 5]) << 32);
+                // An indirect copy names a cell that holds the address.
+                // Follow it; if the cell cannot be read, the direction is
+                // left unknown rather than taken from the cell's own address.
+                bool resolved = true;
+                if (q.sdma_version == sdma::Version::V7Gfx125) {
+                    const bool isrc = sdma::HeaderIndirectSrc(dws[0]);
+                    const bool idst = sdma::HeaderIndirectDst(dws[0]);
+                    if (isrc || idst)
+                        rec.op_name += "_indirect";
+                    if (isrc)
+                        resolved &= ReadU64(q.pid, rec.src_addr, &rec.src_addr);
+                    if (idst)
+                        resolved &= ReadU64(q.pid, rec.dst_addr, &rec.dst_addr);
+                }
+                if (resolved)
+                    rec.dir = ClassifyDir(qs, rec.src_addr, rec.dst_addr);
             }
         } else {
             rec.op_name = sdma::OpName(q.sdma_version, rec.opcode);

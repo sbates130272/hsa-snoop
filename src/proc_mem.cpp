@@ -37,33 +37,55 @@ bool ReadProcMem(int pid, uint64_t va, void* out, size_t len) {
 // VMA directly and succeeds on those pages. We keep a small fd cache so the
 // hot poll path doesn't open/close on every call.
 bool ReadProcMemViaMem(int pid, uint64_t va, void* out, size_t len) {
-    // Thread-local fd cache, so no locking is needed. In --all mode the cache
-    // thrashes when consecutive reads target different pids; that is a
-    // throughput concern only, never a correctness one.
-    static __thread int cached_pid = -1;
-    static __thread int cached_fd = -1;
+    // Thread-local fd cache, so no locking is needed. Several entries, because
+    // on ROCm 10.2 every ring read comes this way and a poller watching more
+    // than one process would otherwise reopen the file on every switch.
+    struct Entry {
+        int pid = -1;
+        int fd = -1;
+    };
+    constexpr unsigned kEntries = 8;
+    static __thread Entry cache[kEntries];
+    static __thread unsigned next_victim = 0;
 
-    // Reopen when the pid changed OR the previous open failed. Caching a
-    // failed open would be permanent: cached_pid would match on every later
-    // call and short-circuit to `return false` forever. That was survivable
-    // when this path was only an RDNA4 fallback for queue pointers, but it is
-    // now the ONLY path that can read the kernarg buffer on gfx942/gfx950, so
-    // one transient EMFILE would silently disable --mem-snoop for the rest of
-    // the run. Retrying costs an open() per call only while the pid is
-    // genuinely unreadable, which the caller bounds by evicting the queue.
-    if (cached_pid != pid || cached_fd < 0) {
-        if (cached_fd >= 0)
-            close(cached_fd);
+    Entry* e = nullptr;
+    Entry* empty = nullptr;
+    for (Entry& c : cache) {
+        if (c.fd >= 0 && c.pid == pid) {
+            e = &c;
+            break;
+        }
+        if (c.fd < 0 && !empty)
+            empty = &c;
+    }
+    if (!e) {
         char path[64];
         snprintf(path, sizeof(path), "/proc/%d/mem", pid);
-        cached_fd = open(path, O_RDONLY);
-        // Only remember the pid if we actually hold an fd for it.
-        cached_pid = (cached_fd >= 0) ? pid : -1;
+        int fd = open(path, O_RDONLY | O_CLOEXEC);
+        // A failed open is not remembered: caching it would turn one
+        // transient EMFILE into a permanent failure for that pid.
+        if (fd < 0)
+            return false;
+        e = empty;
+        if (!e) {
+            e = &cache[next_victim];
+            next_victim = (next_victim + 1) % kEntries;
+        }
+        if (e->fd >= 0)
+            close(e->fd);
+        e->pid = pid;
+        e->fd = fd;
     }
-    if (cached_fd < 0)
-        return false;
-    return pread(cached_fd, out, len, static_cast<off_t>(va)) ==
-           static_cast<ssize_t>(len);
+    if (pread(e->fd, out, len, static_cast<off_t>(va)) ==
+        static_cast<ssize_t>(len))
+        return true;
+    // Drop the descriptor on any failure. One held on a process that has
+    // exited reads nothing for ever, and if the pid is reused the entry would
+    // keep pointing at the dead process.
+    close(e->fd);
+    e->fd = -1;
+    e->pid = -1;
+    return false;
 }
 
 // AMDGPU kernel descriptor (code object v3 and later). Only the leading fields
@@ -115,6 +137,27 @@ uint64_t VirtToPhys(int pid, uint64_t va) {
     }
     close(fd);
     return phys;
+}
+
+std::string MappingBacking(int pid, uint64_t va) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/maps", pid);
+    std::ifstream f(path);
+    std::string line;
+    while (std::getline(f, line)) {
+        uint64_t start = 0, end = 0;
+        int name_at = -1;
+        // start-end perms offset dev inode [path]
+        if (sscanf(line.c_str(), "%lx-%lx %*s %*s %*s %*s %n", &start, &end,
+                   &name_at) < 2)
+            continue;
+        if (va < start || va >= end)
+            continue;
+        if (name_at < 0 || static_cast<size_t>(name_at) >= line.size())
+            return "anonymous";
+        return line.substr(name_at);
+    }
+    return "";
 }
 
 bool ProcAlive(int pid) {
