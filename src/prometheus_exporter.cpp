@@ -2,6 +2,8 @@
 
 #include "prometheus_exporter.h"
 
+#include "proc_mem.h"
+
 #include "gpu_clock.h"
 
 #include <dirent.h>
@@ -476,6 +478,73 @@ PrometheusExporter::PrometheusExporter(uint16_t port, double rate_window_sec,
                     "dispatches of this kernel")
               .Labels(const_labels_)
               .Register(*registry_)),
+      gpu_launches_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_gpu_kernel_launches_total")
+              .Help("Kernel dispatch packets observed on this GPU, all "
+                    "processes. Unlike the per-process counter this series is "
+                    "never removed")
+              .Labels(const_labels_)
+              .Register(*registry_)),
+      gpu_unmeasured_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_gpu_kernel_durations_unmeasured_total")
+              .Help("Kernel launches on this GPU with no duration "
+                    "observation, all processes")
+              .Labels(const_labels_)
+              .Register(*registry_)),
+      gpu_missed_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_gpu_dispatches_missed_total")
+              .Help("AQL packets on this GPU that hsa-snoop did not decode, "
+                    "by reason, all processes")
+              .Labels(const_labels_)
+              .Register(*registry_)),
+      gpu_barrier_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_gpu_barrier_packets_total")
+              .Help("HSA barrier AQL packets observed on this GPU, all "
+                    "processes")
+              .Labels(const_labels_)
+              .Register(*registry_)),
+      gpu_sdma_copies_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_gpu_sdma_copies_total")
+              .Help("SDMA copy packets observed on this GPU, by direction, "
+                    "all processes")
+              .Labels(const_labels_)
+              .Register(*registry_)),
+      gpu_sdma_bytes_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_gpu_sdma_bytes_total")
+              .Help("Bytes moved by SDMA copy packets on this GPU, by "
+                    "direction, all processes")
+              .Labels(const_labels_)
+              .Register(*registry_)),
+      gpu_sdma_packets_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_gpu_sdma_packets_total")
+              .Help("SDMA packets observed on this GPU, by opcode, all "
+                    "processes")
+              .Labels(const_labels_)
+              .Register(*registry_)),
+      poller_stalled_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_poller_stalled_seconds_total")
+              .Help("Seconds a ring poll thread spent held up with queues "
+                    "overdue for a poll; nothing was observed on that "
+                    "thread's queues meanwhile")
+              .Labels(const_labels_)
+              .Register(*registry_)),
+      unobserved_tail_family_(
+          prometheus::BuildCounter()
+              .Name("hsa_queues_unobserved_tail_total")
+              .Help("Queues that went away longer after their last successful "
+                    "poll than their poll interval allows; their activity in "
+                    "that time is in no other counter")
+              .Labels(const_labels_)
+              .Register(*registry_)),
+      series_retain_sec_(std::max(0.0, options.series_retain_sec)),
       gpu_clock_hz_override_(options.gpu_clock_hz),
       rate_window_sec_(rate_window_sec) {
     // Start the HTTP exposition endpoint.
@@ -522,37 +591,61 @@ void PrometheusExporter::RegisterQueue(const QueueInfo& q) {
     std::string gpu_type = DetectGpuType(q.gpu_id);
 
     std::lock_guard<std::mutex> lk(meta_mu_);
-    queue_meta_[q.uid] = {q.gpu_id, q.pid, q.comm, gpu_type};
+    UnregisterQueueLocked(q.uid); // uids are unique; a repeat replaces
+    if (series_retain_sec_ > 0) {
+        // A pid seen again, reused or not, keeps its series.
+        PidSeries& ps = pid_series_[q.pid];
+        ++ps.live_queues;
+        ps.had_queue = true;
+        ps.expiring = false;
+    }
 
     // Emit one hsa_queue_info series per queue with ring metadata as labels.
     // ring_phys=0x0 indicates a VRAM-backed ring (no host-side PFN resolved).
     char ring_base_buf[20], ring_phys_buf[20];
     snprintf(ring_base_buf, sizeof(ring_base_buf), "0x%lx", q.ring_base);
     snprintf(ring_phys_buf, sizeof(ring_phys_buf), "0x%lx", q.ring_phys);
-    queue_info_family_
-        .Add({{"gpu_id", gpu_str},
-              {"gpu_type", gpu_type},
-              {"pid", std::to_string(q.pid)},
-              {"comm", q.comm},
-              {"ring_base", ring_base_buf},
-              {"ring_phys", ring_phys_buf},
-              {"ring_size", std::to_string(q.ring_size)}})
-        .Set(1.0);
+    prometheus::Gauge& info =
+        queue_info_family_.Add({{"gpu_id", gpu_str},
+                                {"gpu_type", gpu_type},
+                                {"pid", std::to_string(q.pid)},
+                                {"comm", q.comm},
+                                {"ring_base", ring_base_buf},
+                                {"ring_phys", ring_phys_buf},
+                                {"ring_size", std::to_string(q.ring_size)}});
+    info.Set(1.0);
+    ++queue_info_refs_[&info];
+    queue_meta_[q.uid] = {q.gpu_id, q.pid,       q.comm,
+                          gpu_type, q.is_sdma(), &info};
+
+    // At 0 from the first queue, for the same reason as the missed counters.
+    unobserved_tail_family_.Add({{"gpu_id", gpu_str},
+                                 {"gpu_type", gpu_type},
+                                 {"kind", q.is_sdma() ? "sdma" : "aql"}});
 
     // SDMA and AQL queues are counted separately.
     if (q.is_aql()) {
         // Created at 0 so the series exists before any loss: absent would be
         // indistinguishable from "this build cannot report loss".
-        for (const char* reason : {"overwritten", "consumed", "unreadable"})
-            missed_family_.Add({{"gpu_id", gpu_str},
-                                {"gpu_type", gpu_type},
-                                {"pid", std::to_string(q.pid)},
-                                {"comm", q.comm},
-                                {"reason", reason}});
-        unmeasured_family_.Add({{"gpu_id", gpu_str},
-                                {"gpu_type", gpu_type},
-                                {"pid", std::to_string(q.pid)},
-                                {"comm", q.comm}});
+        for (const char* reason : {"overwritten", "consumed", "unreadable"}) {
+            PidCounter(missed_family_, q.pid,
+                       {{"gpu_id", gpu_str},
+                        {"gpu_type", gpu_type},
+                        {"pid", std::to_string(q.pid)},
+                        {"comm", q.comm},
+                        {"reason", reason}});
+            gpu_missed_family_.Add({{"gpu_id", gpu_str},
+                                    {"gpu_type", gpu_type},
+                                    {"reason", reason}});
+        }
+        PidCounter(unmeasured_family_, q.pid,
+                   {{"gpu_id", gpu_str},
+                    {"gpu_type", gpu_type},
+                    {"pid", std::to_string(q.pid)},
+                    {"comm", q.comm}});
+        gpu_unmeasured_family_.Add(
+            {{"gpu_id", gpu_str}, {"gpu_type", gpu_type}});
+        gpu_launches_family_.Add({{"gpu_id", gpu_str}, {"gpu_type", gpu_type}});
     }
     if (q.is_sdma()) {
         // Latch hsa_sdma_present = 1 on the first SDMA queue seen.
@@ -571,6 +664,107 @@ void PrometheusExporter::RegisterQueue(const QueueInfo& q) {
         g = &active_queues_family_.Add(
             {{"gpu_id", gpu_str}, {"gpu_type", gpu_type}});
     g->Increment();
+}
+
+prometheus::Counter&
+PrometheusExporter::PidCounter(prometheus::Family<prometheus::Counter>& family,
+                               int pid, const prometheus::Labels& labels) {
+    prometheus::Counter& c = family.Add(labels);
+    if (series_retain_sec_ > 0) {
+        PidSeries& ps = pid_series_[pid];
+        ps.counters.emplace(&c, &family);
+        // No queue of this pid is tracked (an AIS record, which needs none).
+        // ExpireSeries() keeps its series for as long as the process is
+        // there, and the retention period after.
+        if (ps.live_queues == 0) {
+            ps.expiring = true;
+            ps.expire_at =
+                std::chrono::steady_clock::now() +
+                std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(series_retain_sec_));
+        }
+    }
+    return c;
+}
+
+void PrometheusExporter::UnregisterQueue(uint64_t queue_uid,
+                                         bool tail_unobserved) {
+    std::lock_guard<std::mutex> lk(meta_mu_);
+    auto it = queue_meta_.find(queue_uid);
+    if (tail_unobserved && it != queue_meta_.end())
+        unobserved_tail_family_
+            .Add({{"gpu_id", std::to_string(it->second.gpu_id)},
+                  {"gpu_type", it->second.gpu_type},
+                  {"kind", it->second.sdma ? "sdma" : "aql"}})
+            .Increment();
+    UnregisterQueueLocked(queue_uid);
+}
+
+void PrometheusExporter::AddPollerStall(unsigned thread, double seconds) {
+    poller_stalled_family_.Add({{"thread", std::to_string(thread)}})
+        .Increment(std::max(0.0, seconds));
+}
+
+void PrometheusExporter::UnregisterQueueLocked(uint64_t queue_uid) {
+    auto it = queue_meta_.find(queue_uid);
+    if (it == queue_meta_.end())
+        return;
+    const QueueMeta& meta = it->second;
+    const std::string gpu_str = std::to_string(meta.gpu_id);
+
+    auto& gauges = meta.sdma ? active_sdma_queue_gauges_ : active_queue_gauges_;
+    auto g = gauges.find(gpu_str);
+    if (g != gauges.end() && g->second)
+        g->second->Decrement();
+
+    auto ref = queue_info_refs_.find(meta.info_gauge);
+    if (ref != queue_info_refs_.end() && --ref->second <= 0) {
+        queue_info_family_.Remove(meta.info_gauge);
+        queue_info_refs_.erase(ref);
+    }
+
+    auto ps = pid_series_.find(meta.pid);
+    if (ps != pid_series_.end() && --ps->second.live_queues <= 0) {
+        ps->second.live_queues = 0;
+        ps->second.expiring = true;
+        ps->second.expire_at =
+            std::chrono::steady_clock::now() +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(series_retain_sec_));
+    }
+    queue_meta_.erase(it);
+}
+
+size_t
+PrometheusExporter::ExpireSeries(std::chrono::steady_clock::time_point now) {
+    std::lock_guard<std::mutex> lk(meta_mu_);
+    size_t removed = 0;
+    for (auto it = pid_series_.begin(); it != pid_series_.end();) {
+        PidSeries& ps = it->second;
+        if (!ps.expiring || ps.live_queues > 0 || now < ps.expire_at) {
+            ++it;
+            continue;
+        }
+        // A process that never had a queue here has no moment at which it
+        // was seen to go, and may be quiet for longer than the period. A
+        // counter removed between two of its operations would come back at
+        // 1 each time, a step rate() and increase() cannot see.
+        if (!ps.had_queue && ProcAlive(it->first)) {
+            ps.expire_at =
+                now +
+                std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(series_retain_sec_));
+            ++it;
+            continue;
+        }
+        // The map entry goes with the series: it holds the only pointers to
+        // them, and the next record for this pid creates both afresh.
+        for (const auto& [counter, family] : ps.counters)
+            family->Remove(counter);
+        removed += ps.counters.size();
+        it = pid_series_.erase(it);
+    }
+    return removed;
 }
 
 std::string PrometheusExporter::KernelLabel(const std::string& name) const {
@@ -609,12 +803,15 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
     if (is_dispatch) {
         const std::string kernel_name = KernelLabel(rec.kernel_name);
         // hsa_kernel_launches_total
-        kernel_launches_family_
-            .Add({{"kernel_name", kernel_name},
-                  {"gpu_id", gpu_str},
-                  {"gpu_type", meta.gpu_type},
-                  {"pid", pid_str},
-                  {"comm", meta.comm}})
+        PidCounter(kernel_launches_family_, meta.pid,
+                   {{"kernel_name", kernel_name},
+                    {"gpu_id", gpu_str},
+                    {"gpu_type", meta.gpu_type},
+                    {"pid", pid_str},
+                    {"comm", meta.comm}})
+            .Increment();
+        gpu_launches_family_
+            .Add({{"gpu_id", gpu_str}, {"gpu_type", meta.gpu_type}})
             .Increment();
 
         // hsa_kernel_duration_seconds
@@ -650,11 +847,14 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
                      kBuckets)
                 .Observe(dur);
         } else {
-            unmeasured_family_
-                .Add({{"gpu_id", gpu_str},
-                      {"gpu_type", meta.gpu_type},
-                      {"pid", pid_str},
-                      {"comm", meta.comm}})
+            PidCounter(unmeasured_family_, meta.pid,
+                       {{"gpu_id", gpu_str},
+                        {"gpu_type", meta.gpu_type},
+                        {"pid", pid_str},
+                        {"comm", meta.comm}})
+                .Increment();
+            gpu_unmeasured_family_
+                .Add({{"gpu_id", gpu_str}, {"gpu_type", meta.gpu_type}})
                 .Increment();
         }
 
@@ -732,11 +932,14 @@ void PrometheusExporter::Add(const PacketRecord& rec) {
     }
 
     if (rec.barrier) {
-        barrier_family_
-            .Add({{"gpu_id", gpu_str},
-                  {"gpu_type", meta.gpu_type},
-                  {"pid", pid_str},
-                  {"comm", meta.comm}})
+        PidCounter(barrier_family_, meta.pid,
+                   {{"gpu_id", gpu_str},
+                    {"gpu_type", meta.gpu_type},
+                    {"pid", pid_str},
+                    {"comm", meta.comm}})
+            .Increment();
+        gpu_barrier_family_
+            .Add({{"gpu_id", gpu_str}, {"gpu_type", meta.gpu_type}})
             .Increment();
     }
 }
@@ -748,11 +951,17 @@ void PrometheusExporter::AddMissed(uint64_t queue_uid, uint64_t n,
     if (it == queue_meta_.end())
         return;
     const QueueMeta& meta = it->second;
-    missed_family_
-        .Add({{"gpu_id", std::to_string(meta.gpu_id)},
+    const std::string gpu_str = std::to_string(meta.gpu_id);
+    PidCounter(missed_family_, meta.pid,
+               {{"gpu_id", gpu_str},
+                {"gpu_type", meta.gpu_type},
+                {"pid", std::to_string(meta.pid)},
+                {"comm", meta.comm},
+                {"reason", reason}})
+        .Increment(static_cast<double>(n));
+    gpu_missed_family_
+        .Add({{"gpu_id", gpu_str},
               {"gpu_type", meta.gpu_type},
-              {"pid", std::to_string(meta.pid)},
-              {"comm", meta.comm},
               {"reason", reason}})
         .Increment(static_cast<double>(n));
 }
@@ -774,29 +983,45 @@ void PrometheusExporter::Add(const SdmaRecord& rec) {
     std::string pid_str = std::to_string(meta.pid);
 
     // Every SDMA packet is counted by opcode.
-    sdma_packets_family_
+    const std::string opcode = sdma::OpName(rec.sdma_version, rec.opcode);
+    PidCounter(sdma_packets_family_, meta.pid,
+               {{"gpu_id", gpu_str},
+                {"gpu_type", meta.gpu_type},
+                {"pid", pid_str},
+                {"comm", meta.comm},
+                {"opcode", opcode}})
+        .Increment();
+    gpu_sdma_packets_family_
         .Add({{"gpu_id", gpu_str},
               {"gpu_type", meta.gpu_type},
-              {"pid", pid_str},
-              {"comm", meta.comm},
-              {"opcode", sdma::OpName(rec.sdma_version, rec.opcode)}})
+              {"opcode", opcode}})
         .Increment();
 
     // Copies additionally accumulate count + bytes by transfer direction.
     if (rec.is_copy()) {
         const std::string dir = CopyDirName(rec.dir);
-        sdma_copies_family_
+        PidCounter(sdma_copies_family_, meta.pid,
+                   {{"gpu_id", gpu_str},
+                    {"gpu_type", meta.gpu_type},
+                    {"pid", pid_str},
+                    {"comm", meta.comm},
+                    {"direction", dir}})
+            .Increment();
+        PidCounter(sdma_bytes_family_, meta.pid,
+                   {{"gpu_id", gpu_str},
+                    {"gpu_type", meta.gpu_type},
+                    {"pid", pid_str},
+                    {"comm", meta.comm},
+                    {"direction", dir}})
+            .Increment(static_cast<double>(rec.bytes));
+        gpu_sdma_copies_family_
             .Add({{"gpu_id", gpu_str},
                   {"gpu_type", meta.gpu_type},
-                  {"pid", pid_str},
-                  {"comm", meta.comm},
                   {"direction", dir}})
             .Increment();
-        sdma_bytes_family_
+        gpu_sdma_bytes_family_
             .Add({{"gpu_id", gpu_str},
                   {"gpu_type", meta.gpu_type},
-                  {"pid", pid_str},
-                  {"comm", meta.comm},
                   {"direction", dir}})
             .Increment(static_cast<double>(rec.bytes));
     }
@@ -844,14 +1069,14 @@ void PrometheusExporter::Add(const AisRecord& rec) {
 
     // ais_rx_ops_total / ais_tx_ops_total — separate families, no op label.
     auto& ops_family = is_read ? ais_rx_ops_family_ : ais_tx_ops_family_;
-    ops_family
-        .Add({{"gpu_id", gpu_str},
-              {"gpu_type", gpu_type},
-              {"pcie_id", pcie_str},
-              {"device_type", dev_type},
-              {"vendor", vendor_str},
-              {"pid", pid_str},
-              {"comm", rec.comm}})
+    PidCounter(ops_family, rec.pid,
+               {{"gpu_id", gpu_str},
+                {"gpu_type", gpu_type},
+                {"pcie_id", pcie_str},
+                {"device_type", dev_type},
+                {"vendor", vendor_str},
+                {"pid", pid_str},
+                {"comm", rec.comm}})
         .Increment();
 
     // ais_rx_bytes_total / ais_tx_bytes_total — successful transfers only.
@@ -1083,6 +1308,7 @@ void PrometheusExporter::RateThread() {
             break;
         UpdateRateGauges();
         CalibrateGpuClocks();
+        ExpireSeries();
     }
 }
 

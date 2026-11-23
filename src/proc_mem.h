@@ -48,8 +48,26 @@ uint64_t VirtToPhys(int pid, uint64_t va);
 // node is a GPU buffer object, which process_vm_readv and pagemap cannot see.
 std::string MappingBacking(int pid, uint64_t va);
 
-// True if the process is still alive.
+// Whether `va` lies inside a mapping of `pid`. No also covers a process that
+// no longer exists; Unknown means the map could not be looked at (out of
+// descriptors or memory, say) and nothing should be concluded from it. Uses
+// the kernel's single-address lookup where there is one, so the cost does
+// not grow with the number of mappings.
+enum class Mapped { Yes, No, Unknown };
+Mapped AddressMapped(int pid, uint64_t va);
+
+// False if the process is gone, is a zombie, or is on its way out with its
+// memory already released: nothing can be read from any of them. True if it
+// exists and still has an address space, and also when that could not be
+// found out, so that a passing failure to open a file is not taken for an
+// exit.
 bool ProcAlive(int pid);
+
+// Drop what is cached for `pid` (the VM-map snapshot, and the calling
+// thread's /proc/<pid>/mem descriptor). Call when its last queue is gone,
+// from the thread that polled it; a descriptor another thread holds goes
+// when that thread's next read through it fails or its slot is reused.
+void ForgetProcess(int pid);
 
 // Scan the kernarg buffer at `kernarg_va` (size `kernarg_bytes`) in `pid` for
 // 64-bit aligned values that are valid mapped addresses in the process's VM

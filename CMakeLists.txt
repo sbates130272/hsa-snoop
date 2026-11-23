@@ -127,6 +127,20 @@ if(BUILD_TESTING)
   target_link_libraries(parser-idle-test PRIVATE Threads::Threads)
   add_test(NAME parser-idle-test COMMAND parser-idle-test)
 
+  # Several poll threads: sharding by process, isolation of a held-up thread,
+  # and the stall and unobserved-tail reports.
+  add_executable(parser-threads-test
+    tests/parser_threads_test.cpp
+    src/aql.cpp
+    src/ksym.cpp
+    src/parser.cpp
+    src/proc_mem.cpp
+    src/sdma.cpp
+  )
+  target_include_directories(parser-threads-test PRIVATE src)
+  target_link_libraries(parser-threads-test PRIVATE Threads::Threads)
+  add_test(NAME parser-threads-test COMMAND parser-threads-test)
+
   # Parsing of the AIS probes' trace_pipe lines.
   add_executable(ais-trace-test
     tests/ais_trace_test.cpp
@@ -149,6 +163,26 @@ if(BUILD_TESTING)
   target_include_directories(parser-decode-test PRIVATE src)
   target_link_libraries(parser-decode-test PRIVATE Threads::Threads)
   add_test(NAME parser-decode-test COMMAND parser-decode-test)
+
+  # Startup sweep of probes left by a dead hsa-snoop, against a fake tracefs.
+  add_executable(kprobe-sweep-test
+    tests/kprobe_sweep_test.cpp
+    src/kprobe_sweep.cpp
+  )
+  target_include_directories(kprobe-sweep-test PRIVATE src)
+  add_test(NAME kprobe-sweep-test COMMAND kprobe-sweep-test)
+
+  # Per-queue trace file names in --all mode.
+  add_executable(trace-name-test
+    tests/trace_name_test.cpp
+    src/ais_monitor.cpp
+    src/aql.cpp
+    src/sdma.cpp
+    src/trace_writer.cpp
+  )
+  target_include_directories(trace-name-test PRIVATE src)
+  target_link_libraries(trace-name-test PRIVATE Threads::Threads)
+  add_test(NAME trace-name-test COMMAND trace-name-test)
 endif()
 
 if(HSA_SNOOP_PROMETHEUS)
@@ -159,6 +193,24 @@ if(HSA_SNOOP_PROMETHEUS)
   target_compile_definitions(hsa-snoop PRIVATE HSA_SNOOP_PROMETHEUS_ENABLED)
   target_link_libraries(hsa-snoop PRIVATE prometheus-cpp::core prometheus-cpp::pull)
   message(STATUS "Prometheus exporter enabled (default port: 9488)")
+
+  if(BUILD_TESTING)
+    # Queue and series lifecycle of the exporter: active gauges, removal of a
+    # process's series after the retention period, pid reuse.
+    add_executable(prometheus-lifecycle-test
+      tests/prometheus_lifecycle_test.cpp
+      src/gpu_clock.cpp
+      src/proc_mem.cpp
+      src/prometheus_exporter.cpp
+      src/sdma.cpp
+    )
+    target_include_directories(prometheus-lifecycle-test PRIVATE src)
+    target_compile_definitions(prometheus-lifecycle-test
+      PRIVATE HSA_SNOOP_PROMETHEUS_ENABLED)
+    target_link_libraries(prometheus-lifecycle-test
+      PRIVATE prometheus-cpp::core prometheus-cpp::pull Threads::Threads)
+    add_test(NAME prometheus-lifecycle-test COMMAND prometheus-lifecycle-test)
+  endif()
 endif()
 
 install(TARGETS hsa-snoop RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

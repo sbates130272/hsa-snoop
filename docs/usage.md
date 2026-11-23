@@ -32,10 +32,75 @@ metadata (ring VA, wptr, rptr, gpu_id, queue type). The scan runs in launch
 mode is skipped (the target process hasn't started yet); in `--pid` and `--all`
 modes it runs automatically before the event-driven probe is armed.
 
-The scan uses `PTRACE_SEIZE` (non-stopping) and briefly enables KFD debug mode
-on each target process (milliseconds). It requires `CAP_SYS_PTRACE` (root),
-which hsa-snoop already requires. KFD ioctl minor version ≥ 1.13 is required
-(Linux ~6.1 / AMDGPU ~5.7).
+The scan attaches to each target process with `PTRACE_SEIZE` and briefly
+enables KFD debug mode on it (milliseconds), because the driver only answers
+the queue snapshot for a process's tracer. The process keeps running while it
+is queried. To let go of it again hsa-snoop has to stop it for an instant,
+since the kernel only detaches a stopped process; once the scan has finished,
+`TracerPid` in `/proc/<pid>/status` is back to 0 and the process can be
+debugged, signalled and reaped as usual. A process that is already being
+traced, by a debugger for instance, cannot be attached and is skipped. The
+scan requires `CAP_SYS_PTRACE` (root), which hsa-snoop already requires. KFD
+ioctl minor version ≥ 1.13 is required (Linux ~6.1 / AMDGPU ~5.7).
+
+That instant has one side effect. It is the main thread of the process that
+is stopped, and if that thread is blocked in a system call the kernel does
+not restart on its own (`epoll_wait`, `semop`, `msgrcv`, a socket read with
+a receive timeout, among others), the call returns `EINTR` although no
+signal was delivered. Python and most event-loop libraries retry such calls.
+For a workload that treats `EINTR` as an error, start hsa-snoop with
+`--no-scan`: nothing is attached or stopped, and only queues created after
+hsa-snoop started are traced.
+
+## Trace Files in `--all` Mode
+
+In `--all` mode without `--prometheus`, hsa-snoop keeps one trace per queue
+and writes it to `--out-dir` (default `/var/log/hsa-snoop`) when the queue
+goes away, that is when its process exits or destroys it. Traces of queues
+that are still live are written when hsa-snoop exits.
+Each file is named `<command>-<uid>.pftrace` (or `.json`), where `<command>`
+is the name of the process that owns the queue and `<uid>` is the queue `uid`
+shown in the `[queue]` log lines, for example `gfx-test-3.json`. The name is
+announced when the queue is found (`new trace → ...`) and again when the file
+is written. Characters in the process name other than letters, digits, `.`,
+`_`, `-` and `+` are replaced with `_`.
+
+## Probes Left by a Killed hsa-snoop
+
+hsa-snoop removes its kprobes when it exits, including on `SIGINT` and
+`SIGTERM`. One that is killed with `SIGKILL` cannot, and its probes
+(`hsasnoop_cq_<pid>`, and with `--ais-snoop` also `hsasnoop_ais_e_<pid>`,
+`hsasnoop_ais_r_<pid>` and the tracefs instance `hsa_ais_<pid>`) stay
+installed. The next hsa-snoop to start removes every such probe whose `<pid>`
+is no longer a running hsa-snoop, and logs each removal. Probes that belong to
+an hsa-snoop that is still running are left alone.
+
+## Poll Threads (`--poll-threads`)
+
+The rings are polled by several threads: as many as there are CPU cores, up to 4,
+unless `--poll-threads <n>` (1 to 64) says otherwise. A queue is assigned by
+the pid of its process, so all queues of one process are polled by the same
+thread and its records keep their order. Records of different processes can
+reach the dispatch log in a different order than they were submitted in;
+each line carries its own timestamp.
+
+The point of more than one thread is isolation. A read of a process's memory
+can block in the GPU driver when the GPU is out of memory, and nothing else
+is polled on that thread until it returns. With one thread that is every
+process; with four it is a quarter of them. Each thread polls at `--poll-us`
+while any of its queues is busy, so CPU use under load grows with the number
+of threads in use. Idle queues do not cost more with more threads: a thread
+with no queues sleeps, and so does one whose queues are all idle, while one
+extra thread looks at the idle queues of all of them every `--poll-idle-us`
+and wakes the owner of any that moves. That extra thread is shared, so it
+is supervised by a timer: if a read blocks it and it has not come round for
+a few idle intervals, every poll thread goes back to polling its own idle
+queues until the read returns.
+
+`--poll-threads 1` is the behaviour of releases up to 1.9.0. When a poll
+thread is held up, hsa-snoop says so in its log and, in Prometheus mode, in
+`hsa_poller_stalled_seconds_total` and `hsa_queues_unobserved_tail_total`;
+see "Poller health" in the Prometheus page.
 
 ## Dispatch Event Log (`--log-dispatches`)
 

@@ -177,6 +177,9 @@ static PcieDeviceInfo ResolvePcieDeviceInfo(int pid, int fd) {
         return it->second;
 
     auto store = [&](PcieDeviceInfo v) -> PcieDeviceInfo {
+        // Entries of processes that have exited are never looked up again.
+        if (cache.size() >= 1024)
+            cache.clear();
         cache[key] = v;
         return v;
     };

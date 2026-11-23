@@ -22,6 +22,7 @@
 #include "discovery.h"
 #include "dispatch_log.h"
 #include "kfd_debug_scan.h"
+#include "kprobe_sweep.h"
 #include "parser.h"
 #include "proc_mem.h"
 #include "trace_writer.h"
@@ -51,7 +52,8 @@ void Usage(const char* p) {
         "Options:\n"
         "  --pid <pid>        Trace only this process\n"
         "  --all              Monitor all HSA/HIP processes system-wide;\n"
-        "                     writes a new trace per process to --out-dir\n"
+        "                     writes a trace per queue to --out-dir, named\n"
+        "                     <command>-<queue uid>\n"
         "  --out <file>       Output trace path (single-process modes)\n"
         "                     (default hsa-snoop.pftrace / .json)\n"
         "  --out-dir <dir>    Output directory for --all mode\n"
@@ -63,6 +65,12 @@ void Usage(const char* p) {
         "                     stopped moving (default: the larger of --poll-us "
         "and\n"
         "                     1000). 0 polls every queue at --poll-us always\n"
+        "  --poll-threads <n> Ring poll threads (default: the smaller of 4 and "
+        "the\n"
+        "                     number of CPUs; 1 to %d). All queues of a "
+        "process\n"
+        "                     share a thread, so a slow read of one process's\n"
+        "                     memory delays only the processes on its thread\n"
         "  --duration <sec>   Auto-stop after N seconds (0 = until "
         "Ctrl-C/exit)\n"
         "  --tracefs <path>   tracefs mount (default /sys/kernel/tracing)\n"
@@ -96,6 +104,12 @@ void Usage(const char* p) {
         "  --kernel-name-max <n>\n"
         "                     Truncate kernel_name label values to <n> bytes\n"
         "                     (default 0 = no limit)\n"
+        "  --series-retain-sec <n>\n"
+        "                     Remove a process's series (those with a pid "
+        "label)\n"
+        "                     <n> seconds after its last queue went away\n"
+        "                     (default 300; 0 = never remove them; env\n"
+        "                     HSA_SNOOP_SERIES_RETAIN_SEC)\n"
         "  --ais-snoop        Enable AMD Infinity Storage (AIS) IO snooping\n"
         "                     via kprobe on kfd_ioctl_ais\n"
         "                     AIS events are included in the trace or "
@@ -106,13 +120,17 @@ void Usage(const char* p) {
         "                     bpftrace). In Prometheus mode, increments\n"
         "                     hsa_xnack_total per pasid. In trace mode,\n"
         "                     prints fault events to stderr.\n"
-        "  --kfd-scan         Scan all running KFD processes at startup and "
-        "emit\n"
-        "                     queues created before hsa-snoop started.\n"
-        "                     Uses KFD debug-trap API; requires "
-        "CAP_SYS_PTRACE.\n"
-        "                     Briefly enables debug mode on each target "
-        "process.\n"
+        "  --no-scan          Skip the startup scan for queues created "
+        "before\n"
+        "                     hsa-snoop started (--pid and --all). The scan "
+        "stops\n"
+        "                     each KFD process's main thread for a moment "
+        "with\n"
+        "                     ptrace, which makes a blocking system call it "
+        "is in\n"
+        "                     return EINTR. Without the scan only queues "
+        "created\n"
+        "                     from now on are seen\n"
         "  --mem-snoop        Enable memory footprint mode: for each kernel\n"
         "                     dispatch, scan the kernarg buffer for GPU "
         "virtual\n"
@@ -143,17 +161,19 @@ void Usage(const char* p) {
         "                     which can render a per-launch kernel timeline "
         "that\n"
         "                     scrape-interval metrics cannot.\n",
-        p, p, p);
+        p, p, p, RingParser::kMaxPollThreads);
 }
 } // namespace
 
 int main(int argc, char** argv) {
     int pid_filter = 0, poll_us = 20, poll_idle_us = -1, duration = 0;
+    int poll_threads = 0;
     bool all_mode = false;
     bool prometheus_mode = false;
     bool ais_mode = false;
     bool xnack_mode = false;
     bool mem_mode = false;
+    bool startup_scan = true;
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
     uint16_t prometheus_port = 9488;
     std::string prometheus_snapshot_path;
@@ -164,6 +184,8 @@ int main(int argc, char** argv) {
         prom_options.rocm_version = e;
     if (const char* e = getenv("HSA_SNOOP_GPU_CLOCK_HZ"))
         prom_options.gpu_clock_hz = std::max(0.0, atof(e));
+    if (const char* e = getenv("HSA_SNOOP_SERIES_RETAIN_SEC"))
+        prom_options.series_retain_sec = std::max(0.0, atof(e));
 #endif
     std::string out, out_dir, tracefs = "/sys/kernel/tracing";
     std::string mode_str, librocdxg_path, dispatch_log_path;
@@ -184,6 +206,9 @@ int main(int argc, char** argv) {
             poll_us = atoi(argv[++i]);
         else if (a == "--poll-idle-us" && i + 1 < argc)
             poll_idle_us = std::max(0, atoi(argv[++i]));
+        else if (a == "--poll-threads" && i + 1 < argc)
+            poll_threads = std::max(
+                1, std::min(RingParser::kMaxPollThreads, atoi(argv[++i])));
         else if (a == "--duration" && i + 1 < argc)
             duration = atoi(argv[++i]);
         else if (a == "--tracefs" && i + 1 < argc)
@@ -200,6 +225,8 @@ int main(int argc, char** argv) {
             xnack_mode = true;
         else if (a == "--mem-snoop")
             mem_mode = true;
+        else if (a == "--no-scan")
+            startup_scan = false;
         else if (a == "--log-dispatches" && i + 1 < argc)
             dispatch_log_path = argv[++i];
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
@@ -213,6 +240,8 @@ int main(int argc, char** argv) {
             prom_options.rocm_version = argv[++i];
         else if (a == "--gpu-clock-hz" && i + 1 < argc)
             prom_options.gpu_clock_hz = std::max(0.0, atof(argv[++i]));
+        else if (a == "--series-retain-sec" && i + 1 < argc)
+            prom_options.series_retain_sec = std::max(0.0, atof(argv[++i]));
         else if (a == "--kernel-name-max" && i + 1 < argc)
             prom_options.kernel_name_max =
                 static_cast<size_t>(std::max(0, atoi(argv[++i])));
@@ -293,7 +322,8 @@ int main(int argc, char** argv) {
     }
 
     // In --all mode each queue's trace is written to <out-dir>/<comm>-<uid>.ext
-    // so that concurrent workloads don't clobber each other.
+    // (see TraceFileStem) so that concurrent workloads don't clobber each
+    // other.
     if (all_mode && !prometheus_mode) {
         if (out_dir.empty())
             out_dir = "/var/log/hsa-snoop";
@@ -346,8 +376,34 @@ int main(int argc, char** argv) {
     // process gets its own output file. In single-process modes one shared
     // writer covers all queues belonging to the target.
     std::unique_ptr<TraceWriter> single_writer;
-    std::map<uint64_t, std::unique_ptr<TraceWriter>> per_queue_writers;
+    struct QueueWriter {
+        std::unique_ptr<TraceWriter> writer;
+        std::string path;
+    };
+    std::map<uint64_t, QueueWriter> per_queue_writers;
+    // Writers of queues the parser has dropped. The main loop writes them out
+    // and frees them, so a long --all run holds only the traces of live queues.
+    std::vector<QueueWriter> finished_writers;
     std::mutex writers_mu;
+    size_t all_packets = 0;
+    int all_failures = 0;
+    auto write_finished = [&] {
+        std::vector<QueueWriter> done;
+        {
+            std::lock_guard<std::mutex> lk(writers_mu);
+            done.swap(finished_writers);
+        }
+        for (QueueWriter& qw : done) {
+            all_packets += qw.writer->count();
+            if (!qw.writer->Write(qw.path)) {
+                fprintf(stderr, "hsa-snoop: failed to write %s\n",
+                        qw.path.c_str());
+                ++all_failures;
+            } else {
+                fprintf(stderr, "hsa-snoop: wrote %s\n", qw.path.c_str());
+            }
+        }
+    };
 
     auto get_writer = [&](const QueueInfo& q) -> TraceWriter& {
         if (!all_mode)
@@ -355,20 +411,24 @@ int main(int argc, char** argv) {
         std::lock_guard<std::mutex> lk(writers_mu);
         auto it = per_queue_writers.find(q.uid);
         if (it != per_queue_writers.end())
-            return *it->second;
-        // Build <out-dir>/<comm>-<uid>.<ext>
+            return *it->second.writer;
         std::string ext = fmt == Format::kJson ? ".json" : ".pftrace";
-        std::string path =
-            out_dir + "/" + q.comm + "-" + std::to_string(q.uid) + ext;
+        std::string path = out_dir + "/" + TraceFileStem(q.comm, q.uid) + ext;
         auto w = std::make_unique<TraceWriter>(fmt);
         w->RegisterQueue(q);
-        per_queue_writers[q.uid] = std::move(w);
         fprintf(stderr, "hsa-snoop: new trace → %s\n", path.c_str());
-        return *per_queue_writers[q.uid];
+        QueueWriter& qw = per_queue_writers[q.uid];
+        qw.writer = std::move(w);
+        qw.path = std::move(path);
+        return *qw.writer;
     };
 
     if (!all_mode && !prometheus_mode)
         single_writer = std::make_unique<TraceWriter>(fmt);
+
+    // Before any probe of our own goes in: clear out what an hsa-snoop that
+    // was killed left behind.
+    SweepStaleProbes(tracefs);
 
     // AIS monitor: system-wide kprobe on kfd_ioctl_ais via bpftrace.
     // Runs independently of the queue-based ring parser; events are routed to
@@ -444,7 +504,8 @@ int main(int argc, char** argv) {
 
     // Maps queue uid -> {gpu_id, pid, comm} for mem-snoop enrichment and for
     // the dispatch log. Written under queue_ids_mu when a queue is registered;
-    // read from the parser sink thread.
+    // an entry is read from the poll thread that owns its queue, which is
+    // also the only thread that erases it (the removal callback).
     struct QueueIds {
         uint32_t gpu_id;
         int pid;
@@ -487,31 +548,38 @@ int main(int argc, char** argv) {
                 mr.grid_size =
                     static_cast<uint64_t>(r.grid[0]) * r.grid[1] * r.grid[2];
                 mr.submit_ts = r.submit_ts;
+                // The reads below go into the target's memory and can block
+                // there, so the lock is held only to look the queue up: it is
+                // shared with every other poll thread and with discovery.
+                int target_pid = -1;
                 {
                     std::lock_guard<std::mutex> lk(queue_ids_mu);
                     auto it = queue_ids.find(r.queue_uid);
                     if (it != queue_ids.end()) {
                         mr.gpu_id = it->second.gpu_id;
-                        // Prefer the kernarg size declared by the kernel
-                        // descriptor. The old fixed 256-byte window was wrong
-                        // in both directions: it truncated large blocks, and
-                        // for small ones it ran past the end into the next
-                        // kernel's arguments in the kernarg pool, attributing
-                        // their buffers to this dispatch. Measured on gfx908,
-                        // __amd_rocclr_fillBufferAligned declares 40 bytes, so
-                        // 216 bytes of every scan were a neighbour's data.
-                        mr.kernarg_size_bytes =
-                            ReadKernargSize(it->second.pid, r.kernel_object);
-                        uint32_t scan_bytes = mr.kernarg_size_bytes
-                                                  ? mr.kernarg_size_bytes
-                                                  : 256; // pre-v3 descriptor
-                        mr.footprint_valid = ScanKernargFootprint(
-                            it->second.pid, r.kernarg_address, scan_bytes,
-                            &mr.mapped_vram_bytes, &mr.ptr_count,
-                            /*max_vma_age_sec=*/1.0);
+                        target_pid = it->second.pid;
                     }
-                    // else: the queue was never registered, so there is no pid
-                    // to read from — footprint_valid stays false.
+                }
+                // Not found: the queue was never registered, so there is no
+                // pid to read from and footprint_valid stays false.
+                if (target_pid >= 0) {
+                    // Prefer the kernarg size declared by the kernel
+                    // descriptor. The old fixed 256-byte window was wrong in
+                    // both directions: it truncated large blocks, and for
+                    // small ones it ran past the end into the next kernel's
+                    // arguments in the kernarg pool, attributing their
+                    // buffers to this dispatch. Measured on gfx908,
+                    // __amd_rocclr_fillBufferAligned declares 40 bytes, so
+                    // 216 bytes of every scan were a neighbour's data.
+                    mr.kernarg_size_bytes =
+                        ReadKernargSize(target_pid, r.kernel_object);
+                    uint32_t scan_bytes = mr.kernarg_size_bytes
+                                              ? mr.kernarg_size_bytes
+                                              : 256; // pre-v3 descriptor
+                    mr.footprint_valid = ScanKernargFootprint(
+                        target_pid, r.kernarg_address, scan_bytes,
+                        &mr.mapped_vram_bytes, &mr.ptr_count,
+                        /*max_vma_age_sec=*/1.0);
                 }
 #ifdef HSA_SNOOP_PROMETHEUS_ENABLED
                 if (prom_exporter) {
@@ -554,7 +622,7 @@ int main(int argc, char** argv) {
                 std::lock_guard<std::mutex> lk(writers_mu);
                 auto it = per_queue_writers.find(r.queue_uid);
                 if (it != per_queue_writers.end())
-                    it->second->Add(r);
+                    it->second.writer->Add(r);
             } else {
                 single_writer->Add(r);
             }
@@ -573,7 +641,7 @@ int main(int argc, char** argv) {
                 std::lock_guard<std::mutex> lk(writers_mu);
                 auto it = per_queue_writers.find(r.queue_uid);
                 if (it != per_queue_writers.end())
-                    it->second->Add(r);
+                    it->second.writer->Add(r);
             } else {
                 single_writer->Add(r);
             }
@@ -588,7 +656,49 @@ int main(int argc, char** argv) {
                 prom_exporter->AddMissed(queue_uid, n, reason);
 #endif
         },
-        poll_idle_us);
+        poll_idle_us,
+        // The parser has dropped a queue: release what was kept for it. Runs
+        // on the queue's poll thread, after the queue's last record.
+        [&](const QueueInfo& q, bool tail_unobserved) {
+            (void)tail_unobserved;
+            bool pid_gone = true;
+            {
+                std::lock_guard<std::mutex> lk(queue_ids_mu);
+                queue_ids.erase(q.uid);
+                for (const auto& kv : queue_ids)
+                    if (kv.second.pid == q.pid) {
+                        pid_gone = false;
+                        break;
+                    }
+            }
+            if (pid_gone)
+                ForgetProcess(q.pid);
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+            if (prom_exporter)
+                prom_exporter->UnregisterQueue(q.uid, tail_unobserved);
+#endif
+            std::lock_guard<std::mutex> lk(writers_mu);
+            auto it = per_queue_writers.find(q.uid);
+            if (it != per_queue_writers.end()) {
+                finished_writers.push_back(std::move(it->second));
+                per_queue_writers.erase(it);
+            }
+        },
+        poll_threads,
+        [&](unsigned thread, double seconds) {
+            (void)thread;
+            (void)seconds;
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+            if (prom_exporter)
+                prom_exporter->AddPollerStall(thread, seconds);
+#endif
+        });
+    fprintf(stderr, "hsa-snoop: %u poll thread(s)\n", parser.PollThreads());
+#ifdef HSA_SNOOP_PROMETHEUS_ENABLED
+    if (prom_exporter)
+        for (unsigned i = 0; i < parser.PollThreads(); ++i)
+            prom_exporter->AddPollerStall(i, 0);
+#endif
 
     // Launch mode: fork the child stopped so we can scope discovery to its pid
     // and arm the probe before it can create any queue. It is resumed
@@ -699,11 +809,13 @@ int main(int argc, char** argv) {
         // is one small entry per queue.
         {
             std::lock_guard<std::mutex> lk(queue_ids_mu);
-            // emplace, not operator[]: queue_ctx() below hands out a
-            // const char* into the stored comm and uses it after releasing the
-            // lock. That is only safe while entries are insert-once, so never
-            // overwrite one. uids are unique per run, so a collision would be a
-            // bug rather than a legitimate update.
+            // emplace, not operator[]: queue_ctx() hands out a const char*
+            // into the stored comm and uses it after releasing the lock. That
+            // is safe because an entry is never overwritten, is erased only
+            // by the thread that uses the pointer, and stays where it is when
+            // other entries come and go. uids are unique per
+            // run, so a collision would be a bug rather than a legitimate
+            // update.
             queue_ids.emplace(q.uid, QueueIds{q.gpu_id, q.pid, q.comm});
         }
         if (dispatch_log)
@@ -738,7 +850,9 @@ int main(int argc, char** argv) {
                 sdma_version);
     };
 
-    if (child_cmd.empty()) {
+    if (child_cmd.empty() && !startup_scan) {
+        fprintf(stderr, "hsa-snoop: kfd-scan: skipped (--no-scan)\n");
+    } else if (child_cmd.empty()) {
         int n = ScanExistingKfdQueues(on_queue, pid_filter);
         fprintf(stderr, "hsa-snoop: kfd-scan: %d process(es), %d queue(s)\n", n,
                 queue_count);
@@ -770,6 +884,7 @@ int main(int argc, char** argv) {
 
     while (!g_stop) {
         usleep(50 * 1000);
+        write_finished();
         if (child > 0) {
             int status;
             pid_t r = waitpid(child, &status, WNOHANG);
@@ -820,27 +935,16 @@ int main(int argc, char** argv) {
 #endif
 
     if (all_mode) {
-        std::lock_guard<std::mutex> lk(writers_mu);
-        size_t total_packets = 0;
-        int failures = 0;
-        std::string ext = fmt == Format::kJson ? ".json" : ".pftrace";
-        for (auto& [uid, w] : per_queue_writers) {
-            total_packets += w->count();
-            // Reconstruct the path to report it.
-            // (We stored the writer by uid; comm is not available here so we
-            // derive the path the same way get_writer() did.)
-            std::string path = out_dir + "/queue-" + std::to_string(uid) + ext;
-            if (!w->Write(path)) {
-                fprintf(stderr, "hsa-snoop: failed to write %s\n",
-                        path.c_str());
-                ++failures;
-            } else {
-                fprintf(stderr, "hsa-snoop: wrote %s\n", path.c_str());
-            }
+        {
+            std::lock_guard<std::mutex> lk(writers_mu);
+            for (auto& kv : per_queue_writers)
+                finished_writers.push_back(std::move(kv.second));
+            per_queue_writers.clear();
         }
+        write_finished();
         fprintf(stderr, "hsa-snoop: %d queue(s), %zu packet(s) captured.\n",
-                queue_count, total_packets);
-        return failures ? 1 : 0;
+                queue_count, all_packets);
+        return all_failures ? 1 : 0;
     }
 
     fprintf(stderr, "hsa-snoop: %d queue(s), %zu packet(s) captured.\n",

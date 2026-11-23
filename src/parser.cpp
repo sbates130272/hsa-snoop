@@ -1,11 +1,16 @@
 #include "parser.h"
 
+#include <sys/timerfd.h>
 #include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
 #include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <cmath>
 #include <cstring>
+#include <string>
 
 #include "proc_mem.h"
 #include "sdma.h"
@@ -129,29 +134,116 @@ constexpr double kIdleGrowthDivisor = 8.0;
 // A dead process is also caught by its pointer reads failing, so the /proc
 // check need not run on every pass.
 constexpr double kAliveCheckSec = 0.1;
+// How late a poll may be before it counts as a stall: this, or the queue's
+// own interval if that is longer. Above what a pass over many busy queues or
+// a scan for kernel names costs; far below what it takes to lose data.
+constexpr double kStallSlackSec = 0.050;
+// How long before a queue went away its last successful poll may have been.
+// A runtime shutting down routinely leaves 10 to 40 ms here with nothing
+// lost; flagging those made the counter fire on one queue in ten.
+constexpr double kTailSlackSec = 0.050;
+constexpr double kStallLogSec = 5.0;
+// Consecutive failed pointer reads before a queue is given up on. 50 (not
+// 5): gfx1250/RDNA4 reads fail transiently between dispatch bursts, and 5
+// evicted queues that were still in use.
+constexpr int kMaxReadFails = 50;
+// Least time between two looks at whether a queue's pointer page is still
+// mapped while its reads are failing.
+constexpr double kMapCheckSec = 0.1;
+// Sleeps this long or longer are taken on the thread's condition variable,
+// so that a new queue or Stop() ends them.
+constexpr double kWakeableSleepUs = 1000;
+
+std::atomic<void (*)(int)> watch_read_hook{nullptr};
 
 } // namespace
 
+void RingParser::SetWatchReadHookForTest(void (*hook)(int pid)) {
+    watch_read_hook.store(hook);
+}
+
+int RingParser::DefaultPollThreads() {
+    const unsigned hw = std::thread::hardware_concurrency();
+    return static_cast<int>(std::min(4u, std::max(1u, hw)));
+}
+
 RingParser::RingParser(Sink sink, SdmaSink sdma_sink, int poll_us,
-                       MissSink miss_sink, int poll_idle_us)
+                       MissSink miss_sink, int poll_idle_us,
+                       RemoveSink remove_sink, int poll_threads,
+                       StallSink stall_sink)
     : sink_(std::move(sink)), sdma_sink_(std::move(sdma_sink)),
-      miss_sink_(std::move(miss_sink)), poll_us_(poll_us),
+      miss_sink_(std::move(miss_sink)), remove_sink_(std::move(remove_sink)),
+      stall_sink_(std::move(stall_sink)), poll_us_(poll_us),
       poll_idle_us_(poll_idle_us < 0 ? std::max(poll_us, kDefaultPollIdleUs)
                                      : std::max(poll_us, poll_idle_us)) {
+    if (poll_threads <= 0)
+        poll_threads = DefaultPollThreads();
+    poll_threads = std::min(poll_threads, kMaxPollThreads);
     running_ = true;
-    thread_ = std::thread(&RingParser::Run, this);
+    for (int i = 0; i < poll_threads; ++i) {
+        workers_.push_back(std::make_unique<Worker>());
+        workers_.back()->index = i;
+    }
+    watch_ = workers_.size() > 1 && poll_idle_us_ > poll_us_;
+    for (auto& w : workers_)
+        w->thread = std::thread(&RingParser::Run, this, w.get());
+    if (watch_) {
+        // Without the timer the watch thread is merely unsupervised.
+        watchdog_fd_ = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC);
+        if (watchdog_fd_ >= 0)
+            watchdog_thread_ = std::thread(&RingParser::Watchdog, this);
+        watch_thread_ = std::thread(&RingParser::Watch, this);
+    }
 }
 
 RingParser::~RingParser() { Stop(); }
 
+double RingParser::StalledSeconds() const {
+    double total = 0;
+    for (const auto& w : workers_)
+        total += w->stalled_sec.load();
+    return total;
+}
+
 void RingParser::Stop() {
     if (!running_.exchange(false))
         return;
-    if (thread_.joinable())
-        thread_.join();
-    std::lock_guard<std::mutex> lk(mu_);
-    for (const auto& q : queues_)
-        PrintSummary(*q);
+    for (auto& w : workers_) {
+        // Taken so the wake-up cannot fall between a worker's check of
+        // running_ and its wait.
+        { std::lock_guard<std::mutex> lk(w->mu); }
+        w->cv.notify_all();
+    }
+    { std::lock_guard<std::mutex> lk(watch_mu_); }
+    watch_cv_.notify_all();
+    if (watch_thread_.joinable())
+        watch_thread_.join();
+    if (watchdog_thread_.joinable()) {
+        ArmWatchdog(1); // fires at once; the thread sees running_ is false
+        watchdog_thread_.join();
+    }
+    if (watchdog_fd_ >= 0) {
+        close(watchdog_fd_);
+        watchdog_fd_ = -1;
+    }
+    for (auto& w : workers_)
+        if (w->thread.joinable())
+            w->thread.join();
+    std::string per_thread;
+    for (auto& w : workers_) {
+        std::lock_guard<std::mutex> lk(w->mu);
+        for (const auto& q : w->queues)
+            PrintSummary(*q);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%s%.3f", per_thread.empty() ? "" : ",",
+                 w->stalled_sec.load());
+        per_thread += buf;
+    }
+    fprintf(stderr,
+            "[summary] poller threads=%zu stalled_seconds=%.3f "
+            "per_thread=%s queues_unobserved_tail=%lu\n",
+            workers_.size(), StalledSeconds(), per_thread.c_str(),
+            unobserved_tails_.load());
 }
 
 // One line per queue when it stops being polled: what was decoded and what
@@ -159,23 +251,39 @@ void RingParser::Stop() {
 // queue from one whose packets were missed.
 void RingParser::PrintSummary(const QueueState& qs) {
     const QueueInfo& q = qs.info;
-    if (!qs.primed)
+    if (!qs.primed) {
+        // A queue never read has nothing to report, unless it was there long
+        // enough that it should have been. Not a "[summary] <kind> queue"
+        // line: those carry decode counts, and this has none.
+        if (qs.tail_unobserved)
+            fprintf(stderr,
+                    "[summary] unread %s queue uid=%lu pid=%d "
+                    "tail_unobserved=1 unobserved_ms=%.1f\n",
+                    q.is_sdma() ? "sdma" : "aql", q.uid, q.pid,
+                    qs.unobserved_sec * 1e3);
         return;
+    }
+    char health[96];
+    snprintf(health, sizeof(health),
+             "polls=%lu max_poll_gap_ms=%.1f tail_unobserved=%d", qs.ok_polls,
+             qs.max_gap * 1e3, qs.tail_unobserved ? 1 : 0);
     if (q.is_sdma()) {
         fprintf(stderr,
                 "[summary] sdma queue uid=%lu pid=%d decoded=%lu "
                 "skipped_dwords=%lu before_first_poll_dwords=%lu "
-                "undecoded_dwords=%lu\n",
+                "undecoded_dwords=%lu %s\n",
                 q.uid, q.pid, qs.decoded, qs.dropped, qs.skipped_at_start,
-                qs.last_wptr > qs.next_id ? qs.last_wptr - qs.next_id : 0);
+                qs.last_wptr > qs.next_id ? qs.last_wptr - qs.next_id : 0,
+                health);
         return;
     }
-    fprintf(
-        stderr,
-        "[summary] aql queue uid=%lu pid=%d slots=%u decoded=%lu missed: "
-        "overwritten=%lu consumed=%lu unreadable=%lu before_first_poll=%lu\n",
-        q.uid, q.pid, q.num_slots(), qs.decoded, qs.missed_overwritten,
-        qs.missed_consumed, qs.missed_unreadable, qs.skipped_at_start);
+    fprintf(stderr,
+            "[summary] aql queue uid=%lu pid=%d slots=%u decoded=%lu missed: "
+            "overwritten=%lu consumed=%lu unreadable=%lu before_first_poll=%lu "
+            "%s\n",
+            q.uid, q.pid, q.num_slots(), qs.decoded, qs.missed_overwritten,
+            qs.missed_consumed, qs.missed_unreadable, qs.skipped_at_start,
+            health);
 }
 
 void RingParser::AddQueue(const QueueInfo& q) {
@@ -192,8 +300,115 @@ void RingParser::AddQueue(const QueueInfo& q) {
     // carry no kernel object, so skip the (process-scanning) resolver for them.
     if (q.is_aql())
         qs->ksym = std::make_unique<KernelSymbolResolver>(q.pid);
-    std::lock_guard<std::mutex> lk(mu_);
-    queues_.push_back(std::move(qs));
+    qs->last_poll_ts = qs->last_ok_ts = MonoNow();
+    // By pid, so that everything of one process is polled, and its records
+    // delivered, by one thread and in order.
+    Worker* w = workers_[static_cast<unsigned>(q.pid) % workers_.size()].get();
+    {
+        std::lock_guard<std::mutex> lk(w->mu);
+        w->queues.push_back(std::move(qs));
+        w->kick = true;
+    }
+    w->cv.notify_all();
+}
+
+// Add the stretch [from, to] to this thread's stalled time, less whatever
+// part of it has been counted already: queues overdue through the same
+// stretch must count it once. True when a log line is due.
+bool RingParser::CountStall(Worker* w, double from, double to) {
+    const double add = to - std::max(from, w->stall_counted_until);
+    w->stall_counted_until = std::max(to, w->stall_counted_until);
+    if (add <= 0)
+        return false;
+    w->stalled_sec.store(w->stalled_sec.load() + add);
+    if (stall_sink_)
+        stall_sink_(w->index, add);
+    w->stall_unlogged += add;
+    return to - w->stall_log_ts >= kStallLogSec;
+}
+
+void RingParser::LogStall(Worker* w, const QueueState& qs, double now,
+                          bool late_start, double sec) {
+    char detail[96];
+    snprintf(detail, sizeof(detail),
+             late_start ? "queue uid=%lu pid=%d was polled %.3f s late"
+                        : "the last poll of queue uid=%lu pid=%d took %.3f s",
+             qs.info.uid, qs.info.pid, sec);
+    fprintf(stderr,
+            "[parser] poll thread %u stalled for %.3f s (%.3f s in total); "
+            "%s\n",
+            w->index, w->stall_unlogged, w->stalled_sec.load(), detail);
+    w->stall_unlogged = 0;
+    w->stall_log_ts = now;
+}
+
+// Called as a queue is about to be polled. A poll that starts later than
+// intended by more than the slack is a stall: this thread was held up, most
+// often in a read of some queue's memory that blocked in the kernel, and
+// none of its queues was looked at meanwhile.
+void RingParser::NoteStall(Worker* w, QueueState* qs, double now) {
+    const double gap = now - qs->last_poll_ts;
+    qs->max_gap = std::max(qs->max_gap, gap);
+    const double late = gap - qs->poll_interval;
+    if (late <= std::max(kStallSlackSec, qs->poll_interval))
+        return;
+    if (CountStall(w, now - late, now))
+        LogStall(w, *qs, now, true, late);
+}
+
+// Called when the poll that began at `start` has ended with the queue marked
+// for removal. A stall is otherwise noticed when a later poll starts late;
+// if this was the thread's last queue there is no later poll, and time the
+// thread was held in this one (a read that blocked and then failed because
+// the process had exited meanwhile) would go uncounted.
+void RingParser::NoteHeld(Worker* w, QueueState* qs, double start) {
+    const double now = MonoNow();
+    const double held = now - start;
+    qs->max_gap = std::max(qs->max_gap, held);
+    if (held <= kStallSlackSec)
+        return;
+    if (CountStall(w, start, now))
+        LogStall(w, *qs, now, false, held);
+}
+
+// Called once when a queue is marked for removal. Packets decoded but still
+// waiting to be seen consumed or signalled are reported as they stand: with
+// the queue gone there will be no later look at them. One the read pointer
+// had passed completed no later than the last successful poll.
+void RingParser::NoteDropped(QueueState* qs) {
+    for (auto& [id, r] : qs->inflight) {
+        if (id < qs->last_rptr) {
+            r.complete_ts = r.consumed_ts ? r.consumed_ts : qs->last_ok_ts;
+            r.completed = true;
+        }
+        if (sink_)
+            sink_(r);
+    }
+    qs->inflight.clear();
+    for (auto& [end_dw, r] : qs->sdma_inflight) {
+        if (end_dw <= qs->last_rptr) {
+            r.complete_ts = qs->last_ok_ts;
+            r.completed = true;
+        }
+        if (sdma_sink_)
+            sdma_sink_(r);
+    }
+    qs->sdma_inflight.clear();
+
+    // Up to when the queue was found gone, not up to now: working out why
+    // its pointers could not be read, and the sinks above, are this
+    // program's own time and nothing of the queue's went unseen in it.
+    const double since_ok = qs->gone_ts - qs->last_ok_ts;
+    if (since_ok <= qs->ok_interval + std::max(kTailSlackSec, qs->ok_interval))
+        return;
+    qs->tail_unobserved = true;
+    qs->unobserved_sec = since_ok;
+    unobserved_tails_.fetch_add(1, std::memory_order_relaxed);
+    fprintf(stderr,
+            "[parser] queue uid=%lu pid=%d went away %.3f s after %s; what it "
+            "did in that time was not seen and is not counted\n",
+            qs->info.uid, qs->info.pid, since_ok,
+            qs->ok_polls ? "its last successful poll" : "it was added, unread");
 }
 
 // Read ring memory. A ring normally lives in host (GTT) memory that
@@ -362,27 +577,60 @@ bool RingParser::ReadPtrs(QueueState* qs, uint64_t* wptr, uint64_t* rptr) {
     return true;
 }
 
+// Called when a pointer read has failed: true if that is because the queue
+// has gone the normal way and should be dropped without comment. Either the
+// process has exited (or is exiting and has given up its address space), or
+// it is shutting down its runtime, which destroys each queue and unmaps its
+// pointer page while the process is still very much alive. Pointers that
+// were never readable, or that are still mapped, are not this case; nor is
+// a process or mapping that could not be looked at.
+//
+// The mapping is looked up on the first failure of a run and when the queue
+// is about to be given up on, and otherwise at most every kMapCheckSec:
+// reads that fail for a while with the page still mapped must not cost a
+// lookup each.
+bool RingParser::QueueGone(QueueState* qs, double now, bool last_chance) {
+    const QueueInfo& q = qs->info;
+    if (!ProcAlive(q.pid))
+        return true;
+    if (!qs->ptrs_seen)
+        return false;
+    if (!last_chance && now < qs->next_map_check_ts)
+        return false;
+    qs->next_map_check_ts = now + kMapCheckSec;
+    return AddressMapped(q.pid, q.wptr_addr) == Mapped::No;
+}
+
+// A pointer read has failed. Marks the queue for removal if it has gone, or
+// if its pointers have been unreadable for too long.
+void RingParser::PtrReadFailed(QueueState* qs) {
+    const QueueInfo& q = qs->info;
+    const double now = MonoNow();
+    if (qs->read_fail_count == 0)
+        qs->fail_since_ts = now;
+    if (QueueGone(qs, now, qs->read_fail_count + 1 >= kMaxReadFails)) {
+        // It was last readable before the first of these failures.
+        qs->gone_ts = qs->fail_since_ts;
+        qs->evict = true;
+        return;
+    }
+    // On WSL2 --all mode, PID reuse can leave queue records with VAs that
+    // are invalid in the new process. Evict after sustained read failures.
+    if (++qs->read_fail_count >= kMaxReadFails) {
+        fprintf(stderr,
+                "[parser] evicting stale %squeue uid=%lu pid=%d "
+                "(wptr/rptr unreadable after %d attempts)\n",
+                q.is_sdma() ? "sdma " : "", q.uid, q.pid, qs->read_fail_count);
+        qs->gone_ts = now;
+        qs->evict = true;
+    }
+}
+
 void RingParser::PollQueue(QueueState* qs, double now) {
     const QueueInfo& q = qs->info;
     uint64_t wptr = 0, rptr = 0;
     if (!ReadPtrs(qs, &wptr, &rptr)) {
-        // A process that has exited is the usual reason; drop its queue
-        // quietly instead of reporting it as stale 50 polls later.
-        if (!ProcAlive(q.pid)) {
-            qs->evict = true;
-            return;
-        }
-        // On WSL2 --all mode, PID reuse can leave queue records with VAs that
-        // are invalid in the new process. Evict after sustained read failures.
-        // Threshold 50 (not 5): gfx1250/RDNA4 reads transiently fail between
-        // dispatch bursts; 5 was too aggressive and caused premature eviction.
-        if (++qs->read_fail_count >= 50) {
-            fprintf(stderr,
-                    "[parser] evicting stale queue uid=%lu pid=%d "
-                    "(wptr/rptr unreadable after %d attempts)\n",
-                    q.uid, q.pid, qs->read_fail_count);
-            qs->evict = true;
-        }
+        PtrReadFailed(qs);
         return;
     }
     qs->read_fail_count = 0; // clear on success
@@ -514,18 +762,26 @@ void RingParser::PollQueue(QueueState* qs, double now) {
     qs->last_rptr = rptr;
 }
 
-void RingParser::Run() {
+void RingParser::Run(Worker* w) {
     while (running_) {
         std::vector<QueueState*> snapshot;
         {
-            std::lock_guard<std::mutex> lk(mu_);
-            for (auto& q : queues_)
+            std::unique_lock<std::mutex> lk(w->mu);
+            // A thread with no queues sleeps until it is given one.
+            w->cv.wait(lk, [&] { return !running_ || !w->queues.empty(); });
+            if (!running_)
+                break;
+            for (auto& q : w->queues)
                 snapshot.push_back(q.get());
         }
         // When the next queue is due. Stays at "now" while any queue is
         // active, which keeps the loop at the full poll rate.
         double next_due = -1;
         bool any_active = false;
+        bool any_evicted = false;
+        // Every queue is at the idle ceiling: the watch thread can stand in.
+        const double ceiling = poll_idle_us_ * 1e-6;
+        bool parkable = watch_ && !watch_held_up_.load();
         for (QueueState* qs : snapshot) {
             if (qs->evict)
                 continue;
@@ -535,11 +791,19 @@ void RingParser::Run() {
             if (now < qs->next_poll_ts) {
                 if (next_due < 0 || qs->next_poll_ts < next_due)
                     next_due = qs->next_poll_ts;
+                parkable = parkable && qs->poll_interval >= ceiling;
                 continue;
             }
+            NoteStall(w, qs, now);
+            qs->last_poll_ts = now;
+            qs->poll_interval = poll_us_ * 1e-6;
             if (now >= qs->next_alive_ts) {
                 if (!ProcAlive(qs->info.pid)) {
                     qs->evict = true;
+                    qs->gone_ts = now;
+                    any_evicted = true;
+                    NoteDropped(qs);
+                    NoteHeld(w, qs, now);
                     continue;
                 }
                 qs->next_alive_ts = now + kAliveCheckSec;
@@ -550,6 +814,13 @@ void RingParser::Run() {
             else
                 PollQueue(qs, now);
             queue_polls_.fetch_add(1, std::memory_order_relaxed);
+            if (qs->evict) {
+                any_evicted = true;
+                NoteDropped(qs);
+                NoteHeld(w, qs, now);
+                continue;
+            }
+            const bool read_ok = qs->read_fail_count == 0;
 
             // Never back off with work outstanding: packets in flight, a
             // backlog not yet decoded, or reads that are failing.
@@ -563,32 +834,49 @@ void RingParser::Run() {
             if (poll_idle_us_ <= poll_us_ || idle_for < kIdleHoldSec) {
                 qs->next_poll_ts = 0;
                 any_active = true;
-                continue;
+            } else {
+                qs->poll_interval = std::min(
+                    poll_idle_us_ * 1e-6,
+                    std::max(poll_us_ * 1e-6, idle_for / kIdleGrowthDivisor));
+                // On a grid common to all queues with this interval, so that
+                // a thread wakes once for its idle queues, not once for each.
+                qs->next_poll_ts = (std::floor(now / qs->poll_interval) + 1) *
+                                   qs->poll_interval;
+                if (next_due < 0 || qs->next_poll_ts < next_due)
+                    next_due = qs->next_poll_ts;
             }
-            const double interval = std::min(
-                poll_idle_us_ * 1e-6,
-                std::max(poll_us_ * 1e-6, idle_for / kIdleGrowthDivisor));
-            qs->next_poll_ts = now + interval;
-            if (next_due < 0 || qs->next_poll_ts < next_due)
-                next_due = qs->next_poll_ts;
+            parkable = parkable && qs->poll_interval >= ceiling;
+            if (read_ok) {
+                qs->last_ok_ts = now;
+                qs->ok_interval = qs->poll_interval;
+                ++qs->ok_polls;
+            }
         }
-        // Remove evicted queues under the lock.
-        {
-            std::lock_guard<std::mutex> lk(mu_);
-            for (const auto& q : queues_)
-                if (q->evict)
-                    PrintSummary(*q);
-            queues_.erase(
-                std::remove_if(queues_.begin(), queues_.end(),
-                               [](const std::unique_ptr<QueueState>& q) {
-                                   return q->evict;
-                               }),
-                queues_.end());
+        // Remove evicted queues under the lock; tell the owner without it,
+        // so the callback is free to call back into the parser.
+        std::vector<std::unique_ptr<QueueState>> removed;
+        if (any_evicted) {
+            std::lock_guard<std::mutex> lk(w->mu);
+            auto first_evicted = std::stable_partition(
+                w->queues.begin(), w->queues.end(),
+                [](const std::unique_ptr<QueueState>& q) { return !q->evict; });
+            for (auto it = first_evicted; it != w->queues.end(); ++it) {
+                PrintSummary(**it);
+                removed.push_back(std::move(*it));
+            }
+            w->queues.erase(first_evicted, w->queues.end());
+        }
+        if (remove_sink_)
+            for (const auto& q : removed)
+                remove_sink_(q->info, q->tail_unobserved);
+        removed.clear();
+        if (parkable && !any_active && !any_evicted && next_due >= 0) {
+            Park(w);
+            continue;
         }
         // Sleep one poll interval while anything is active. Otherwise sleep
         // until the first idle queue is due, or for the idle ceiling when
-        // there is nothing to poll at all, so a queue added meanwhile waits
-        // no longer than that.
+        // there is nothing due at all.
         double sleep_us = poll_us_;
         if (!any_active) {
             sleep_us = poll_idle_us_;
@@ -597,7 +885,165 @@ void RingParser::Run() {
                     sleep_us,
                     std::max<double>(poll_us_, (next_due - MonoNow()) * 1e6));
         }
-        usleep(static_cast<useconds_t>(sleep_us));
+        if (sleep_us < kWakeableSleepUs) {
+            usleep(static_cast<useconds_t>(sleep_us));
+            continue;
+        }
+        // A queue added during a long sleep must not wait it out: it may be
+        // in use already, and its late first poll would count as a stall.
+        std::unique_lock<std::mutex> lk(w->mu);
+        w->cv.wait_for(
+            lk, std::chrono::microseconds(static_cast<int64_t>(sleep_us)),
+            [&] { return !running_ || w->kick; });
+        w->kick = false;
+    }
+    // A stall that lasted until Stop() has not been seen by any poll.
+    std::lock_guard<std::mutex> lk(w->mu);
+    const double now = MonoNow();
+    for (auto& q : w->queues)
+        if (now >= q->next_poll_ts)
+            NoteStall(w, q.get(), now);
+}
+
+// Sleep while the watch thread looks at this thread's queues. Ends when the
+// watch thread sees one of them move or fail to read, when a queue is added,
+// when the watchdog finds the watch thread held up, or after a while
+// regardless.
+void RingParser::Park(Worker* w) {
+    {
+        std::lock_guard<std::mutex> lk(watch_mu_);
+        ++parked_workers_;
+    }
+    watch_cv_.notify_all();
+    const auto backstop = std::chrono::microseconds(
+        std::max<int64_t>(20000, 4LL * poll_idle_us_));
+    {
+        std::unique_lock<std::mutex> lk(w->mu);
+        if (!w->kick) {
+            w->parked = true;
+            ++w->park_gen;
+            w->cv.wait_for(lk, backstop, [&] { return !running_ || w->kick; });
+            w->parked = false;
+        }
+        w->kick = false;
+        // Whatever ended the sleep, look at everything now.
+        for (auto& q : w->queues)
+            q->next_poll_ts = 0;
+    }
+    std::lock_guard<std::mutex> lk(watch_mu_);
+    --parked_workers_;
+}
+
+// Set the watchdog timer to go off in `ns` nanoseconds; 0 turns it off.
+void RingParser::ArmWatchdog(int64_t ns) {
+    if (watchdog_fd_ < 0)
+        return;
+    struct itimerspec its {};
+    its.it_value.tv_sec = ns / 1000000000;
+    its.it_value.tv_nsec = ns % 1000000000;
+    timerfd_settime(watchdog_fd_, 0, &its, nullptr);
+}
+
+// The watch thread is shared by all poll threads, and its reads can block in
+// the kernel like any other. It pushes a timer back at the start of every
+// pass; this thread sleeps until the timer goes off, which means a pass has
+// not come round in several idle intervals. The parked poll threads are then
+// woken and poll their own idle queues until the watch thread is back. It
+// costs no wake-ups while all is well.
+void RingParser::Watchdog() {
+    for (;;) {
+        uint64_t expirations = 0;
+        const ssize_t n = read(watchdog_fd_, &expirations, sizeof(expirations));
+        if (!running_)
+            return;
+        if (n != static_cast<ssize_t>(sizeof(expirations))) {
+            if (errno == EINTR)
+                continue;
+            return;
+        }
+        watch_held_up_.store(true);
+        for (auto& w : workers_) {
+            std::lock_guard<std::mutex> lk(w->mu);
+            if (w->parked) {
+                w->kick = true;
+                w->cv.notify_all();
+            }
+        }
+    }
+}
+
+// The watch thread. Once per idle interval it reads the pointers of the
+// queues of every parked poll thread. A queue that has moved, or cannot be
+// read, gets its thread woken to deal with it; one that has not counts as
+// polled. It keeps no state of its own and sinks nothing.
+void RingParser::Watch() {
+    struct Peek {
+        int pid;
+        uint64_t wptr_addr, rptr_addr, wptr, rptr;
+        bool via_mem;
+    };
+    std::vector<Peek> peeks;
+    while (running_) {
+        // Back at the top, so not held up. Cleared before the wait: no poll
+        // thread parks while it is set, and the wait is for one to park.
+        watch_held_up_.store(false);
+        {
+            std::unique_lock<std::mutex> lk(watch_mu_);
+            if (running_ && parked_workers_ == 0) {
+                ArmWatchdog(0);
+                watch_cv_.wait(
+                    lk, [&] { return !running_ || parked_workers_ > 0; });
+            }
+        }
+        // A pass, and the sleep after it, take little more than one idle
+        // interval; several without a new pass means this thread is held up.
+        ArmWatchdog(std::max<int64_t>(4000LL * poll_idle_us_, 2000000));
+        for (auto& w : workers_) {
+            uint64_t gen = 0;
+            peeks.clear();
+            {
+                std::lock_guard<std::mutex> lk(w->mu);
+                if (!w->parked || w->kick)
+                    continue;
+                gen = w->park_gen;
+                // A parked thread is not touching its queues.
+                for (const auto& q : w->queues)
+                    peeks.push_back({q->info.pid, q->info.wptr_addr,
+                                     q->info.rptr_addr, q->seen_wptr,
+                                     q->seen_rptr, q->ptr_via_mem});
+            }
+            const double now = MonoNow();
+            bool moved = false;
+            void (*const hook)(int) = watch_read_hook.load();
+            for (const Peek& p : peeks) {
+                if (hook)
+                    hook(p.pid);
+                uint64_t wptr = 0, rptr = 0;
+                const bool ok =
+                    p.via_mem ? ReadU64ViaMem(p.pid, p.wptr_addr, &wptr) &&
+                                    ReadU64ViaMem(p.pid, p.rptr_addr, &rptr)
+                              : ReadU64(p.pid, p.wptr_addr, &wptr) &&
+                                    ReadU64(p.pid, p.rptr_addr, &rptr);
+                queue_polls_.fetch_add(1, std::memory_order_relaxed);
+                if (!ok || wptr != p.wptr || rptr != p.rptr) {
+                    moved = true;
+                    break;
+                }
+            }
+            std::lock_guard<std::mutex> lk(w->mu);
+            if (!w->parked || w->park_gen != gen)
+                continue;
+            if (moved) {
+                w->kick = true;
+                w->cv.notify_all();
+                continue;
+            }
+            for (const auto& q : w->queues) {
+                q->last_poll_ts = q->last_ok_ts = now;
+                ++q->ok_polls;
+            }
+        }
+        usleep(static_cast<useconds_t>(poll_idle_us_));
     }
 }
 
@@ -652,17 +1098,7 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
     const QueueInfo& q = qs->info;
     uint64_t wptr_raw = 0, rptr_raw = 0;
     if (!ReadPtrs(qs, &wptr_raw, &rptr_raw)) {
-        if (!ProcAlive(q.pid)) {
-            qs->evict = true;
-            return;
-        }
-        if (++qs->read_fail_count >= 50) {
-            fprintf(stderr,
-                    "[parser] evicting stale sdma queue uid=%lu pid=%d "
-                    "(wptr/rptr unreadable after %d attempts)\n",
-                    q.uid, q.pid, qs->read_fail_count);
-            qs->evict = true;
-        }
+        PtrReadFailed(qs);
         return;
     }
 
@@ -680,9 +1116,8 @@ void RingParser::PollSdmaQueue(QueueState* qs, double now) {
     // Calibration dump: raw pointer magnitudes + head of the ring, so the
     // pointer unit and packet layout can be read off against a known workload.
     // Bounded so it cannot flood a long run.
-    static int dump_budget = 16;
-    if (kSdmaDump && dump_budget > 0 && wptr_raw != rptr_raw) {
-        --dump_budget;
+    static std::atomic<int> dump_budget{16};
+    if (kSdmaDump && wptr_raw != rptr_raw && dump_budget.fetch_sub(1) > 0) {
         fprintf(stderr,
                 "[sdma-dump q%lu] pid=%d wptr_raw=%lu rptr_raw=%lu "
                 "ring_size=%uB ring_base=0x%lx\n",

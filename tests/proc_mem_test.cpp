@@ -10,9 +10,11 @@
 
 #include "proc_mem.h"
 
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <cstdint>
@@ -298,11 +300,10 @@ void TestOpenFailureIsNotCached() {
     uint64_t src = 0x5555aaaa5555aaaaULL;
     uint64_t dst = 0;
 
-    // Evict any cached fd for our own pid first. Without this the cache is
+    // Drop any cached fd for our own pid first. Without this the cache is
     // still warm from earlier tests, ReadProcMemViaMem never calls open(), and
     // the EMFILE window below is never actually exercised.
-    uint64_t scratch = 0;
-    ReadProcMemViaMem(0x7ffffff, 0x1000, &scratch, sizeof(scratch));
+    ForgetProcess(pid);
 
     struct rlimit saved;
     if (getrlimit(RLIMIT_NOFILE, &saved) != 0) {
@@ -418,16 +419,102 @@ void TestMappingBacking() {
           "MappingBacking should return nothing for an unmapped address");
 }
 
+// A process that has exited but not been reaped still has a /proc entry. Its
+// memory is gone, so for the poller it is as dead as one that has vanished.
+void TestProcAlive() {
+    Check(ProcAlive(getpid()), "ProcAlive should be true for a live process");
+
+    pid_t child = fork();
+    if (child == 0)
+        _exit(0);
+    Check(child > 0, "fork");
+    if (child <= 0)
+        return;
+    siginfo_t info{};
+    Check(waitid(P_PID, child, &info, WEXITED | WNOWAIT) == 0,
+          "wait for the child to become a zombie");
+    char path[32];
+    std::snprintf(path, sizeof(path), "/proc/%d", child);
+    Check(access(path, F_OK) == 0, "a zombie still has a /proc entry");
+    Check(!ProcAlive(child), "ProcAlive should be false for a zombie");
+
+    waitpid(child, nullptr, 0);
+    Check(!ProcAlive(child), "ProcAlive should be false for a reaped process");
+}
+
+void TestAddressMapped() {
+    const int pid = getpid();
+    void* page = mmap(nullptr, 8192, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    Check(page != MAP_FAILED, "anonymous mmap");
+    const uint64_t va = reinterpret_cast<uint64_t>(page);
+    Check(AddressMapped(pid, va) == Mapped::Yes,
+          "AddressMapped: first byte of a mapping");
+    Check(AddressMapped(pid, va + 8191) == Mapped::Yes,
+          "AddressMapped: last byte of a mapping");
+    munmap(page, 8192);
+    Check(AddressMapped(pid, va) == Mapped::No,
+          "AddressMapped: a mapping that has been removed");
+    Check(AddressMapped(pid, kUnmappedVa) == Mapped::No,
+          "AddressMapped: an address that was never mapped");
+
+    pid_t child = fork();
+    if (child == 0)
+        _exit(0);
+    Check(child > 0, "fork");
+    if (child > 0) {
+        waitpid(child, nullptr, 0);
+        Check(AddressMapped(child, va) == Mapped::No,
+              "AddressMapped: a process that no longer exists");
+    }
+}
+
+// With no descriptor to be had, neither question can be answered, and the
+// answer must not be the one that gets a live queue dropped.
+void TestNoDescriptorIsNotDead() {
+    struct rlimit saved;
+    if (getrlimit(RLIMIT_NOFILE, &saved) != 0) {
+        std::fprintf(stderr,
+                     "SKIP: TestNoDescriptorIsNotDead: getrlimit failed\n");
+        return;
+    }
+    struct rlimit tight = saved;
+    tight.rlim_cur = 3;
+    if (setrlimit(RLIMIT_NOFILE, &tight) != 0) {
+        std::fprintf(stderr, "SKIP: TestNoDescriptorIsNotDead: could not lower "
+                             "RLIMIT_NOFILE\n");
+        return;
+    }
+    const int probe = open("/proc/self/statm", O_RDONLY);
+    const bool alive = ProcAlive(getpid());
+    const Mapped mapped =
+        AddressMapped(getpid(), reinterpret_cast<uint64_t>(&saved));
+    setrlimit(RLIMIT_NOFILE, &saved);
+    if (probe >= 0) {
+        close(probe);
+        std::fprintf(stderr, "SKIP: TestNoDescriptorIsNotDead: open() "
+                             "succeeded at the descriptor limit\n");
+        return;
+    }
+    Check(alive, "ProcAlive must not report a live process dead when it "
+                 "cannot open its statm");
+    Check(mapped == Mapped::Unknown,
+          "AddressMapped must report Unknown when it cannot open the map");
+}
+
 } // namespace
 
 int main() {
     TestMappingBacking();
+    TestAddressMapped();
+    TestNoDescriptorIsNotDead();
     TestReadProcMem();
     TestReadProcMemViaMem();
     TestScanKernargFootprint();
     TestInteriorPointersIgnored();
     TestScanRespectsDeclaredSize();
     TestDeadProcess();
+    TestProcAlive();
     TestOpenFailureIsNotCached();
     TestVirtToPhysHighVa();
 

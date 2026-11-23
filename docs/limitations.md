@@ -23,6 +23,43 @@
   The first packets after an idle spell are therefore seen up to that much
   later, which can cost them their host-observed duration. `--poll-idle-us 0`
   polls every queue at `--poll-us` always.
+* **A read that blocks holds up a poll thread, and can cost a process its
+  whole output.** From ROCm 10.2 every read of a ring or of its pointers goes
+  through the GPU driver (see below). When a GPU is out of memory such a read
+  can block for a long time: with 24 processes on one emulated GPU, whose
+  memory is full from about 16, single reads blocked for up to 96 s. Nothing
+  is polled on that thread meanwhile, and hsa-snoop cannot put a time limit
+  on a read. What was launched during the stall is decoded afterwards if the
+  queue is still there and fewer packets than the ring holds have gone by,
+  though without a duration. A process that exits during the stall takes its
+  ring with it, and what it launched since its last poll is lost: it is in
+  no `missed` counter, because the amount is not known. Three things limit
+  this and make it visible:
+    * `--poll-threads <n>` (default: the number of CPU cores, at most 4) polls
+      with several threads. All queues of a process stay on one thread, so a
+      blocked read holds up only the processes that share its thread, not
+      every process. More threads cost more CPU while queues are busy;
+      idle queues cost the same however many threads there are.
+    * `hsa_poller_stalled_seconds_total` counts the time a poll thread was
+      held up, and `hsa_queues_unobserved_tail_total` the queues that went
+      away too long after their last successful poll for their end to have
+      been seen. Both are described in the Prometheus page.
+    * In every mode the same goes to the log: a `[parser] poll thread ...
+      stalled` line (at most one per thread every 5 s), a `[parser] queue ...
+      went away ... after its last successful poll` line per such queue,
+      `tail_unobserved=1` in that queue's `[summary]` line, and totals in the
+      `[summary] poller` line at exit.
+
+  If these grow, run fewer processes per GPU or give the GPU more memory,
+  and raise `--poll-threads`. Measured with 24 processes of 5,400 launches
+  each on one emulated GPU, six runs for each setting: with one poll thread
+  75%, 79%, 79%, 79%, 99.7% and 99.9% of the launches were reported, with
+  four threads 95.8%, 99.8%, 99.96% and three times 100%. More threads did
+  not shorten the stalls, and at times several threads were held up
+  together, so a process can still be lost. Every process that lost
+  launches had `tail_unobserved=1`; so had most of those that lost none,
+  because under this load most queues are last polled well before they go
+  away.
 * **Durations are sampled.** `hsa_kernel_duration_seconds` is only observed for
   a packet the poller saw while it was still pending. A packet that was already
   consumed when first seen is counted as a launch but has no measurable
@@ -38,6 +75,13 @@
   further scans of the process, at least 30 s apart, so a name that was
   unavailable at first sight is picked up for later launches under a new
   series.
+* **Series without a `pid` label are never removed.** The duration histograms
+  and the `--mem-snoop` metrics have one series per kernel name and GPU, so
+  they grow with the number of different kernel names seen, not with the
+  number of processes. Kernels that stay unresolved are the exception: each
+  `kernel_0x<addr>` label is a new name, and many short processes with
+  unresolved kernels add series that stay. Series with a `pid` label are
+  removed after `--series-retain-sec`; see the Prometheus page.
 * **`--mem-snoop` reuses a snapshot of the process's VM map for up to one
   second**, because reading `/proc/<pid>/maps` per dispatch stalls the poller on
   processes with thousands of mappings. A buffer mapped within the last second
@@ -46,13 +90,20 @@
   queue pointer transitions, so a slice includes queue-wait time and may differ
   from true kernel execution or completion-signal timing. No profiling signals
   or counters are read; this is best used for structure and relative timing.
+* **The startup scan stops each KFD process for an instant.** In `--pid` and
+  `--all` modes hsa-snoop attaches to every process that already has KFD
+  queues, and has to stop its main thread briefly to let go of it again. A
+  blocking system call that thread is in can return `EINTR`. Most programs
+  retry; for a workload that does not, `--no-scan` skips the scan, at the
+  price of not seeing queues that existed before hsa-snoop started.
 * **Packets on a queue that already existed are reported from the first poll
   onwards.** A queue seen being created by the KFD `create_queue` probe is
   decoded from the start of its ring. Queues found by the startup scan, and
   queues discovered through `librocdxg` on WSL2, start from the first poll.
   The `[summary]` line printed when a queue stops being polled gives the
-  decoded and missed counts, and how much was in the ring before the first
-  poll.
+  decoded and missed counts, how much was in the ring before the first
+  poll, the number of successful polls, the longest time between two polls
+  and whether the end of the queue went unobserved.
 * **Attach mode only sees queues created after attach**, since the kprobe fires
   on `create_queue`. Use launch mode to guarantee capture from process start.
 * **AIS byte counts are the requested sizes of requests that succeeded.** The

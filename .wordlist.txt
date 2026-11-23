@@ -213,3 +213,17 @@ workgroup
 wptr
 xnack
 yml
+GPUs
+GPU's
+PCI
+SIGKILL
+SVM
+aic
+ptrace
+repo
+runtime's
+th
+tracee
+undecoded
+uptime
+vCPUs

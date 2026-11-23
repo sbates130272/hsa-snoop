@@ -3,6 +3,8 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/ioctl.h>
+#include <sys/ioctl.h>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -36,21 +38,24 @@ bool ReadProcMem(int pid, uint64_t va, void* out, size_t len) {
 // CDNA3 (gfx942) and CDNA4 (gfx950). /proc/<pid>/mem pread() goes through the
 // VMA directly and succeeds on those pages. We keep a small fd cache so the
 // hot poll path doesn't open/close on every call.
-bool ReadProcMemViaMem(int pid, uint64_t va, void* out, size_t len) {
-    // Thread-local fd cache, so no locking is needed. Several entries, because
-    // on ROCm 10.2 every ring read comes this way and a poller watching more
-    // than one process would otherwise reopen the file on every switch.
-    struct Entry {
-        int pid = -1;
-        int fd = -1;
-    };
-    constexpr unsigned kEntries = 8;
-    static __thread Entry cache[kEntries];
-    static __thread unsigned next_victim = 0;
+namespace {
+// Thread-local fd cache, so no locking is needed: each poll thread, and the
+// watch thread, has its own. Several entries, because on ROCm 10.2 every
+// ring read comes this way and a poller watching more than one process would
+// otherwise reopen the file on every switch.
+struct MemFdEntry {
+    int pid = -1;
+    int fd = -1;
+};
+constexpr unsigned kMemFdEntries = 8;
+__thread MemFdEntry mem_fd_cache[kMemFdEntries];
+__thread unsigned mem_fd_next_victim = 0;
+} // namespace
 
-    Entry* e = nullptr;
-    Entry* empty = nullptr;
-    for (Entry& c : cache) {
+bool ReadProcMemViaMem(int pid, uint64_t va, void* out, size_t len) {
+    MemFdEntry* e = nullptr;
+    MemFdEntry* empty = nullptr;
+    for (MemFdEntry& c : mem_fd_cache) {
         if (c.fd >= 0 && c.pid == pid) {
             e = &c;
             break;
@@ -68,8 +73,8 @@ bool ReadProcMemViaMem(int pid, uint64_t va, void* out, size_t len) {
             return false;
         e = empty;
         if (!e) {
-            e = &cache[next_victim];
-            next_victim = (next_victim + 1) % kEntries;
+            e = &mem_fd_cache[mem_fd_next_victim];
+            mem_fd_next_victim = (mem_fd_next_victim + 1) % kMemFdEntries;
         }
         if (e->fd >= 0)
             close(e->fd);
@@ -160,10 +165,106 @@ std::string MappingBacking(int pid, uint64_t va) {
     return "";
 }
 
+namespace {
+
+// PROCMAP_QUERY (Linux 6.11) looks up the mapping that covers one address
+// without the whole of /proc/<pid>/maps being formatted and parsed. Declared
+// here because the build host's headers may predate it.
+struct ProcmapQuery {
+    uint64_t size;
+    uint64_t query_flags;
+    uint64_t query_addr;
+    uint64_t vma_start;
+    uint64_t vma_end;
+    uint64_t vma_flags;
+    uint64_t vma_page_size;
+    uint64_t vma_offset;
+    uint64_t inode;
+    uint32_t dev_major;
+    uint32_t dev_minor;
+    uint32_t vma_name_size;
+    uint32_t build_id_size;
+    uint64_t vma_name_addr;
+    uint64_t build_id_addr;
+};
+constexpr unsigned long kProcmapQueryIoctl = _IOWR('f', 17, ProcmapQuery);
+
+bool NoSuchProcess(int err) { return err == ENOENT || err == ESRCH; }
+
+} // namespace
+
+Mapped AddressMapped(int pid, uint64_t va) {
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/maps", pid);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return NoSuchProcess(errno) ? Mapped::No : Mapped::Unknown;
+    ProcmapQuery q{};
+    q.size = sizeof(q);
+    q.query_addr = va;
+    if (ioctl(fd, kProcmapQueryIoctl, &q) == 0) {
+        close(fd);
+        return Mapped::Yes;
+    }
+    const int err = errno;
+    if (err != ENOTTY && err != EINVAL) {
+        close(fd);
+        // ENOENT: nothing covers the address. ESRCH: the process has gone.
+        return NoSuchProcess(err) ? Mapped::No : Mapped::Unknown;
+    }
+    // An older kernel: read the map. Lines are "start-end ...", ascending.
+    std::string text;
+    char buf[65536];
+    ssize_t n;
+    while ((n = read(fd, buf, sizeof(buf))) > 0)
+        text.append(buf, static_cast<size_t>(n));
+    const int read_err = errno;
+    close(fd);
+    if (n < 0)
+        return NoSuchProcess(read_err) ? Mapped::No : Mapped::Unknown;
+    const char* p = text.c_str();
+    while (*p) {
+        char* end = nullptr;
+        const uint64_t start = strtoull(p, &end, 16);
+        if (end != p && *end == '-') {
+            const uint64_t stop = strtoull(end + 1, nullptr, 16);
+            if (va >= start && va < stop)
+                return Mapped::Yes;
+            if (va < start)
+                break;
+        }
+        const char* nl = strchr(p, '\n');
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+    return Mapped::No;
+}
+
 bool ProcAlive(int pid) {
+    // /proc/<pid> outlives the address space: it is there for as long as the
+    // process is exiting (which, with GPU queues to tear down, can take a
+    // while) and then as a zombie until it is reaped. statm reads all zeroes
+    // once the mm has gone.
+    //
+    // Only a definite answer counts as dead. A queue dropped for a dead
+    // process is never picked up again, so running out of descriptors or
+    // memory for a moment here must not look like the process exiting.
     char path[32];
-    snprintf(path, sizeof(path), "/proc/%d", pid);
-    return access(path, F_OK) == 0;
+    snprintf(path, sizeof(path), "/proc/%d/statm", pid);
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return !NoSuchProcess(errno);
+    char buf[32];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    const int err = errno;
+    close(fd);
+    if (n < 0)
+        return !NoSuchProcess(err);
+    if (n == 0)
+        return false;
+    buf[n] = '\0';
+    return strtoull(buf, nullptr, 10) != 0;
 }
 
 namespace {
@@ -211,26 +312,33 @@ double MonoSec() {
 // mappings (PyTorch, vLLM) and takes the target's mmap lock. Doing it per
 // dispatch stalled the ring poller, so callers on the dispatch path reuse a
 // snapshot for up to max_age_sec.
+struct VmaCacheEntry {
+    std::vector<VmaRegion> vmas;
+    double read_at = 0;
+};
+std::mutex vma_cache_mu;
+std::unordered_map<int, VmaCacheEntry> vma_cache;
+
 std::vector<VmaRegion> GetVmas(int pid, double max_age_sec) {
     if (max_age_sec <= 0)
         return ReadVmas(pid);
-    struct Entry {
-        std::vector<VmaRegion> vmas;
-        double read_at = 0;
-    };
-    static std::mutex mu;
-    static std::unordered_map<int, Entry> cache;
-    std::lock_guard<std::mutex> lk(mu);
-    const double now = MonoSec();
-    auto it = cache.find(pid);
-    if (it != cache.end() && now - it->second.read_at < max_age_sec)
-        return it->second.vmas;
-    if (cache.size() >= 64)
-        cache.clear();
-    Entry& e = cache[pid];
-    e.vmas = ReadVmas(pid);
-    e.read_at = now;
-    return e.vmas;
+    {
+        std::lock_guard<std::mutex> lk(vma_cache_mu);
+        auto it = vma_cache.find(pid);
+        if (it != vma_cache.end() &&
+            MonoSec() - it->second.read_at < max_age_sec)
+            return it->second.vmas;
+    }
+    // Not under the lock: this read can block on the target's mmap lock, and
+    // must then hold up only the thread that polls that process.
+    std::vector<VmaRegion> vmas = ReadVmas(pid);
+    std::lock_guard<std::mutex> lk(vma_cache_mu);
+    if (vma_cache.size() >= 64 && !vma_cache.count(pid))
+        vma_cache.clear();
+    VmaCacheEntry& e = vma_cache[pid];
+    e.vmas = vmas;
+    e.read_at = MonoSec();
+    return vmas;
 }
 
 } // namespace
@@ -312,6 +420,19 @@ bool ScanKernargFootprint(int pid, uint64_t kernarg_va, uint32_t kernarg_bytes,
             *mapped_vram_bytes += (v->end - v->start);
     }
     return true;
+}
+
+void ForgetProcess(int pid) {
+    {
+        std::lock_guard<std::mutex> lk(vma_cache_mu);
+        vma_cache.erase(pid);
+    }
+    for (MemFdEntry& c : mem_fd_cache)
+        if (c.fd >= 0 && c.pid == pid) {
+            close(c.fd);
+            c.fd = -1;
+            c.pid = -1;
+        }
 }
 
 } // namespace hsasnoop

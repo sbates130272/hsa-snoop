@@ -6,6 +6,114 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- `--series-retain-sec <n>` (default 300, env `HSA_SNOOP_SERIES_RETAIN_SEC`):
+  in Prometheus mode the series of a process, that is every series with a
+  `pid` label, are removed that many seconds after its last queue went away.
+  0 keeps them for ever, as before. A process that comes back inside the
+  period keeps its series.
+- `--poll-threads <n>` (1 to 64; default the number of CPU cores, at most 4): the
+  rings are polled by several threads. All queues of a process are polled by
+  one thread, so a read that blocks in the GPU driver holds up only the
+  processes that share its thread. `--poll-threads 1` is the old behaviour.
+- `hsa_poller_stalled_seconds_total` (per poll thread) counts the time a poll
+  thread was held up with queues overdue, and
+  `hsa_queues_unobserved_tail_total` (per GPU) the queues that went away too
+  long after their last successful poll for their end to have been seen.
+  Time a thread was held in the last poll of a queue that then went away is
+  part of the first; time hsa-snoop itself took to find out why a queue had
+  become unreadable is not part of the second.
+  Without Prometheus the same is in the log: a `[parser] poll thread ...
+  stalled` line, a `[parser] queue ... went away` line, and a `[summary]
+  poller` line with the totals at exit.
+- The per-queue `[summary]` line ends with the number of successful polls,
+  the longest time between two polls and `tail_unobserved`. A queue that was
+  never read gets a `[summary] unread ... queue` line if it was there long
+  enough that it should have been.
+- `--no-scan` skips the startup scan for queues that already exist. The scan
+  has to stop each KFD process for an instant (see Fixed), and a blocking
+  system call that the process's main thread is in at that moment can return
+  `EINTR`. Use it for a workload that does not retry such calls; only queues
+  created after hsa-snoop started are then seen. It replaces `--kfd-scan` in
+  the help text, an option that was listed but never existed.
+- Per-GPU totals that are never removed: `hsa_gpu_kernel_launches_total`,
+  `hsa_gpu_kernel_durations_unmeasured_total`,
+  `hsa_gpu_dispatches_missed_total`, `hsa_gpu_barrier_packets_total`,
+  `hsa_gpu_sdma_copies_total`, `hsa_gpu_sdma_bytes_total` and
+  `hsa_gpu_sdma_packets_total`. Use these where a counter has to stay
+  monotonic across process exits.
+
+### Changed
+- Polling uses up to four threads by default instead of one. Under load each
+  thread in use polls at `--poll-us`, so hsa-snoop uses more CPU than before
+  when many processes are busy (about three times as much with 24 processes
+  on one GPU). Idle queues do not cost more: poll threads whose queues are
+  all idle sleep, and one extra thread watches those queues for them. If a
+  read blocks that extra thread, the poll threads take their idle queues
+  back until it returns.
+  Records of different processes may reach the dispatch log in a different
+  order.
+- Idle queues are polled together, at common points in time, and an hsa-snoop
+  with no queue at all sleeps instead of waking every millisecond. In the
+  test VM that took it from 3.7% to under 0.5% of a CPU with no queue and from
+  10.2% to 7.7% with 16 idle queues.
+- Per-process counters are no longer exported for the whole life of
+  hsa-snoop. A `sum()` over them without `rate()` or `increase()` drops when
+  a process's series are removed; see "Series lifecycle" in the Prometheus
+  page.
+- `hsa_queue_info` has a series only for queues that are being polled. It is
+  removed as soon as its queue is dropped.
+- In `--all` trace mode the trace of a queue is written when the queue goes
+  away, not when hsa-snoop exits, and its memory is released then.
+- In `--all` trace mode the files are named `<command>-<uid>`, as announced
+  when a queue is found. They used to be written as `queue-<uid>` whatever the
+  log had said. Characters of the process name that are not safe in a file
+  name are replaced with `_`.
+- The `debian-publish` workflow replaces the package of a release that already
+  exists and no longer fails on it, and runs for the same commit go one after
+  the other. Merging a release and pushing its tag starts two runs that both
+  publish the tag; the second one used to end red.
+- The KFD scan hardware test checks that the workload is no longer attached
+  after the scan and that it can be stopped while hsa-snoop is running.
+
+### Fixed
+- With a GPU out of memory, the output of whole processes could go missing
+  with every counter at 0. One read of a process's memory can block in the
+  driver for over a minute, the single poll thread polled nothing else
+  meanwhile, and a process that exited in that time took its ring with it.
+  The loss is now reported (see Added) and, with several poll threads,
+  smaller. In six runs each of 24 short processes on one emulated GPU, one
+  poll thread reported 75%, 79%, 79%, 79%, 99.7% and 99.9% of the launches
+  and four threads 95.8%, 99.8%, 99.96% and three times 100%. Every process
+  that lost launches was flagged, as were most that lost none.
+- Packets that had been decoded but were still waiting for their completion
+  when their queue went away were dropped without a trace. They are now
+  reported, as completed if the read pointer had passed them.
+- `hsa_active_queues` and `hsa_active_sdma_queues` only ever went up. They
+  now go down when a queue is destroyed or its process exits.
+- With processes coming and going, the number of exported series and the
+  memory of hsa-snoop grew without bound, because nothing kept for a queue or
+  a process was released. A 20-minute run with 686 short processes went from
+  1,322 to 8,449 series and from 6 to 20 MB.
+- A process found by the startup scan stayed attached to hsa-snoop with
+  `ptrace` for as long as hsa-snoop ran. Signals sent to it were held back, so
+  it could not be stopped, its parent could not reap it and no debugger could
+  attach. The scan detached from a process that was still running, which the
+  kernel refuses, and did not check the result. It now stops the process for
+  an instant first, hands back a signal that arrived meanwhile, and reports a
+  detach that fails. The stop is what can make a blocking system call return
+  `EINTR`; see `--no-scan`.
+- Probes left in tracefs by an hsa-snoop that was killed with `SIGKILL` are
+  removed by the next one to start, along with the tracefs instance of
+  `--ais-snoop`. Probes of an hsa-snoop that is still running are not touched.
+- A workload that exits normally no longer logs `evicting stale queue` for
+  each of its queues. The runtime destroys its queues, and removes the
+  mapping of their pointers, while the process is still alive; that is now
+  recognised and the queue is dropped at the first failed read instead of
+  after 50. A process
+  that is exiting or is a zombie counts as gone as well. The message is kept
+  for pointers that were never readable or are still mapped.
+
 ## [1.9.0] — 2026-11-20
 
 ### Added
