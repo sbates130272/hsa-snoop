@@ -371,6 +371,39 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#trace-files-in-all-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trace Files in --all Mode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#probes-left-by-a-killed-hsa-snoop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Probes Left by a Killed hsa-snoop
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#poll-threads-poll-threads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Poll Threads (--poll-threads)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#dispatch-event-log-log-dispatches" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -837,6 +870,39 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#trace-files-in-all-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trace Files in --all Mode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#probes-left-by-a-killed-hsa-snoop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Probes Left by a Killed hsa-snoop
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#poll-threads-poll-threads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Poll Threads (--poll-threads)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#dispatch-event-log-log-dispatches" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -928,10 +994,66 @@ This discovers queues that were created before hsa-snoop started, with full
 metadata (ring VA, wptr, rptr, gpu_id, queue type). The scan runs in launch
 mode is skipped (the target process hasn't started yet); in <code>--pid</code> and <code>--all</code>
 modes it runs automatically before the event-driven probe is armed.</p>
-<p>The scan uses <code>PTRACE_SEIZE</code> (non-stopping) and briefly enables KFD debug mode
-on each target process (milliseconds). It requires <code>CAP_SYS_PTRACE</code> (root),
-which hsa-snoop already requires. KFD ioctl minor version ≥ 1.13 is required
-(Linux ~6.1 / AMDGPU ~5.7).</p>
+<p>The scan attaches to each target process with <code>PTRACE_SEIZE</code> and briefly
+enables KFD debug mode on it (milliseconds), because the driver only answers
+the queue snapshot for a process's tracer. The process keeps running while it
+is queried. To let go of it again hsa-snoop has to stop it for an instant,
+since the kernel only detaches a stopped process; once the scan has finished,
+<code>TracerPid</code> in <code>/proc/&lt;pid&gt;/status</code> is back to 0 and the process can be
+debugged, signalled and reaped as usual. A process that is already being
+traced, by a debugger for instance, cannot be attached and is skipped. The
+scan requires <code>CAP_SYS_PTRACE</code> (root), which hsa-snoop already requires. KFD
+ioctl minor version ≥ 1.13 is required (Linux ~6.1 / AMDGPU ~5.7).</p>
+<p>That instant has one side effect. It is the main thread of the process that
+is stopped, and if that thread is blocked in a system call the kernel does
+not restart on its own (<code>epoll_wait</code>, <code>semop</code>, <code>msgrcv</code>, a socket read with
+a receive timeout, among others), the call returns <code>EINTR</code> although no
+signal was delivered. Python and most event-loop libraries retry such calls.
+For a workload that treats <code>EINTR</code> as an error, start hsa-snoop with
+<code>--no-scan</code>: nothing is attached or stopped, and only queues created after
+hsa-snoop started are traced.</p>
+<h2 id="trace-files-in-all-mode">Trace Files in <code>--all</code> Mode<a class="headerlink" href="#trace-files-in-all-mode" title="Permanent link">&para;</a></h2>
+<p>In <code>--all</code> mode without <code>--prometheus</code>, hsa-snoop keeps one trace per queue
+and writes it to <code>--out-dir</code> (default <code>/var/log/hsa-snoop</code>) when the queue
+goes away, that is when its process exits or destroys it. Traces of queues
+that are still live are written when hsa-snoop exits.
+Each file is named <code>&lt;command&gt;-&lt;uid&gt;.pftrace</code> (or <code>.json</code>), where <code>&lt;command&gt;</code>
+is the name of the process that owns the queue and <code>&lt;uid&gt;</code> is the queue <code>uid</code>
+shown in the <code>[queue]</code> log lines, for example <code>gfx-test-3.json</code>. The name is
+announced when the queue is found (<code>new trace → ...</code>) and again when the file
+is written. Characters in the process name other than letters, digits, <code>.</code>,
+<code>_</code>, <code>-</code> and <code>+</code> are replaced with <code>_</code>.</p>
+<h2 id="probes-left-by-a-killed-hsa-snoop">Probes Left by a Killed hsa-snoop<a class="headerlink" href="#probes-left-by-a-killed-hsa-snoop" title="Permanent link">&para;</a></h2>
+<p>hsa-snoop removes its kprobes when it exits, including on <code>SIGINT</code> and
+<code>SIGTERM</code>. One that is killed with <code>SIGKILL</code> cannot, and its probes
+(<code>hsasnoop_cq_&lt;pid&gt;</code>, and with <code>--ais-snoop</code> also <code>hsasnoop_ais_e_&lt;pid&gt;</code>,
+<code>hsasnoop_ais_r_&lt;pid&gt;</code> and the tracefs instance <code>hsa_ais_&lt;pid&gt;</code>) stay
+installed. The next hsa-snoop to start removes every such probe whose <code>&lt;pid&gt;</code>
+is no longer a running hsa-snoop, and logs each removal. Probes that belong to
+an hsa-snoop that is still running are left alone.</p>
+<h2 id="poll-threads-poll-threads">Poll Threads (<code>--poll-threads</code>)<a class="headerlink" href="#poll-threads-poll-threads" title="Permanent link">&para;</a></h2>
+<p>The rings are polled by several threads: as many as there are CPU cores, up to 4,
+unless <code>--poll-threads &lt;n&gt;</code> (1 to 64) says otherwise. A queue is assigned by
+the pid of its process, so all queues of one process are polled by the same
+thread and its records keep their order. Records of different processes can
+reach the dispatch log in a different order than they were submitted in;
+each line carries its own timestamp.</p>
+<p>The point of more than one thread is isolation. A read of a process's memory
+can block in the GPU driver when the GPU is out of memory, and nothing else
+is polled on that thread until it returns. With one thread that is every
+process; with four it is a quarter of them. Each thread polls at <code>--poll-us</code>
+while any of its queues is busy, so CPU use under load grows with the number
+of threads in use. Idle queues do not cost more with more threads: a thread
+with no queues sleeps, and so does one whose queues are all idle, while one
+extra thread looks at the idle queues of all of them every <code>--poll-idle-us</code>
+and wakes the owner of any that moves. That extra thread is shared, so it
+is supervised by a timer: if a read blocks it and it has not come round for
+a few idle intervals, every poll thread goes back to polling its own idle
+queues until the read returns.</p>
+<p><code>--poll-threads 1</code> is the behaviour of releases up to 1.9.0. When a poll
+thread is held up, hsa-snoop says so in its log and, in Prometheus mode, in
+<code>hsa_poller_stalled_seconds_total</code> and <code>hsa_queues_unobserved_tail_total</code>;
+see "Poller health" in the Prometheus page.</p>
 <h2 id="dispatch-event-log-log-dispatches">Dispatch Event Log (<code>--log-dispatches</code>)<a class="headerlink" href="#dispatch-event-log-log-dispatches" title="Permanent link">&para;</a></h2>
 <p>Prometheus is an aggregating store sampled at the scrape interval. At the
 ~2700 kernel launches/s a tight HIP loop reaches, a 1 s scrape collapses

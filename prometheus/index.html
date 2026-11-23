@@ -414,6 +414,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#series-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Series lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#poller-health" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Poller health
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ais-metrics" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -782,6 +804,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#series-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Series lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#poller-health" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Poller health
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ais-metrics" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -826,7 +870,7 @@
 <h2 id="hsa-gpu-metrics">HSA / GPU Metrics<a class="headerlink" href="#hsa-gpu-metrics" title="Permanent link">&para;</a></h2>
 <p>All metrics carry constant labels <code>host</code>, <code>platform</code>, <code>rocm_version</code>,
 <code>discovery_mode</code>.</p>
-<p>Options that shape the labels:</p>
+<p>Options that shape the labels and the series:</p>
 <table>
 <thead>
 <tr>
@@ -855,6 +899,16 @@
 <td><code>--kernel-name-max &lt;n&gt;</code></td>
 <td>—</td>
 <td>Truncate <code>kernel_name</code> values to <code>n</code> bytes (ending in <code>...</code>). Default 0, no limit. Names that differ only past the cut share one series.</td>
+</tr>
+<tr>
+<td><code>--poll-threads &lt;n&gt;</code></td>
+<td>—</td>
+<td>Number of ring poll threads, 1 to 64. Default: the number of CPU cores, at most 4. All queues of a process are polled by one thread. See <a href="#poller-health">Poller health</a>.</td>
+</tr>
+<tr>
+<td><code>--series-retain-sec &lt;n&gt;</code></td>
+<td><code>HSA_SNOOP_SERIES_RETAIN_SEC</code></td>
+<td>How long the series of a process outlive its last queue. Default 300; 0 keeps them for ever. See <a href="#series-lifecycle">Series lifecycle</a>.</td>
 </tr>
 </tbody>
 </table>
@@ -932,7 +986,13 @@ get the sample rate:</p>
 <td><code>hsa_active_queues</code></td>
 <td>Gauge</td>
 <td><code>gpu_id</code>, <code>gpu_type</code></td>
-<td>Currently tracked AQL queues</td>
+<td>AQL queues being polled now. Goes down when a queue is destroyed or its process exits</td>
+</tr>
+<tr>
+<td><code>hsa_queue_info</code></td>
+<td>Gauge</td>
+<td><code>gpu_id</code>, <code>gpu_type</code>, <code>pid</code>, <code>comm</code>, <code>ring_base</code>, <code>ring_phys</code>, <code>ring_size</code></td>
+<td>One series per queue being polled now (value always 1). Removed as soon as the queue is dropped</td>
 </tr>
 <tr>
 <td><code>hsa_barrier_packets_total</code></td>
@@ -962,7 +1022,7 @@ get the sample rate:</p>
 <td><code>hsa_active_sdma_queues</code></td>
 <td>Gauge</td>
 <td><code>gpu_id</code>, <code>gpu_type</code></td>
-<td>Currently tracked SDMA queues</td>
+<td>SDMA queues being polled now</td>
 </tr>
 <tr>
 <td><code>hsa_sdma_present</code></td>
@@ -989,6 +1049,18 @@ get the sample rate:</p>
 <td>AQL packets not decoded. <code>reason</code> is <code>overwritten</code> (the ring wrapped before they were read), <code>consumed</code> (already consumed and the slot no longer holds a packet that can be decoded) or <code>unreadable</code> (the slot read failed). Counts every packet type, not only kernel dispatches</td>
 </tr>
 <tr>
+<td><code>hsa_poller_stalled_seconds_total</code></td>
+<td>Counter</td>
+<td><code>thread</code></td>
+<td>Time a poll thread was held up with queues overdue for a poll. See <a href="#poller-health">Poller health</a></td>
+</tr>
+<tr>
+<td><code>hsa_queues_unobserved_tail_total</code></td>
+<td>Counter</td>
+<td><code>gpu_id</code>, <code>gpu_type</code>, <code>kind</code></td>
+<td>Queues (<code>kind</code> is <code>aql</code> or <code>sdma</code>) that went away too long after their last successful poll, or without ever being read. What they did in that time is in no other counter</td>
+</tr>
+<tr>
 <td><code>hsa_xnack_total</code></td>
 <td>Counter</td>
 <td><code>pasid</code>, <code>comm</code></td>
@@ -996,6 +1068,126 @@ get the sample rate:</p>
 </tr>
 </tbody>
 </table>
+<p>Per-GPU totals of the per-process counters above. They count the same events
+across all processes and are never removed:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Labels</th>
+<th>Total of</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hsa_gpu_kernel_launches_total</code></td>
+<td><code>gpu_id</code>, <code>gpu_type</code></td>
+<td><code>hsa_kernel_launches_total</code></td>
+</tr>
+<tr>
+<td><code>hsa_gpu_kernel_durations_unmeasured_total</code></td>
+<td><code>gpu_id</code>, <code>gpu_type</code></td>
+<td><code>hsa_kernel_durations_unmeasured_total</code></td>
+</tr>
+<tr>
+<td><code>hsa_gpu_dispatches_missed_total</code></td>
+<td><code>gpu_id</code>, <code>gpu_type</code>, <code>reason</code></td>
+<td><code>hsa_dispatches_missed_total</code></td>
+</tr>
+<tr>
+<td><code>hsa_gpu_barrier_packets_total</code></td>
+<td><code>gpu_id</code>, <code>gpu_type</code></td>
+<td><code>hsa_barrier_packets_total</code></td>
+</tr>
+<tr>
+<td><code>hsa_gpu_sdma_copies_total</code></td>
+<td><code>gpu_id</code>, <code>gpu_type</code>, <code>direction</code></td>
+<td><code>hsa_sdma_copies_total</code></td>
+</tr>
+<tr>
+<td><code>hsa_gpu_sdma_bytes_total</code></td>
+<td><code>gpu_id</code>, <code>gpu_type</code>, <code>direction</code></td>
+<td><code>hsa_sdma_bytes_total</code></td>
+</tr>
+<tr>
+<td><code>hsa_gpu_sdma_packets_total</code></td>
+<td><code>gpu_id</code>, <code>gpu_type</code>, <code>opcode</code></td>
+<td><code>hsa_sdma_packets_total</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="series-lifecycle">Series lifecycle<a class="headerlink" href="#series-lifecycle" title="Permanent link">&para;</a></h2>
+<p>Every series with a <code>pid</code> label belongs to one process. When the last queue
+of that process is gone (it exited, or shut its runtime down), its series are
+kept for <code>--series-retain-sec</code> seconds, 300 by default, and then removed from
+<code>/metrics</code>. Without this a node where jobs come and go would export a few more
+series for every process it has ever seen, and hsa-snoop's memory would grow
+with them.</p>
+<ul>
+<li><strong>Set the retention to at least two scrape intervals.</strong> A series has to be
+  scraped once after its last change for Prometheus to hold its final value.</li>
+<li><strong>The retention starts over if the process comes back.</strong> A new queue of the
+  same pid inside the period keeps the series and their counts. After the
+  period a reused pid starts new series from 0, which <code>rate()</code> and
+  <code>increase()</code> handle as a counter reset.</li>
+<li><strong><code>hsa_queue_info</code> is not retained.</strong> It is removed with its queue, so a
+  queue that lives for less than a scrape interval may never be scraped. The
+  <code>queue</code> events of <code>--log-dispatches</code> record every queue.</li>
+<li><strong>AIS operation counts</strong> (<code>ais_rx_ops_total</code>, <code>ais_tx_ops_total</code>) carry a
+  <code>pid</code> too. For a process with no queue (one outside <code>--pid</code>, or a thread
+  other than the main one, which AIS reports under its own id) they are kept
+  for as long as the process or thread exists, however long it goes between
+  two operations, and removed the retention period after it is found gone.</li>
+<li><strong><code>--series-retain-sec 0</code></strong> keeps every series for as long as hsa-snoop
+  runs, as releases up to 1.9.0 did. The two active-queue gauges and
+  <code>hsa_queue_info</code> follow the live queues all the same.</li>
+</ul>
+<p>What this means for counters: a per-process counter is not monotonic for the
+life of hsa-snoop, because it disappears. Summing it over processes, as in
+<code>sum by (gpu_id) (hsa_kernel_launches_total)</code>, gives a value that drops each
+time a process's series are removed. <code>sum(rate(...))</code> and <code>sum(increase(...))</code>
+are not affected, since Prometheus computes them per series before summing.
+For a total that only ever goes up, use the <code>hsa_gpu_*_total</code> counters. The
+histograms, the per-GPU gauges and the <code>--mem-snoop</code> metrics have no <code>pid</code>
+label and are never removed.</p>
+<h2 id="poller-health">Poller health<a class="headerlink" href="#poller-health" title="Permanent link">&para;</a></h2>
+<p>hsa-snoop sees a queue only when it polls it. Two counters say when it could
+not, so that a gap in the other metrics is not mistaken for a quiet GPU.
+Neither has a <code>pid</code> label and neither is ever removed.</p>
+<ul>
+<li><strong><code>hsa_poller_stalled_seconds_total</code></strong> has one series per poll thread
+  (<code>--poll-threads</code>). It grows by the time a thread got to a queue later than
+  the queue was due, once that is more than 50 ms (or more than the queue's
+  own interval, for an idle queue polled less often than that). Time during
+  which several queues of a thread were overdue is counted once. A thread is
+  normally held up by a read of a process's memory that blocks in the kernel,
+  which happens when a GPU is out of memory; none of that thread's queues is
+  looked at meanwhile. If the queue being read goes away during such a read,
+  the time the thread was held in it is counted as well, even when the
+  thread has no other queue left. Launches made during a stall are still decoded
+  afterwards as long as the queue is still there and its ring has not
+  wrapped, but their durations are wrong or unmeasured.</li>
+<li><strong><code>hsa_queues_unobserved_tail_total</code></strong> counts queues whose end was not
+  seen: the queue went away more than about 50 ms after its last successful
+  poll (more for an idle queue with a longer poll interval), or was never
+  read at all. The time is taken up to the read that failed, so what
+  hsa-snoop then spends finding out why is not held against the queue. Whatever the queue did in that time is lost, and no <code>missed</code>
+  counter includes it, because the amount is not known. A process usually
+  has two or three queues, and each counts.</li>
+</ul>
+<p>Both say where to distrust the other numbers, not how much is missing: a
+queue counted here may have done nothing in the time it was not watched. In
+the overload test described in the limitations page every process that lost
+launches had a queue counted here, and so did most that lost none. Both stay
+at 0 on a system that is keeping up, so alert on any increase of the second
+and on a sustained rate of the first:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kr">increase</span><span class="o">(</span><span class="nv">hsa_queues_unobserved_tail_total</span><span class="p">[</span><span class="s">10m</span><span class="p">]</span><span class="o">)</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mi">0</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="k">sum</span><span class="o">(</span><span class="kr">rate</span><span class="o">(</span><span class="nv">hsa_poller_stalled_seconds_total</span><span class="p">[</span><span class="s">5m</span><span class="p">]</span><span class="o">))</span><span class="w"> </span><span class="o">&gt;</span><span class="w"> </span><span class="mf">0.05</span>
+</code></pre></div>
+<p>What to do when they grow: run fewer processes per GPU or give the GPU more
+memory, so that reads stop blocking; and raise <code>--poll-threads</code>, so that one
+blocked read holds up fewer processes. See the limitations page for what was
+measured.</p>
 <h2 id="ais-metrics">AIS Metrics<a class="headerlink" href="#ais-metrics" title="Permanent link">&para;</a></h2>
 <p>All require <code>--ais-snoop</code>. Labels: <code>gpu_id</code>, <code>gpu_type</code>, <code>pcie_id</code>,
 <code>device_type</code>, <code>vendor</code>.</p>

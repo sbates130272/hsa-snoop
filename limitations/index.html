@@ -753,7 +753,46 @@
   The first packets after an idle spell are therefore seen up to that much
   later, which can cost them their host-observed duration. <code>--poll-idle-us 0</code>
   polls every queue at <code>--poll-us</code> always.</li>
-<li><strong>Durations are sampled.</strong> <code>hsa_kernel_duration_seconds</code> is only observed for
+<li><strong>A read that blocks holds up a poll thread, and can cost a process its
+  whole output.</strong> From ROCm 10.2 every read of a ring or of its pointers goes
+  through the GPU driver (see below). When a GPU is out of memory such a read
+  can block for a long time: with 24 processes on one emulated GPU, whose
+  memory is full from about 16, single reads blocked for up to 96 s. Nothing
+  is polled on that thread meanwhile, and hsa-snoop cannot put a time limit
+  on a read. What was launched during the stall is decoded afterwards if the
+  queue is still there and fewer packets than the ring holds have gone by,
+  though without a duration. A process that exits during the stall takes its
+  ring with it, and what it launched since its last poll is lost: it is in
+  no <code>missed</code> counter, because the amount is not known. Three things limit
+  this and make it visible:<ul>
+<li><code>--poll-threads &lt;n&gt;</code> (default: the number of CPU cores, at most 4) polls
+  with several threads. All queues of a process stay on one thread, so a
+  blocked read holds up only the processes that share its thread, not
+  every process. More threads cost more CPU while queues are busy;
+  idle queues cost the same however many threads there are.</li>
+<li><code>hsa_poller_stalled_seconds_total</code> counts the time a poll thread was
+  held up, and <code>hsa_queues_unobserved_tail_total</code> the queues that went
+  away too long after their last successful poll for their end to have
+  been seen. Both are described in the Prometheus page.</li>
+<li>In every mode the same goes to the log: a <code>[parser] poll thread ...
+  stalled</code> line (at most one per thread every 5 s), a <code>[parser] queue ...
+  went away ... after its last successful poll</code> line per such queue,
+  <code>tail_unobserved=1</code> in that queue's <code>[summary]</code> line, and totals in the
+  <code>[summary] poller</code> line at exit.</li>
+</ul>
+</li>
+</ul>
+<p>If these grow, run fewer processes per GPU or give the GPU more memory,
+  and raise <code>--poll-threads</code>. Measured with 24 processes of 5,400 launches
+  each on one emulated GPU, six runs for each setting: with one poll thread
+  75%, 79%, 79%, 79%, 99.7% and 99.9% of the launches were reported, with
+  four threads 95.8%, 99.8%, 99.96% and three times 100%. More threads did
+  not shorten the stalls, and at times several threads were held up
+  together, so a process can still be lost. Every process that lost
+  launches had <code>tail_unobserved=1</code>; so had most of those that lost none,
+  because under this load most queues are last polled well before they go
+  away.
+* <strong>Durations are sampled.</strong> <code>hsa_kernel_duration_seconds</code> is only observed for
   a packet the poller saw while it was still pending. A packet that was already
   consumed when first seen is counted as a launch but has no measurable
   duration, so on a workload of very short kernels the histogram count is well
@@ -762,34 +801,48 @@
   unmeasured over launches (the query is in the Prometheus page); a lower
   <code>--poll-us</code> raises it at the cost of CPU.
   The sample is biased towards longer kernels, which are more likely to be seen
-  pending.</li>
-<li><strong>Unresolved kernel names.</strong> A kernel whose descriptor cannot be matched to a
+  pending.
+* <strong>Unresolved kernel names.</strong> A kernel whose descriptor cannot be matched to a
   symbol is labelled <code>kernel_0x&lt;addr&gt;</code>. The lookup is retried by up to three
   further scans of the process, at least 30 s apart, so a name that was
   unavailable at first sight is picked up for later launches under a new
-  series.</li>
-<li><strong><code>--mem-snoop</code> reuses a snapshot of the process's VM map for up to one
+  series.
+* <strong>Series without a <code>pid</code> label are never removed.</strong> The duration histograms
+  and the <code>--mem-snoop</code> metrics have one series per kernel name and GPU, so
+  they grow with the number of different kernel names seen, not with the
+  number of processes. Kernels that stay unresolved are the exception: each
+  <code>kernel_0x&lt;addr&gt;</code> label is a new name, and many short processes with
+  unresolved kernels add series that stay. Series with a <code>pid</code> label are
+  removed after <code>--series-retain-sec</code>; see the Prometheus page.
+* <strong><code>--mem-snoop</code> reuses a snapshot of the process's VM map for up to one
   second</strong>, because reading <code>/proc/&lt;pid&gt;/maps</code> per dispatch stalls the poller on
   processes with thousands of mappings. A buffer mapped within the last second
-  may be absent from <code>mapped_vram</code> for that dispatch.</li>
-<li><strong>Timing is host-observed.</strong> enqueue→queue-consumed uses host timestamps for
+  may be absent from <code>mapped_vram</code> for that dispatch.
+* <strong>Timing is host-observed.</strong> enqueue→queue-consumed uses host timestamps for
   queue pointer transitions, so a slice includes queue-wait time and may differ
   from true kernel execution or completion-signal timing. No profiling signals
-  or counters are read; this is best used for structure and relative timing.</li>
-<li><strong>Packets on a queue that already existed are reported from the first poll
+  or counters are read; this is best used for structure and relative timing.
+* <strong>The startup scan stops each KFD process for an instant.</strong> In <code>--pid</code> and
+  <code>--all</code> modes hsa-snoop attaches to every process that already has KFD
+  queues, and has to stop its main thread briefly to let go of it again. A
+  blocking system call that thread is in can return <code>EINTR</code>. Most programs
+  retry; for a workload that does not, <code>--no-scan</code> skips the scan, at the
+  price of not seeing queues that existed before hsa-snoop started.
+* <strong>Packets on a queue that already existed are reported from the first poll
   onwards.</strong> A queue seen being created by the KFD <code>create_queue</code> probe is
   decoded from the start of its ring. Queues found by the startup scan, and
   queues discovered through <code>librocdxg</code> on WSL2, start from the first poll.
   The <code>[summary]</code> line printed when a queue stops being polled gives the
-  decoded and missed counts, and how much was in the ring before the first
-  poll.</li>
-<li><strong>Attach mode only sees queues created after attach</strong>, since the kprobe fires
-  on <code>create_queue</code>. Use launch mode to guarantee capture from process start.</li>
-<li><strong>AIS byte counts are the requested sizes of requests that succeeded.</strong> The
+  decoded and missed counts, how much was in the ring before the first
+  poll, the number of successful polls, the longest time between two polls
+  and whether the end of the queue went unobserved.
+* <strong>Attach mode only sees queues created after attach</strong>, since the kprobe fires
+  on <code>create_queue</code>. Use launch mode to guarantee capture from process start.
+* <strong>AIS byte counts are the requested sizes of requests that succeeded.</strong> The
   return probe gives each request's status but not the bytes moved, so a short
   transfer is reported at its requested size. A failed request counts as an
-  error and moves nothing.</li>
-<li><strong><code>hsa_kernel_duration_seconds</code> is a coarse histogram by nature.</strong> Its buckets
+  error and moves nothing.
+* <strong><code>hsa_kernel_duration_seconds</code> is a coarse histogram by nature.</strong> Its buckets
   run 50 µs to 5 s on a 1-2.5-5 ladder, chosen against 96,749 measured
   dispatches so the fullest bucket holds ~42% of samples rather than the 72% the
   original decade ladder produced. <code>histogram_quantile</code> still interpolates
@@ -798,23 +851,23 @@
   (<code>quantile_over_time(... | unwrap dur_us ...)</code>), which quantiles the individual
   measurements. The 50 µs floor is deliberate: durations come from polling the
   ring at <code>--poll-us</code> (default 20 µs), so anything below a couple of poll
-  intervals is quantisation noise.</li>
-<li><strong>WSL2 PID mapping is heuristic.</strong> bpftrace reports host-kernel PIDs, which
+  intervals is quantisation noise.
+* <strong>WSL2 PID mapping is heuristic.</strong> bpftrace reports host-kernel PIDs, which
   differ from WSL2 namespace PIDs by a fixed offset. In <code>--all</code> mode without a
   known target PID, hsa-snoop scans <code>/proc</code> by comm name to resolve the
   namespace PID. This can misattribute queues if two processes share the same
   comm prefix. Launch mode (<code>-- &lt;command&gt;</code>) avoids this by using the known
-  child PID.</li>
-<li><strong>Physical addresses</strong> resolve for rings in ordinary process memory. A ring
+  child PID.
+* <strong>Physical addresses</strong> resolve for rings in ordinary process memory. A ring
   with no frame visible in pagemap reports <code>ring_phys=0x0</code>; that is also what
-  a run without <code>CAP_SYS_ADMIN</code> sees.</li>
-<li><strong>From ROCm 10.2 every ring is a GPU buffer object.</strong> The runtime allocates
+  a run without <code>CAP_SYS_ADMIN</code> sees.
+* <strong>From ROCm 10.2 every ring is a GPU buffer object.</strong> The runtime allocates
   AQL and SDMA rings as non-paged buffers mapped through the DRM render node,
   where 10.1 used anonymous memory. <code>process_vm_readv</code> cannot read such a
   mapping, so hsa-snoop reads it through <code>/proc/&lt;pid&gt;/mem</code>, which costs more
   per read. This applies to every GPU, and no runtime setting restores the old
-  layout. The <code>[queue]</code> line shows what backs each ring as <code>ring_backing=</code>.</li>
-<li><strong>SDMA decode supports v4.x, v6.x, and v7.x packet layouts.</strong> v4 covers gfx9
+  layout. The <code>[queue]</code> line shows what backs each ring as <code>ring_backing=</code>.
+* <strong>SDMA decode supports v4.x, v6.x, and v7.x packet layouts.</strong> v4 covers gfx9
   CDNA (gfx90a / gfx942); v6 covers gfx11 RDNA3 (including gfx1101); v7 covers
   gfx12. Up to gfx12.4 the runtime writes the v6 packet set; from gfx12.5
   (gfx1250 / MI455X) it writes variable-length copies with optional wait and
@@ -823,16 +876,15 @@
   packet the decoder does not recognise makes it skip to the write pointer;
   the <code>[summary]</code> line reports the skipped amount, which should be zero.
   Non-linear copy layouts (tiled, sub-window) and copies to several destinations are counted
-  and stepped over but do not yet contribute a byte total.</li>
-<li><strong>SDMA copy direction is a pagemap heuristic.</strong> A src/dst page with no PFN is
+  and stepped over but do not yet contribute a byte total.
+* <strong>SDMA copy direction is a pagemap heuristic.</strong> A src/dst page with no PFN is
   treated as device (VRAM) memory; this also matches a not-present/swapped host
   page, so a copy touching a paged-out host buffer can be misclassified. For
-  live, pinned copy buffers (the common case) it is accurate.</li>
-<li>Verified on: gfx90a (MI2xx / Aldebaran), ROCm 7.1.0, amdgpu 6.16 DKMS,
+  live, pinned copy buffers (the common case) it is accurate.
+* Verified on: gfx90a (MI2xx / Aldebaran), ROCm 7.1.0, amdgpu 6.16 DKMS,
   kernel 6.8, x86-64; gfx1101 SDMA v6 COPY_LINEAR; gfx1250 (MI455X) SDMA v7
   COPY_LINEAR via rocjitsu/vfio-user. SDMA capture calibration is in progress
-  on gfx942 (MI3xx).</li>
-</ul>
+  on gfx942 (MI3xx).</p>
 
 
 
