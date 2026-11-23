@@ -6,6 +6,8 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-11-23
+
 ### Added
 - `--series-retain-sec <n>` (default 300, env `HSA_SNOOP_SERIES_RETAIN_SEC`):
   in Prometheus mode the series of a process, that is every series with a
@@ -358,7 +360,8 @@ Initial public release. Core features:
 - Debian package with systemd service and logrotate config.
 - Tag-triggered GitHub Release with `.deb` asset via `debian-publish` CI.
 
-[Unreleased]: https://github.com/sbates130272/hsa-snoop/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/sbates130272/hsa-snoop/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.6.0...v1.7.0
