@@ -49,6 +49,10 @@ struct PrometheusExporterOptions {
     // GPU clock rate in ticks per second, for turning the command processor's
     // dispatch timestamps into seconds; 0 = measure it through KFD.
     double gpu_clock_hz = 0;
+    // How long the series of a process (anything with a `pid` label) outlive
+    // its last queue, so a scraper still reads their final values. 0 = never
+    // remove them.
+    double series_retain_sec = 300;
 };
 
 class PrometheusExporter {
@@ -64,6 +68,23 @@ class PrometheusExporter {
 
     // Called for each newly discovered AQL queue. Thread-safe.
     void RegisterQueue(const QueueInfo& q);
+
+    // The parser has dropped this queue. Lowers the active-queue gauge,
+    // removes the queue's hsa_queue_info series and, when it was the last
+    // queue of its pid, starts the retention period of that pid's series.
+    // tail_unobserved (see RingParser::RemoveSink) counts the queue in
+    // hsa_queues_unobserved_tail_total. Unknown uids are ignored. Thread-safe.
+    void UnregisterQueue(uint64_t queue_uid, bool tail_unobserved = false);
+
+    // Poll thread `thread` reached a queue `seconds` late (RingParser's
+    // StallSink). 0 seconds creates the thread's series. Thread-safe.
+    void AddPollerStall(unsigned thread, double seconds);
+
+    // Removes the series of every pid whose retention period has ended by
+    // `now`; returns how many series went. The background thread calls this
+    // every couple of seconds. Thread-safe.
+    size_t ExpireSeries(std::chrono::steady_clock::time_point now =
+                            std::chrono::steady_clock::now());
 
     // Called for each completed PacketRecord from RingParser. Thread-safe.
     void Add(const PacketRecord& rec);
@@ -115,7 +136,31 @@ class PrometheusExporter {
         int pid;
         std::string comm;
         std::string gpu_type;
+        bool sdma;
+        prometheus::Gauge* info_gauge;
     };
+
+    // Everything exported with this pid as a label, so it can be removed
+    // once the process is gone. Only counters carry a pid label, apart from
+    // hsa_queue_info, which goes with its queue.
+    struct PidSeries {
+        int live_queues = 0;
+        // False for a pid known only from AIS records.
+        bool had_queue = false;
+        bool expiring = false;
+        std::chrono::steady_clock::time_point expire_at;
+        std::unordered_map<prometheus::Counter*,
+                           prometheus::Family<prometheus::Counter>*>
+            counters;
+    };
+
+    // Family::Add for a series with a pid label. Every such series must be
+    // created through this, or it is never removed. Caller holds meta_mu_.
+    prometheus::Counter&
+    PidCounter(prometheus::Family<prometheus::Counter>& family, int pid,
+               const prometheus::Labels& labels);
+    // Caller holds meta_mu_.
+    void UnregisterQueueLocked(uint64_t queue_uid);
 
     struct LaunchEvent {
         std::chrono::steady_clock::time_point ts;
@@ -189,9 +234,29 @@ class PrometheusExporter {
     prometheus::Family<prometheus::Gauge>& mem_scratch_family_;
     prometheus::Family<prometheus::Gauge>& mem_mapped_vram_family_;
     prometheus::Family<prometheus::Counter>& mem_mapped_vram_total_family_;
+    // Per-GPU totals of the counters that are otherwise exported per pid.
+    // Per-pid series are removed after the process exits; these are not, so
+    // they stay monotonic for as long as hsa-snoop runs.
+    prometheus::Family<prometheus::Counter>& gpu_launches_family_;
+    prometheus::Family<prometheus::Counter>& gpu_unmeasured_family_;
+    prometheus::Family<prometheus::Counter>& gpu_missed_family_;
+    prometheus::Family<prometheus::Counter>& gpu_barrier_family_;
+    prometheus::Family<prometheus::Counter>& gpu_sdma_copies_family_;
+    prometheus::Family<prometheus::Counter>& gpu_sdma_bytes_family_;
+    prometheus::Family<prometheus::Counter>& gpu_sdma_packets_family_;
+    // Poller health: neither has a pid label, so neither is ever removed.
+    prometheus::Family<prometheus::Counter>& poller_stalled_family_;
+    prometheus::Family<prometheus::Counter>& unobserved_tail_family_;
 
     // Guards all metadata maps and per-gpu gauge pointer caches.
     std::mutex meta_mu_;
+
+    const double series_retain_sec_;
+    // Unused (always empty) when series_retain_sec_ is 0.
+    std::unordered_map<int, PidSeries> pid_series_;
+    // Queues sharing one hsa_queue_info series. A pid can be reused with the
+    // same ring address before the old queue has been dropped.
+    std::unordered_map<prometheus::Gauge*, int> queue_info_refs_;
 
     // GPU-timestamped durations. The clock rate of a GPU is measured once, off
     // the record path, by the rate thread; durations that arrive before it is

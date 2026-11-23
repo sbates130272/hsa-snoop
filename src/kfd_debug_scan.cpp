@@ -77,8 +77,63 @@ std::vector<pid_t> FindKfdProcesses(pid_t pid_filter) {
     return result;
 }
 
+// Release a tracee attached with PTRACE_SEIZE. PTRACE_DETACH only works on a
+// tracee in a ptrace-stop and a seized tracee keeps running, so it has to be
+// stopped first. Left attached, the process cannot be reaped by its parent
+// or attached by a debugger for as long as hsa-snoop lives.
+void DetachTracee(pid_t pid) {
+    if (ptrace(PTRACE_INTERRUPT, pid, 0, 0) < 0) {
+        if (errno != ESRCH)
+            fprintf(stderr, "[kfd-scan] ptrace INTERRUPT pid=%d: %s\n", pid,
+                    strerror(errno));
+        // ESRCH: gone, or dying; a dying tracee still has to be waited for,
+        // which is what releases it to its parent.
+    }
+
+    const double deadline = MonoNow() + 5.0;
+    for (;;) {
+        int status = 0;
+        pid_t r = waitpid(pid, &status, __WALL | WNOHANG);
+        if (r < 0) {
+            if (errno == EINTR)
+                continue;
+            // ECHILD: no longer our tracee, so there is nothing to detach.
+            if (errno != ECHILD)
+                fprintf(stderr, "[kfd-scan] waitpid pid=%d: %s\n", pid,
+                        strerror(errno));
+            return;
+        }
+        if (r == pid) {
+            if (WIFEXITED(status) || WIFSIGNALED(status))
+                return; // died while attached; the wait released it
+            if (WIFSTOPPED(status)) {
+                // A signal-delivery-stop holds a signal the tracee has not
+                // been given yet; hand it back with the detach or it is lost.
+                // Every other stop of a seized tracee carries an event code.
+                int sig = (status >> 16) == 0 ? WSTOPSIG(status) : 0;
+                if (ptrace(PTRACE_DETACH, pid, 0, sig) == 0 || errno == ESRCH)
+                    return;
+                fprintf(stderr, "[kfd-scan] ptrace DETACH pid=%d: %s\n", pid,
+                        strerror(errno));
+                return;
+            }
+            continue;
+        }
+        if (MonoNow() >= deadline) {
+            fprintf(stderr,
+                    "[kfd-scan] pid=%d did not stop within 5 s; it stays "
+                    "ptrace-attached to hsa-snoop until hsa-snoop exits\n",
+                    pid);
+            return;
+        }
+        usleep(200);
+    }
+}
+
 // Snapshot all KFD queues for pid using the debug-trap API.
-// kfd_fd must be an open fd on /dev/kfd in this process.
+// kfd_fd must be an open fd on /dev/kfd in this process. The driver only
+// accepts the enable and snapshot calls from the target's tracer, so the
+// target stays attached until the trap has been disabled again.
 void SnapshotProcessQueues(pid_t pid, int kfd_fd,
                            const std::function<void(const QueueInfo&)>& cb) {
     int efd = eventfd(0, EFD_CLOEXEC);
@@ -109,7 +164,7 @@ void SnapshotProcessQueues(pid_t pid, int kfd_fd,
         if (errno != ESRCH && errno != EINVAL)
             fprintf(stderr, "[kfd-scan] DBG_TRAP_ENABLE pid=%d: %s\n", pid,
                     strerror(errno));
-        ptrace(PTRACE_DETACH, pid, 0, 0);
+        DetachTracee(pid);
         close(efd);
         return;
     }
@@ -180,9 +235,14 @@ disable:
     struct kfd_ioctl_dbg_trap_args dis {};
     dis.pid = static_cast<__u32>(pid);
     dis.op = KFD_IOC_DBG_TRAP_DISABLE;
-    ioctl(kfd_fd, AMDKFD_IOC_DBG_TRAP, &dis); // best-effort; ignore error
+    // The driver also disables the trap when the debugger's fd closes, and
+    // the target may already have gone.
+    if (ioctl(kfd_fd, AMDKFD_IOC_DBG_TRAP, &dis) < 0 && errno != ESRCH &&
+        errno != EINVAL)
+        fprintf(stderr, "[kfd-scan] DBG_TRAP_DISABLE pid=%d: %s\n", pid,
+                strerror(errno));
 
-    ptrace(PTRACE_DETACH, pid, 0, 0);
+    DetachTracee(pid);
     close(efd);
 }
 

@@ -120,6 +120,22 @@ std::string Dims16(const uint16_t* g) {
 
 } // namespace
 
+std::string TraceFileStem(const std::string& comm, uint64_t uid) {
+    std::string stem;
+    for (char c : comm) {
+        const bool safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                          (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+                          c == '-' || c == '+';
+        stem += safe ? c : '_';
+    }
+    // No hidden files, and no "." or ".." path components.
+    if (!stem.empty() && stem[0] == '.')
+        stem[0] = '_';
+    if (stem.empty())
+        stem = "queue";
+    return stem + "-" + std::to_string(uid);
+}
+
 void TraceWriter::Add(const PacketRecord& rec) {
     std::lock_guard<std::mutex> lk(mu_);
     records_.push_back(rec);

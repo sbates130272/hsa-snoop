@@ -13,6 +13,11 @@ namespace hsasnoop {
 
 enum class Format { kPerfetto, kJson };
 
+// File name, without extension, of a queue's trace in --all mode:
+// "<comm>-<uid>". comm is whatever the process set, so anything that is not
+// safe in a file name is replaced.
+std::string TraceFileStem(const std::string& comm, uint64_t uid);
+
 class TraceWriter {
   public:
     explicit TraceWriter(Format fmt) : fmt_(fmt) {}

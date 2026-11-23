@@ -11,6 +11,14 @@ on:
 permissions:
   contents: write
 
+# Merging a release PR and pushing its tag starts two runs on the same commit,
+# and both see the tag at HEAD. Run them one after the other; the second then
+# finds the release already there. Keyed on the commit so that a run is only
+# ever queued behind, or replaced by, another run for the same commit.
+concurrency:
+  group: debian-publish-${{ github.sha }}
+  cancel-in-progress: false
+
 jobs:
   publish-deb:
     name: Publish Debian package to GitHub Releases
@@ -104,11 +112,23 @@ jobs:
       shell: bash
       run: |
         if [[ "${PRERELEASE}" == "false" ]]; then
-          # Named semver release — create once, do not overwrite
-          gh release create "${TAG}" \
-            --title "hsa-snoop ${TAG}" \
-            --generate-notes \
-            "${DEB_FILE}"
+          # Named semver release. The push to main and the push of the tag
+          # both get here for the same commit, so the release may already
+          # exist: then only replace the package, built from the same source.
+          upload_deb() {
+            gh release upload "${TAG}" "${DEB_FILE}" --clobber
+          }
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            echo "Release ${TAG} exists; replacing ${DEB_FILE}"
+            upload_deb
+          elif ! gh release create "${TAG}" \
+                 --title "hsa-snoop ${TAG}" \
+                 --generate-notes \
+                 "${DEB_FILE}"; then
+            # Lost a race with another run that created it meanwhile.
+            gh release view "${TAG}" > /dev/null
+            upload_deb
+          fi
         else
           # Rolling latest pre-release for every main push
           gh release delete latest --yes || true
