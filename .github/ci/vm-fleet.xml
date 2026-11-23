@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The guest the vm-hardware-test workflow boots with qemu-tool-action: one
+  ROCm 10.2 guest with two emulated gfx1250 GPUs and one NVMe namespace.
+
+  Written for qemu-tool 3. A fleet XML is tied to the qemu-tool that reads
+  it, so the workflow pins the qemu-tool version it installs.
+-->
+<fleet xmlns="http://qemu-tool/fleet/1.0">
+
+  <vm-count>1</vm-count>
+  <vm-name-prefix>hsa-snoop</vm-name-prefix>
+
+  <!-- QEMU and the device servers are one build and have to stay one. -->
+  <qemu-ref>docker.io/sbates130272/batesste-ci-images-ubuntu-qemu-libvfio-user-sbates-fork:20261119.gc3dd883-qemu.4cb9698-vfu.3719c3a</qemu-ref>
+  <ernic-ref>docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-ernic-sbates-fork:20261119.gc3dd883-ernic.90434a2-vfu.3719c3a</ernic-ref>
+  <rocjitsu-ref>docker.io/sbates130272/batesste-ci-images-ubuntu-rocm-rocjitsu:20261119.gc3dd883-rocjitsu.50be05a</rocjitsu-ref>
+
+  <!-- rocm-golden guest from qemu-minimal: ROCm 10.2 on mainline 7.2.6. -->
+  <backing-ref>docker.io/sbates130272/qemu-tool-rocm-golden:20261120.gfddac6f</backing-ref>
+
+  <!-- Two GPUs, so the tests can check that hsa-snoop tells them apart. A
+       fleet needs at least one NIC; nothing here uses it. -->
+  <rocjitsu-per-vm>2</rocjitsu-per-vm>
+  <ernic-per-vm>1</ernic-per-vm>
+  <ernic-tap>false</ernic-tap>
+
+  <!-- The AIS tests read and write a file on this namespace. -->
+  <vm-nvme>1</vm-nvme>
+
+  <vm-vcpus>4</vm-vcpus>
+  <vm-vmem>8192</vm-vmem>
+  <!-- Must be >= vm-vmem: guest RAM is a shared memfd. -->
+  <vm-shm-size>9g</vm-shm-size>
+
+  <vm-vfio-user-root-port>true</vm-vfio-user-root-port>
+  <vm-cpu-phys-bits>42</vm-cpu-phys-bits>
+  <vm-pci-hole64-size>1024G</vm-pci-hole64-size>
+
+  <vm-username>ubuntu</vm-username>
+
+  <grafana-enable>false</grafana-enable>
+  <logs-enable>false</logs-enable>
+
+</fleet>

@@ -365,6 +365,24 @@ if(HSA_SNOOP_HARDWARE_TESTS)
     LABELS "hardware;gfx"
     TIMEOUT 180)
 
+  # Two GPUs: one workload on each at the same time; the launches must be
+  # credited to the right gpu_id. Skips on a single-GPU system unless
+  # HSA_SNOOP_HARDWARE_GPUS says two are expected.
+  set(HSA_SNOOP_HARDWARE_GPUS "0" CACHE STRING
+    "GPUs the hardware tests may rely on (0 = use what is there)")
+  add_test(
+    NAME two-gpu-hardware-test
+    COMMAND ${CMAKE_COMMAND}
+      -DHSA_SNOOP=$<TARGET_FILE:hsa-snoop>
+      -DGFX_TEST=$<TARGET_FILE:gfx-test>
+      -DTRACE_DIR=${CMAKE_CURRENT_BINARY_DIR}/two-gpu-traces
+      -DREQUIRE_GPUS=${HSA_SNOOP_HARDWARE_GPUS}
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/two_gpu_hardware_test.cmake)
+  set_tests_properties(two-gpu-hardware-test PROPERTIES
+    LABELS "hardware;gfx"
+    SKIP_REGULAR_EXPRESSION "SKIP:"
+    TIMEOUT 180)
+
   # Pre-existing queues: attaches to a gfx-test that is already running, so
   # its queues can only be found by the KFD debug-trap startup scan.
   add_test(
