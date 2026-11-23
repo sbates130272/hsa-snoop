@@ -50,3 +50,6 @@ dictionary.dic
 *.swp
 *~
 .DS_Store
+
+# Local stress-test reports
+overnight-*.md

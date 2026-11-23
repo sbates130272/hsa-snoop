@@ -75,6 +75,15 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   publish the tag; the second one used to end red.
 - The KFD scan hardware test checks that the workload is no longer attached
   after the scan and that it can be stopped while hsa-snoop is running.
+- The VM hardware test uses `qemu-tool-action` v2 and qemu-tool 3.0.0 in
+  place of v1 and a compose stack pinned to an old qemu-minimal commit. The guest is described
+  by a fleet XML file, `.github/ci/vm-fleet.xml`: ROCm 10.2, two emulated
+  GPUs and one NVMe namespace. The job runs on the runner itself, no longer
+  in a container.
+- A new `two-gpu-hardware-test` runs one workload on each GPU at the same
+  time and checks that every launch is credited to the right `gpu_id`. It
+  skips on a system with one GPU unless `-DHSA_SNOOP_HARDWARE_GPUS=2` says two
+  are expected, which the VM hardware test does.
 
 ### Fixed
 - With a GPU out of memory, the output of whole processes could go missing
