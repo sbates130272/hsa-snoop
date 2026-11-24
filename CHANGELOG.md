@@ -6,6 +6,16 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.10.1] — 2026-11-24
+
+### Fixed
+- `.deb` no longer ships `prometheus-cpp` headers and static libraries.
+  `FetchContent_MakeAvailable` does not propagate `EXCLUDE_FROM_ALL`, so
+  switching to `FetchContent_Populate` + `add_subdirectory(… EXCLUDE_FROM_ALL)`
+  prevents prometheus-cpp install rules from running during `cmake --install`.
+- `postinst` and `prerm` no longer print systemctl errors about the non-existent
+  `hsa-snoop.service` unit on install, upgrade, or removal.
+
 ## [1.10.0] — 2026-11-23
 
 ### Added
@@ -360,7 +370,8 @@ Initial public release. Core features:
 - Debian package with systemd service and logrotate config.
 - Tag-triggered GitHub Release with `.deb` asset via `debian-publish` CI.
 
-[Unreleased]: https://github.com/sbates130272/hsa-snoop/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/sbates130272/hsa-snoop/compare/v1.10.1...HEAD
+[1.10.1]: https://github.com/sbates130272/hsa-snoop/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/sbates130272/hsa-snoop/compare/v1.7.0...v1.8.0
