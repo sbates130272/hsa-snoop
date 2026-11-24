@@ -9,8 +9,8 @@ case "$1" in
     remove|deconfigure)
         systemctl stop hsa-snoop-prometheus.service || true
         systemctl disable hsa-snoop-prometheus.service || true
-        systemctl stop hsa-snoop.service || true
-        systemctl disable hsa-snoop.service || true
+        systemctl stop hsa-snoop.service 2>/dev/null || true
+        systemctl disable hsa-snoop.service 2>/dev/null || true
         ;;
     upgrade)
         rm -f "$ENABLED_STATE_FILE" "$ACTIVE_STATE_FILE"
@@ -25,8 +25,8 @@ case "$1" in
             touch "$ENABLED_STATE_FILE"
         fi
         systemctl stop hsa-snoop-prometheus.service || true
-        systemctl stop hsa-snoop.service || true
-        systemctl disable hsa-snoop.service || true
+        systemctl stop hsa-snoop.service 2>/dev/null || true
+        systemctl disable hsa-snoop.service 2>/dev/null || true
         ;;
 esac
 

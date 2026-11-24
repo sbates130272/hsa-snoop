@@ -50,7 +50,15 @@ if(HSA_SNOOP_PROMETHEUS)
     GIT_REPOSITORY https://github.com/jupp0r/prometheus-cpp.git
     GIT_TAG        v1.2.4
   )
-  FetchContent_MakeAvailable(prometheus-cpp)
+  FetchContent_GetProperties(prometheus-cpp)
+  if(NOT prometheus-cpp_POPULATED)
+    FetchContent_Populate(prometheus-cpp)
+    add_subdirectory(
+      "${prometheus-cpp_SOURCE_DIR}"
+      "${prometheus-cpp_BINARY_DIR}"
+      EXCLUDE_FROM_ALL
+    )
+  endif()
 endif()
 
 file(GLOB HSA_SNOOP_SOURCES CONFIGURE_DEPENDS "src/*.cpp")
