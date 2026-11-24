@@ -12,7 +12,7 @@ versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `.deb` no longer ships `prometheus-cpp` headers and static libraries.
   `FetchContent_MakeAvailable` does not propagate `EXCLUDE_FROM_ALL`, so
   switching to `FetchContent_Populate` + `add_subdirectory(… EXCLUDE_FROM_ALL)`
-  prevents prometheus-cpp's install rules from running during `cmake --install`.
+  prevents prometheus-cpp install rules from running during `cmake --install`.
 - `postinst` and `prerm` no longer print systemctl errors about the non-existent
   `hsa-snoop.service` unit on install, upgrade, or removal.
 
